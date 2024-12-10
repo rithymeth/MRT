@@ -1,0 +1,36 @@
+// Basic test of MRT language features
+func test_arithmetic() {
+    print("Testing arithmetic operations");
+    print(2 + 3);  // Should print 5
+    print(10 - 4); // Should print 6
+    print(3 * 4);  // Should print 12
+    print(15 / 3); // Should print 5
+}
+
+func test_control_flow() {
+    print("Testing control flow");
+    
+    // Test if/else
+    if (10 > 5) {
+        print("Condition works!");
+    } else {
+        print("Something is wrong!");
+    }
+    
+    // Test while loop
+    print("Counting down");
+    func countdown(n) {
+        while (n > 0) {
+            print(n);
+            n = n - 1;
+        }
+    }
+    countdown(3);
+}
+
+func main() {
+    print("=== MRT Language Test ===");
+    test_arithmetic();
+    print(" ");
+    test_control_flow();
+}

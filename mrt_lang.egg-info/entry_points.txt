@@ -1,0 +1,2 @@
+[console_scripts]
+mrt = src.__main__:main

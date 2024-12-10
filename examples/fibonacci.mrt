@@ -1,0 +1,19 @@
+// Fibonacci sequence calculator in MRT
+func fibonacci(n) {
+    if (n <= 1) {
+        return n;
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+func main() {
+    // Print first 10 Fibonacci numbers
+    func printFib(count) {
+        while (count > 0) {
+            print(fibonacci(count));
+            count = count - 1;
+        }
+    }
+    
+    printFib(10);
+}

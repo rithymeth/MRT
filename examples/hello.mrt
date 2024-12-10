@@ -1,0 +1,9 @@
+// Simple hello world program in MRT
+func main() {
+    print("Hello, World from MRT!");
+}
+
+// Function to add two numbers
+func add(a, b) {
+    return a + b;
+}
