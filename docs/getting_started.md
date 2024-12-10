@@ -2,7 +2,20 @@
 
 ## Installation
 
-MRT is implemented in Python and requires Python 3.6 or later.
+There are two ways to install MRT:
+
+### 1. Install from PyPI (Recommended)
+
+```bash
+pip install mrt-lang
+```
+
+After installation, you can run MRT programs using the `mrt` command:
+```bash
+mrt your_program.mrt
+```
+
+### 2. Install from Source
 
 1. Clone the repository:
 ```bash
@@ -10,15 +23,26 @@ git clone <repository-url>
 cd mrt
 ```
 
-2. Install dependencies:
+2. Install in development mode:
 ```bash
 pip install -e .
 ```
 
+3. Install development dependencies (optional):
+```bash
+pip install -r requirements-dev.txt
+```
+
 ## Running MRT Programs
 
-To run an MRT program:
+After installation, you can run MRT programs in two ways:
 
+1. Using the `mrt` command (if installed via pip):
+```bash
+mrt your_program.mrt
+```
+
+2. Using Python directly:
 ```bash
 python -m src your_program.mrt
 ```
@@ -34,7 +58,7 @@ func main() {
 
 2. Run the program:
 ```bash
-python -m src hello.mrt
+mrt hello.mrt
 ```
 
 ## Development Environment
