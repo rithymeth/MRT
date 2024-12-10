@@ -1,0 +1,37 @@
+// Testing array built-in functions
+func test_array_functions() {
+    // Create an array
+    var numbers = [1, 2, 3];
+    print("Initial array:");
+    print(numbers);
+    
+    // Get array length
+    print("Array length:");
+    print(len(numbers));
+    
+    // Add elements using push
+    print("Adding elements...");
+    push(numbers, 4);
+    push(numbers, 5);
+    
+    print("Updated array:");
+    print(numbers);
+    print("New length:");
+    print(len(numbers));
+    
+    // Calculate average
+    var sum = 0;
+    var i = 0;
+    while (i < len(numbers)) {
+        sum = sum + numbers[i];
+        i = i + 1;
+    }
+    
+    print("Average of array elements:");
+    print(sum / len(numbers));
+}
+
+func main() {
+    print("=== Array Functions Test ===");
+    test_array_functions();
+}

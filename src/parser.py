@@ -17,6 +17,8 @@ class Parser:
         try:
             if self.match(TokenType.FUNC):
                 return self.function("function")
+            if self.match(TokenType.VAR):
+                return self.var_declaration()
             return self.statement()
         except ParseError:
             self.synchronize()
@@ -173,6 +175,8 @@ class Parser:
         while True:
             if self.match(TokenType.LPAREN):
                 expr = self.finish_call(expr)
+            elif self.match(TokenType.LBRACKET):
+                expr = self.array_access(expr)
             else:
                 break
 
@@ -189,8 +193,17 @@ class Parser:
                     break
 
         paren = self.consume(TokenType.RPAREN, "Expect ')' after arguments.")
-
         return Call(callee, paren, arguments)
+
+    def array_access(self, expr: Expr) -> Expr:
+        index = self.expression()
+        self.consume(TokenType.RBRACKET, "Expect ']' after array index.")
+        
+        if self.match(TokenType.ASSIGN):
+            value = self.expression()
+            return ArrayAssign(expr, index, value)
+            
+        return ArrayAccess(expr, index)
 
     def primary(self) -> Expr:
         if self.match(TokenType.NUMBER, TokenType.STRING):
@@ -201,8 +214,27 @@ class Parser:
             expr = self.expression()
             self.consume(TokenType.RPAREN, "Expect ')' after expression.")
             return Grouping(expr)
+        if self.match(TokenType.LBRACKET):
+            elements = []
+            if not self.check(TokenType.RBRACKET):
+                while True:
+                    elements.append(self.expression())
+                    if not self.match(TokenType.COMMA):
+                        break
+            self.consume(TokenType.RBRACKET, "Expect ']' after array elements.")
+            return Array(elements)
 
         raise self.error(self.peek(), "Expect expression.")
+
+    def var_declaration(self) -> Var:
+        name = self.consume(TokenType.IDENTIFIER, "Expect variable name.")
+
+        initializer = None
+        if self.match(TokenType.ASSIGN):
+            initializer = self.expression()
+
+        self.consume(TokenType.SEMICOLON, "Expect ';' after variable declaration.")
+        return Var(name, initializer)
 
     def match(self, *types: TokenType) -> bool:
         for type in types:
@@ -247,7 +279,7 @@ class Parser:
                 return
 
             match self.peek().type:
-                case TokenType.FUNC | TokenType.IF | TokenType.RETURN | TokenType.WHILE:
+                case TokenType.FUNC | TokenType.IF | TokenType.RETURN | TokenType.WHILE | TokenType.VAR:
                     return
 
             self.advance()

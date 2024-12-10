@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from .ast import *
 from .lexer import Token, TokenType
 
@@ -54,6 +54,24 @@ class Environment:
 
         raise RuntimeError(f"Undefined variable '{name.lexeme}'.")
 
+class MRTBuiltin:
+    @staticmethod
+    def len(*args):
+        if len(args) != 1:
+            raise RuntimeError("len() takes exactly one argument.")
+        if not isinstance(args[0], list):
+            raise RuntimeError("len() argument must be an array.")
+        return float(len(args[0]))
+
+    @staticmethod
+    def push(*args):
+        if len(args) != 2:
+            raise RuntimeError("push() takes exactly two arguments.")
+        if not isinstance(args[0], list):
+            raise RuntimeError("First argument to push() must be an array.")
+        args[0].append(args[1])
+        return args[1]
+
 class Interpreter:
     def __init__(self):
         self.globals = Environment()
@@ -61,6 +79,8 @@ class Interpreter:
         
         # Add built-in functions
         self.globals.define("print", lambda x: print(x))
+        self.globals.define("len", MRTBuiltin.len)
+        self.globals.define("push", MRTBuiltin.push)
 
     def interpret(self, statements: List[Stmt]):
         try:
@@ -96,6 +116,11 @@ class Interpreter:
                 if stmt.value:
                     value = self.evaluate(stmt.value)
                 raise Return(value)
+            case Var():
+                value = None
+                if stmt.initializer:
+                    value = self.evaluate(stmt.initializer)
+                self.environment.define(stmt.name.lexeme, value)
             case While():
                 while self.is_truthy(self.evaluate(stmt.condition)):
                     self.execute(stmt.body)
@@ -111,6 +136,32 @@ class Interpreter:
 
     def evaluate(self, expr: Expr) -> Any:
         match expr:
+            case Array():
+                return [self.evaluate(element) for element in expr.elements]
+            case ArrayAccess():
+                array = self.evaluate(expr.array)
+                index = self.evaluate(expr.index)
+                if not isinstance(array, list):
+                    raise RuntimeError("Can only index into arrays.")
+                if not isinstance(index, (int, float)):
+                    raise RuntimeError("Array index must be a number.")
+                index = int(index)
+                if index < 0 or index >= len(array):
+                    raise RuntimeError("Array index out of bounds.")
+                return array[index]
+            case ArrayAssign():
+                array = self.evaluate(expr.array)
+                index = self.evaluate(expr.index)
+                if not isinstance(array, list):
+                    raise RuntimeError("Can only index into arrays.")
+                if not isinstance(index, (int, float)):
+                    raise RuntimeError("Array index must be a number.")
+                index = int(index)
+                if index < 0 or index >= len(array):
+                    raise RuntimeError("Array index out of bounds.")
+                value = self.evaluate(expr.value)
+                array[index] = value
+                return value
             case Assign():
                 value = self.evaluate(expr.value)
                 self.environment.assign(expr.name, value)

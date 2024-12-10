@@ -42,6 +42,21 @@ class Call(Expr):
     paren: 'Token'
     arguments: List[Expr]
 
+@dataclass
+class Array(Expr):
+    elements: List[Expr]
+
+@dataclass
+class ArrayAccess(Expr):
+    array: Expr
+    index: Expr
+
+@dataclass
+class ArrayAssign(Expr):
+    array: Expr
+    index: Expr
+    value: Expr
+
 # Statement nodes
 @dataclass
 class Expression(Stmt):
@@ -76,3 +91,8 @@ class Block(Stmt):
 @dataclass
 class Print(Stmt):
     expression: Expr
+
+@dataclass
+class Var(Stmt):
+    name: 'Token'
+    initializer: Optional[Expr]

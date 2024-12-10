@@ -1,0 +1,34 @@
+// Array operations in MRT
+func test_arrays() {
+    // Create an array
+    print("Creating array...");
+    var arr = [1, 2, 3, 4, 5];
+    
+    // Access elements
+    print("First element:");
+    print(arr[0]);
+    print("Last element:");
+    print(arr[4]);
+    
+    // Modify elements
+    print("Modifying array...");
+    arr[2] = 10;
+    print("Modified element:");
+    print(arr[2]);
+    
+    // Array operations
+    print("Array operations:");
+    var sum = 0;
+    var i = 0;
+    while (i < 5) {
+        sum = sum + arr[i];
+        i = i + 1;
+    }
+    print("Sum of array elements:");
+    print(sum);
+}
+
+func main() {
+    print("=== Array Test ===");
+    test_arrays();
+}

@@ -10,6 +10,7 @@ class TokenType(Enum):
     ELSE = auto()
     WHILE = auto()
     PRINT = auto()
+    VAR = auto()
     
     # Literals
     IDENTIFIER = auto()
@@ -31,6 +32,8 @@ class TokenType(Enum):
     RPAREN = auto()
     LBRACE = auto()
     RBRACE = auto()
+    LBRACKET = auto()
+    RBRACKET = auto()
     COMMA = auto()
     SEMICOLON = auto()
     
@@ -59,6 +62,7 @@ class Lexer:
             "else": TokenType.ELSE,
             "while": TokenType.WHILE,
             "print": TokenType.PRINT,
+            "var": TokenType.VAR,
         }
     
     def scan_tokens(self) -> List[Token]:
@@ -76,6 +80,8 @@ class Lexer:
             case ')': self.add_token(TokenType.RPAREN)
             case '{': self.add_token(TokenType.LBRACE)
             case '}': self.add_token(TokenType.RBRACE)
+            case '[': self.add_token(TokenType.LBRACKET)
+            case ']': self.add_token(TokenType.RBRACKET)
             case ',': self.add_token(TokenType.COMMA)
             case ';': self.add_token(TokenType.SEMICOLON)
             case '+': self.add_token(TokenType.PLUS)
