@@ -72,6 +72,56 @@ class MRTBuiltin:
         args[0].append(args[1])
         return args[1]
 
+    @staticmethod
+    def pop(*args):
+        if len(args) != 1:
+            raise RuntimeError("pop() takes exactly one argument.")
+        if not isinstance(args[0], list):
+            raise RuntimeError("pop() argument must be an array.")
+        if not args[0]:
+            raise RuntimeError("Cannot pop from empty array.")
+        return args[0].pop()
+
+    @staticmethod
+    def slice(*args):
+        if len(args) not in [2, 3]:
+            raise RuntimeError("slice() takes 2 or 3 arguments.")
+        if not isinstance(args[0], list):
+            raise RuntimeError("First argument to slice() must be an array.")
+        
+        arr = args[0]
+        start = int(args[1]) if isinstance(args[1], (int, float)) else 0
+        end = int(args[2]) if len(args) > 2 and isinstance(args[2], (int, float)) else len(arr)
+        
+        if start < 0:
+            start = len(arr) + start
+        if end < 0:
+            end = len(arr) + end
+            
+        return arr[start:end]
+
+    @staticmethod
+    def join(*args):
+        if len(args) not in [1, 2]:
+            raise RuntimeError("join() takes 1 or 2 arguments.")
+        if not isinstance(args[0], list):
+            raise RuntimeError("First argument to join() must be an array.")
+            
+        separator = str(args[1]) if len(args) > 1 else ""
+        return separator.join(str(x) for x in args[0])
+
+    @staticmethod
+    def indexOf(*args):
+        if len(args) != 2:
+            raise RuntimeError("indexOf() takes exactly 2 arguments.")
+        if not isinstance(args[0], list):
+            raise RuntimeError("First argument to indexOf() must be an array.")
+            
+        try:
+            return float(args[0].index(args[1]))
+        except ValueError:
+            return -1.0
+
 class Interpreter:
     def __init__(self):
         self.globals = Environment()
@@ -81,6 +131,10 @@ class Interpreter:
         self.globals.define("print", lambda x: print(x))
         self.globals.define("len", MRTBuiltin.len)
         self.globals.define("push", MRTBuiltin.push)
+        self.globals.define("pop", MRTBuiltin.pop)
+        self.globals.define("slice", MRTBuiltin.slice)
+        self.globals.define("join", MRTBuiltin.join)
+        self.globals.define("indexOf", MRTBuiltin.indexOf)
 
     def interpret(self, statements: List[Stmt]):
         try:

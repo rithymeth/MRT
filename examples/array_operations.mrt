@@ -1,0 +1,66 @@
+// Advanced array operations in MRT
+func test_array_operations() {
+    // Create test array
+    var numbers = [10, 20, 30, 40, 50];
+    print("Original array:");
+    print(numbers);
+    
+    // Test pop()
+    print("\nTesting pop():");
+    print("Popped value:");
+    print(pop(numbers));
+    print("Array after pop:");
+    print(numbers);
+    
+    // Test push()
+    print("\nTesting push():");
+    push(numbers, 60);
+    print("Array after pushing 60:");
+    print(numbers);
+    
+    // Test slice()
+    print("\nTesting slice():");
+    print("First two elements (slice(numbers, 0, 2)):");
+    print(slice(numbers, 0, 2));
+    print("Last two elements (slice(numbers, -2)):");
+    print(slice(numbers, -2));
+    print("Middle elements (slice(numbers, 1, 4)):");
+    print(slice(numbers, 1, 4));
+    
+    // Test indexOf()
+    print("\nTesting indexOf():");
+    print("Index of 30:");
+    print(indexOf(numbers, 30));
+    print("Index of 99 (not in array):");
+    print(indexOf(numbers, 99));
+    
+    // Test join()
+    print("\nTesting join():");
+    print("Join with comma:");
+    print(join(numbers, ", "));
+    print("Join with dash:");
+    print(join(numbers, " - "));
+    
+    // Complex operations
+    print("\nComplex operations:");
+    var subset = slice(numbers, 1, 4);
+    print("Subset of array:");
+    print(subset);
+    print("Joined subset:");
+    print(join(subset, " + "));
+    
+    // Calculate sum of subset
+    var sum = 0;
+    var i = 0;
+    while (i < len(subset)) {
+        sum = sum + subset[i];
+        i = i + 1;
+    }
+    print("Sum of subset:");
+    print(sum);
+}
+
+func main() {
+    print("=== Advanced Array Operations Test ===");
+    test_array_operations();
+}
