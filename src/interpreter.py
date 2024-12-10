@@ -122,6 +122,90 @@ class MRTBuiltin:
         except ValueError:
             return -1.0
 
+    @staticmethod
+    def split(*args):
+        if len(args) not in [1, 2]:
+            raise RuntimeError("split() takes 1 or 2 arguments.")
+        if not isinstance(args[0], str):
+            raise RuntimeError("First argument to split() must be a string.")
+        
+        separator = str(args[1]) if len(args) > 1 else " "
+        return args[0].split(separator)
+
+    @staticmethod
+    def substring(*args):
+        if len(args) not in [2, 3]:
+            raise RuntimeError("substring() takes 2 or 3 arguments.")
+        if not isinstance(args[0], str):
+            raise RuntimeError("First argument to substring() must be a string.")
+        
+        text = args[0]
+        start = int(args[1]) if isinstance(args[1], (int, float)) else 0
+        end = int(args[2]) if len(args) > 2 and isinstance(args[2], (int, float)) else len(text)
+        
+        if start < 0:
+            start = len(text) + start
+        if end < 0:
+            end = len(text) + end
+            
+        return text[start:end]
+
+    @staticmethod
+    def toUpper(*args):
+        if len(args) != 1:
+            raise RuntimeError("toUpper() takes exactly one argument.")
+        if not isinstance(args[0], str):
+            raise RuntimeError("toUpper() argument must be a string.")
+        return args[0].upper()
+
+    @staticmethod
+    def toLower(*args):
+        if len(args) != 1:
+            raise RuntimeError("toLower() takes exactly one argument.")
+        if not isinstance(args[0], str):
+            raise RuntimeError("toLower() argument must be a string.")
+        return args[0].lower()
+
+    @staticmethod
+    def trim(*args):
+        if len(args) != 1:
+            raise RuntimeError("trim() takes exactly one argument.")
+        if not isinstance(args[0], str):
+            raise RuntimeError("trim() argument must be a string.")
+        return args[0].strip()
+
+    @staticmethod
+    def replace(*args):
+        if len(args) != 3:
+            raise RuntimeError("replace() takes exactly 3 arguments.")
+        if not isinstance(args[0], str):
+            raise RuntimeError("First argument to replace() must be a string.")
+        return str(args[0]).replace(str(args[1]), str(args[2]))
+
+    @staticmethod
+    def startsWith(*args):
+        if len(args) != 2:
+            raise RuntimeError("startsWith() takes exactly 2 arguments.")
+        if not isinstance(args[0], str):
+            raise RuntimeError("First argument to startsWith() must be a string.")
+        return args[0].startswith(str(args[1]))
+
+    @staticmethod
+    def endsWith(*args):
+        if len(args) != 2:
+            raise RuntimeError("endsWith() takes exactly 2 arguments.")
+        if not isinstance(args[0], str):
+            raise RuntimeError("First argument to endsWith() must be a string.")
+        return args[0].endswith(str(args[1]))
+
+    @staticmethod
+    def contains(*args):
+        if len(args) != 2:
+            raise RuntimeError("contains() takes exactly 2 arguments.")
+        if not isinstance(args[0], str):
+            raise RuntimeError("First argument to contains() must be a string.")
+        return str(args[1]) in args[0]
+
 class Interpreter:
     def __init__(self):
         self.globals = Environment()
@@ -135,6 +219,16 @@ class Interpreter:
         self.globals.define("slice", MRTBuiltin.slice)
         self.globals.define("join", MRTBuiltin.join)
         self.globals.define("indexOf", MRTBuiltin.indexOf)
+        # Add string functions
+        self.globals.define("split", MRTBuiltin.split)
+        self.globals.define("substring", MRTBuiltin.substring)
+        self.globals.define("toUpper", MRTBuiltin.toUpper)
+        self.globals.define("toLower", MRTBuiltin.toLower)
+        self.globals.define("trim", MRTBuiltin.trim)
+        self.globals.define("replace", MRTBuiltin.replace)
+        self.globals.define("startsWith", MRTBuiltin.startsWith)
+        self.globals.define("endsWith", MRTBuiltin.endsWith)
+        self.globals.define("contains", MRTBuiltin.contains)
 
     def interpret(self, statements: List[Stmt]):
         try:

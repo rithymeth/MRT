@@ -1,0 +1,68 @@
+// Testing string operations in MRT
+func test_string_operations() {
+    // Basic string operations
+    var text = "  Hello, World from MRT!  ";
+    print("Original text:");
+    print(text);
+    
+    // Trim
+    print("\nTesting trim():");
+    var trimmed = trim(text);
+    print("Trimmed text:");
+    print(trimmed);
+    
+    // Case conversion
+    print("\nTesting case conversion:");
+    print("Upper case:");
+    print(toUpper(trimmed));
+    print("Lower case:");
+    print(toLower(trimmed));
+    
+    // Substring
+    print("\nTesting substring():");
+    print("First 5 characters:");
+    print(substring(trimmed, 0, 5));
+    print("Last 4 characters:");
+    print(substring(trimmed, -4));
+    print("Characters 7-12:");
+    print(substring(trimmed, 7, 12));
+    
+    // Split and join
+    print("\nTesting split() and join():");
+    var words = split(trimmed, " ");
+    print("Split into words:");
+    print(words);
+    print("Join with '-':");
+    print(join(words, "-"));
+    
+    // Replace
+    print("\nTesting replace():");
+    var replaced = replace(trimmed, "World", "Universe");
+    print(replaced);
+    
+    // String search
+    print("\nTesting string search:");
+    print("Contains 'MRT':");
+    print(contains(trimmed, "MRT"));
+    print("Starts with 'Hello':");
+    print(startsWith(trimmed, "Hello"));
+    print("Ends with '!':");
+    print(endsWith(trimmed, "!"));
+    
+    // Complex operations
+    print("\nComplex string operations:");
+    var sentence = "  The Quick Brown Fox  ";
+    print("Original:", sentence);
+    var processed = toLower(trim(sentence));
+    print("Trimmed and lowercase:", processed);
+    var words = split(processed, " ");
+    print("Words:", words);
+    print("First word:", words[0]);
+    print("Last word:", words[len(words) - 1]);
+    print("Words joined:", join(words, "_"));
+}
+
+func main() {
+    print("=== String Operations Test ===");
+    test_string_operations();
+}
