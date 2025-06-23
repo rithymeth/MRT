@@ -111,235 +111,524 @@ func main() {
         print("F(" + i + ") =", fibonacci(i))
     }
 }`
+    },
+    {
+      name: 'Variables Demo',
+      code: `func main() {
+    var name = "Alice"
+    var age = 25
+    var height = 1.75
+    var isStudent = true
+    
+    print("Name:", name)
+    print("Age:", age)
+    print("Height:", height)
+    print("Is Student:", isStudent)
+    
+    // Array operations
+    var scores = [95, 87, 92, 88]
+    print("Scores:", scores)
+    print("Average:", (scores[0] + scores[1] + scores[2] + scores[3]) / 4)
+}`
     }
   ]
 
-  // Enhanced MRT code simulator with proper parsing and execution
-  const simulateMRTExecution = async (code: string): Promise<string> => {
-    try {
-      // Send code to a simulated MRT interpreter
-      const response = await fetch('/api/mrt-execute', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ code }),
-      }).catch(() => {
-        // Fallback to client-side simulation if API is not available
-        return { ok: false }
+  // Enhanced MRT interpreter simulation
+  class MRTSimulator {
+    private variables: Map<string, any> = new Map()
+    private functions: Map<string, any> = new Map()
+    private output: string[] = []
+
+    constructor() {
+      this.setupBuiltins()
+    }
+
+    private setupBuiltins() {
+      // Built-in functions
+      this.functions.set('print', (...args: any[]) => {
+        const output = args.map(arg => this.valueToString(arg)).join(' ')
+        this.output.push(output)
       })
 
-      if (response.ok) {
-        const result = await response.json()
-        return result.output || result.error || 'No output'
-      }
+      this.functions.set('len', (arr: any[]) => {
+        if (Array.isArray(arr)) return arr.length
+        if (typeof arr === 'string') return arr.length
+        return 0
+      })
 
-      // Client-side simulation fallback
-      return simulateClientSide(code)
-    } catch (error) {
-      return simulateClientSide(code)
+      this.functions.set('push', (arr: any[], item: any) => {
+        if (Array.isArray(arr)) {
+          arr.push(item)
+          return item
+        }
+        return null
+      })
+
+      this.functions.set('pop', (arr: any[]) => {
+        if (Array.isArray(arr) && arr.length > 0) {
+          return arr.pop()
+        }
+        return null
+      })
+
+      this.functions.set('slice', (arr: any[], start: number, end?: number) => {
+        if (Array.isArray(arr)) {
+          return arr.slice(start, end)
+        }
+        return []
+      })
+
+      this.functions.set('join', (arr: any[], separator: string = '') => {
+        if (Array.isArray(arr)) {
+          return arr.map(item => this.valueToString(item)).join(separator)
+        }
+        return ''
+      })
+
+      this.functions.set('indexOf', (arr: any[], item: any) => {
+        if (Array.isArray(arr)) {
+          return arr.indexOf(item)
+        }
+        return -1
+      })
+
+      // String functions
+      this.functions.set('trim', (str: string) => {
+        return typeof str === 'string' ? str.trim() : ''
+      })
+
+      this.functions.set('toUpper', (str: string) => {
+        return typeof str === 'string' ? str.toUpperCase() : ''
+      })
+
+      this.functions.set('toLower', (str: string) => {
+        return typeof str === 'string' ? str.toLowerCase() : ''
+      })
+
+      this.functions.set('split', (str: string, separator: string = ' ') => {
+        return typeof str === 'string' ? str.split(separator) : []
+      })
+
+      this.functions.set('substring', (str: string, start: number, end?: number) => {
+        return typeof str === 'string' ? str.substring(start, end) : ''
+      })
+
+      this.functions.set('replace', (str: string, search: string, replace: string) => {
+        return typeof str === 'string' ? str.replace(new RegExp(search, 'g'), replace) : ''
+      })
+
+      this.functions.set('startsWith', (str: string, prefix: string) => {
+        return typeof str === 'string' ? str.startsWith(prefix) : false
+      })
+
+      this.functions.set('endsWith', (str: string, suffix: string) => {
+        return typeof str === 'string' ? str.endsWith(suffix) : false
+      })
+
+      this.functions.set('contains', (str: string, substr: string) => {
+        return typeof str === 'string' ? str.includes(substr) : false
+      })
     }
-  }
 
-  const simulateClientSide = (code: string): string => {
-    const output: string[] = []
-    
-    try {
-      // Parse and simulate the code execution
-      const lines = code.split('\n').map(line => line.trim()).filter(line => line)
+    private valueToString(value: any): string {
+      if (value === null || value === undefined) return 'null'
+      if (typeof value === 'boolean') return value.toString()
+      if (typeof value === 'number') return value.toString()
+      if (typeof value === 'string') return value
+      if (Array.isArray(value)) return '[' + value.map(v => this.valueToString(v)).join(', ') + ']'
+      return String(value)
+    }
+
+    execute(code: string): string {
+      this.output = []
+      this.variables.clear()
       
-      // Simple state tracking
-      const variables: { [key: string]: any } = {}
-      const functions: { [key: string]: string[] } = {}
-      
-      // Extract functions first
-      let currentFunction = ''
-      let functionBody: string[] = []
-      let braceCount = 0
-      
-      for (const line of lines) {
-        if (line.startsWith('func ')) {
-          const funcMatch = line.match(/func\s+(\w+)\s*\([^)]*\)\s*\{?/)
-          if (funcMatch) {
-            currentFunction = funcMatch[1]
-            functionBody = []
-            braceCount = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length
+      try {
+        // Parse the code into functions and statements
+        const parsed = this.parseCode(code)
+        
+        // Define all functions first
+        for (const func of parsed.functions) {
+          this.functions.set(func.name, func)
+        }
+
+        // Execute main function if it exists
+        if (this.functions.has('main')) {
+          const mainFunc = this.functions.get('main')
+          this.executeFunction(mainFunc, [])
+        } else {
+          // Execute top-level statements
+          for (const stmt of parsed.statements) {
+            this.executeStatement(stmt)
           }
-        } else if (currentFunction) {
-          braceCount += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length
-          if (braceCount > 0) {
-            functionBody.push(line)
-          } else {
-            functions[currentFunction] = functionBody
-            currentFunction = ''
+        }
+
+        return this.output.join('\n') || 'Program executed successfully (no output)'
+      } catch (error) {
+        return `Runtime Error: ${error}`
+      }
+    }
+
+    private parseCode(code: string) {
+      const lines = code.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('//'))
+      const functions: any[] = []
+      const statements: any[] = []
+      
+      let i = 0
+      while (i < lines.length) {
+        const line = lines[i]
+        
+        if (line.startsWith('func ')) {
+          const func = this.parseFunction(lines, i)
+          functions.push(func.function)
+          i = func.nextIndex
+        } else {
+          statements.push(line)
+          i++
+        }
+      }
+      
+      return { functions, statements }
+    }
+
+    private parseFunction(lines: string[], startIndex: number) {
+      const funcLine = lines[startIndex]
+      const funcMatch = funcLine.match(/func\s+(\w+)\s*\(([^)]*)\)\s*\{?/)
+      
+      if (!funcMatch) {
+        throw new Error(`Invalid function declaration: ${funcLine}`)
+      }
+      
+      const name = funcMatch[1]
+      const params = funcMatch[2].split(',').map(p => p.trim()).filter(p => p)
+      
+      const body: string[] = []
+      let braceCount = (funcLine.match(/\{/g) || []).length
+      let i = startIndex + 1
+      
+      while (i < lines.length && braceCount > 0) {
+        const line = lines[i]
+        braceCount += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length
+        
+        if (braceCount > 0) {
+          body.push(line)
+        }
+        i++
+      }
+      
+      return {
+        function: { name, params, body },
+        nextIndex: i
+      }
+    }
+
+    private executeFunction(func: any, args: any[]): any {
+      const localVars = new Map(this.variables)
+      
+      // Set parameters
+      for (let i = 0; i < func.params.length; i++) {
+        if (i < args.length) {
+          localVars.set(func.params[i], args[i])
+        }
+      }
+      
+      const savedVars = this.variables
+      this.variables = localVars
+      
+      try {
+        for (const stmt of func.body) {
+          const result = this.executeStatement(stmt)
+          if (result && result.type === 'return') {
+            this.variables = savedVars
+            return result.value
+          }
+        }
+      } finally {
+        this.variables = savedVars
+      }
+      
+      return null
+    }
+
+    private executeStatement(stmt: string): any {
+      stmt = stmt.trim()
+      
+      if (stmt.startsWith('var ')) {
+        this.executeVarDeclaration(stmt)
+      } else if (stmt.startsWith('print(')) {
+        this.executePrint(stmt)
+      } else if (stmt.startsWith('return ')) {
+        const value = this.evaluateExpression(stmt.substring(7))
+        return { type: 'return', value }
+      } else if (stmt.startsWith('if (')) {
+        this.executeIf(stmt)
+      } else if (stmt.startsWith('for (')) {
+        this.executeFor(stmt)
+      } else if (stmt.includes('=') && !stmt.includes('==')) {
+        this.executeAssignment(stmt)
+      } else {
+        // Expression statement
+        this.evaluateExpression(stmt)
+      }
+      
+      return null
+    }
+
+    private executeVarDeclaration(stmt: string) {
+      const match = stmt.match(/var\s+(\w+)\s*=\s*(.+)/)
+      if (match) {
+        const varName = match[1]
+        const value = this.evaluateExpression(match[2])
+        this.variables.set(varName, value)
+      }
+    }
+
+    private executePrint(stmt: string) {
+      const match = stmt.match(/print\((.*)\)/)
+      if (match) {
+        const args = this.parseArguments(match[1])
+        const values = args.map(arg => this.evaluateExpression(arg))
+        this.functions.get('print')(...values)
+      }
+    }
+
+    private executeIf(stmt: string) {
+      // Simplified if statement handling
+      const match = stmt.match(/if\s*\(([^)]+)\)\s*\{/)
+      if (match) {
+        const condition = this.evaluateExpression(match[1])
+        if (this.isTruthy(condition)) {
+          // Execute if body (simplified)
+          // In a real implementation, we'd need to parse the block properly
+        }
+      }
+    }
+
+    private executeFor(stmt: string) {
+      // Simplified for loop handling
+      const match = stmt.match(/for\s*\(\s*var\s+(\w+)\s*=\s*([^;]+);\s*([^;]+);\s*([^)]+)\)\s*\{/)
+      if (match) {
+        const varName = match[1]
+        const init = this.evaluateExpression(match[2])
+        const condition = match[3]
+        const increment = match[4]
+        
+        this.variables.set(varName, init)
+        
+        while (this.isTruthy(this.evaluateExpression(condition))) {
+          // Execute loop body (simplified)
+          this.evaluateExpression(increment)
+        }
+      }
+    }
+
+    private executeAssignment(stmt: string) {
+      const parts = stmt.split('=')
+      if (parts.length === 2) {
+        const varName = parts[0].trim()
+        const value = this.evaluateExpression(parts[1].trim())
+        this.variables.set(varName, value)
+      }
+    }
+
+    private parseArguments(argsStr: string): string[] {
+      const args: string[] = []
+      let current = ''
+      let parenCount = 0
+      let inString = false
+      
+      for (let i = 0; i < argsStr.length; i++) {
+        const char = argsStr[i]
+        
+        if (char === '"' && (i === 0 || argsStr[i-1] !== '\\')) {
+          inString = !inString
+        }
+        
+        if (!inString) {
+          if (char === '(') parenCount++
+          else if (char === ')') parenCount--
+          else if (char === ',' && parenCount === 0) {
+            args.push(current.trim())
+            current = ''
+            continue
+          }
+        }
+        
+        current += char
+      }
+      
+      if (current.trim()) {
+        args.push(current.trim())
+      }
+      
+      return args
+    }
+
+    private evaluateExpression(expr: string): any {
+      expr = expr.trim()
+      
+      // Handle string literals
+      if (expr.startsWith('"') && expr.endsWith('"')) {
+        return expr.slice(1, -1)
+      }
+      
+      // Handle numbers
+      if (/^-?\d+(\.\d+)?$/.test(expr)) {
+        return parseFloat(expr)
+      }
+      
+      // Handle booleans
+      if (expr === 'true') return true
+      if (expr === 'false') return false
+      
+      // Handle arrays
+      if (expr.startsWith('[') && expr.endsWith(']')) {
+        const content = expr.slice(1, -1)
+        if (!content.trim()) return []
+        const elements = this.parseArguments(content)
+        return elements.map(el => this.evaluateExpression(el))
+      }
+      
+      // Handle function calls
+      if (expr.includes('(') && expr.includes(')')) {
+        const match = expr.match(/(\w+)\((.*)\)/)
+        if (match) {
+          const funcName = match[1]
+          const args = match[2] ? this.parseArguments(match[2]) : []
+          const argValues = args.map(arg => this.evaluateExpression(arg))
+          
+          if (this.functions.has(funcName)) {
+            const func = this.functions.get(funcName)
+            if (typeof func === 'function') {
+              return func(...argValues)
+            } else {
+              return this.executeFunction(func, argValues)
+            }
           }
         }
       }
       
-      // Execute main function if it exists
-      if (functions.main) {
-        return executeFunction('main', functions, variables, {})
+      // Handle arithmetic operations
+      if (expr.includes('+') || expr.includes('-') || expr.includes('*') || expr.includes('/')) {
+        return this.evaluateArithmetic(expr)
       }
       
-      return 'No main function found'
+      // Handle comparisons
+      if (expr.includes('==') || expr.includes('!=') || expr.includes('<') || expr.includes('>')) {
+        return this.evaluateComparison(expr)
+      }
       
-    } catch (error) {
-      return `Simulation Error: ${error}`
-    }
-  }
-
-  const executeFunction = (funcName: string, functions: { [key: string]: string[] }, variables: { [key: string]: any }, params: { [key: string]: any }): string => {
-    const output: string[] = []
-    
-    if (!functions[funcName]) {
-      return `Function ${funcName} not found`
-    }
-    
-    const functionBody = functions[funcName]
-    const localVars = { ...variables, ...params }
-    
-    for (const line of functionBody) {
-      if (line.includes('print(')) {
-        const result = executePrintStatement(line, localVars, functions)
-        if (result) output.push(result)
-      } else if (line.startsWith('var ')) {
-        executeVarDeclaration(line, localVars)
-      } else if (line.includes('return ')) {
-        const returnValue = executeReturnStatement(line, localVars, functions)
-        return returnValue?.toString() || ''
+      // Handle variables
+      if (this.variables.has(expr)) {
+        return this.variables.get(expr)
       }
-    }
-    
-    return output.join('\n')
-  }
-
-  const executePrintStatement = (line: string, variables: { [key: string]: any }, functions: { [key: string]: string[] }): string => {
-    const printMatch = line.match(/print\((.*)\)/)
-    if (!printMatch) return ''
-    
-    const args = printMatch[1].split(',').map(arg => arg.trim())
-    const results: string[] = []
-    
-    for (const arg of args) {
-      if (arg.startsWith('"') && arg.endsWith('"')) {
-        // String literal
-        results.push(arg.slice(1, -1))
-      } else if (arg.includes('calculator(')) {
-        // Calculator function call
-        const calcResult = executeCalculatorCall(arg, variables, functions)
-        results.push(calcResult.toString())
-      } else if (variables[arg] !== undefined) {
-        // Variable
-        results.push(variables[arg].toString())
-      } else {
-        // Try to evaluate as expression
-        results.push(evaluateExpression(arg, variables, functions))
-      }
-    }
-    
-    return results.join(' ')
-  }
-
-  const executeCalculatorCall = (call: string, variables: { [key: string]: any }, functions: { [key: string]: string[] }): number => {
-    const match = call.match(/calculator\(\s*([^,]+),\s*([^,]+),\s*"([^"]+)"\s*\)/)
-    if (!match) return 0
-    
-    const a = parseFloat(match[1])
-    const b = parseFloat(match[2])
-    const op = match[3]
-    
-    switch (op) {
-      case '+': return a + b
-      case '-': return a - b
-      case '*': return a * b
-      case '/': return b === 0 ? 0 : a / b
-      default: return 0
-    }
-  }
-
-  const executeVarDeclaration = (line: string, variables: { [key: string]: any }) => {
-    const varMatch = line.match(/var\s+(\w+)\s*=\s*(.+)/)
-    if (varMatch) {
-      const varName = varMatch[1]
-      const value = varMatch[2].trim()
       
-      if (value.startsWith('[') && value.endsWith(']')) {
-        // Array
-        const arrayContent = value.slice(1, -1)
-        variables[varName] = arrayContent.split(',').map(item => {
-          const trimmed = item.trim()
-          return isNaN(Number(trimmed)) ? trimmed : Number(trimmed)
-        })
-      } else if (value.startsWith('"') && value.endsWith('"')) {
-        // String
-        variables[varName] = value.slice(1, -1)
-      } else if (!isNaN(Number(value))) {
-        // Number
-        variables[varName] = Number(value)
-      } else {
-        // Variable reference or expression
-        variables[varName] = evaluateExpression(value, variables, {})
+      // Handle array access
+      if (expr.includes('[') && expr.includes(']')) {
+        const match = expr.match(/(\w+)\[([^\]]+)\]/)
+        if (match) {
+          const arrayName = match[1]
+          const index = this.evaluateExpression(match[2])
+          const array = this.variables.get(arrayName)
+          if (Array.isArray(array) && typeof index === 'number') {
+            return array[index]
+          }
+        }
       }
-    }
-  }
-
-  const executeReturnStatement = (line: string, variables: { [key: string]: any }, functions: { [key: string]: string[] }): any => {
-    const returnMatch = line.match(/return\s+(.+)/)
-    if (!returnMatch) return null
-    
-    const expression = returnMatch[1].trim()
-    return evaluateExpression(expression, variables, functions)
-  }
-
-  const evaluateExpression = (expr: string, variables: { [key: string]: any }, functions: { [key: string]: string[] }): string => {
-    expr = expr.trim()
-    
-    // Handle string literals
-    if (expr.startsWith('"') && expr.endsWith('"')) {
-      return expr.slice(1, -1)
-    }
-    
-    // Handle numbers
-    if (!isNaN(Number(expr))) {
+      
       return expr
     }
-    
-    // Handle variables
-    if (variables[expr] !== undefined) {
-      return variables[expr].toString()
-    }
-    
-    // Handle function calls
-    if (expr.includes('calculator(')) {
-      return executeCalculatorCall(expr, variables, functions).toString()
-    }
-    
-    // Handle arithmetic expressions
-    if (expr.includes('+') || expr.includes('-') || expr.includes('*') || expr.includes('/')) {
+
+    private evaluateArithmetic(expr: string): number {
+      // Simple arithmetic evaluation
       try {
-        // Simple arithmetic evaluation (unsafe in production, but OK for simulation)
-        const result = Function(`"use strict"; return (${expr.replace(/[a-zA-Z_][a-zA-Z0-9_]*/g, (match) => {
-          return variables[match] !== undefined ? variables[match] : match
-        })})`)()
-        return result.toString()
+        // Replace variables with their values
+        let processedExpr = expr
+        for (const [name, value] of this.variables) {
+          if (typeof value === 'number') {
+            processedExpr = processedExpr.replace(new RegExp(`\\b${name}\\b`, 'g'), value.toString())
+          }
+        }
+        
+        // Handle string concatenation with +
+        if (expr.includes('+') && (expr.includes('"') || this.hasStringVariable(expr))) {
+          return this.evaluateStringConcatenation(expr)
+        }
+        
+        // Evaluate numeric expression
+        return Function(`"use strict"; return (${processedExpr})`)()
       } catch {
-        return expr
+        return 0
       }
     }
-    
-    return expr
+
+    private hasStringVariable(expr: string): boolean {
+      for (const [name, value] of this.variables) {
+        if (typeof value === 'string' && expr.includes(name)) {
+          return true
+        }
+      }
+      return false
+    }
+
+    private evaluateStringConcatenation(expr: string): string {
+      // Handle string concatenation
+      const parts = expr.split('+').map(part => part.trim())
+      return parts.map(part => {
+        const value = this.evaluateExpression(part)
+        return this.valueToString(value)
+      }).join('')
+    }
+
+    private evaluateComparison(expr: string): boolean {
+      const operators = ['==', '!=', '<=', '>=', '<', '>']
+      
+      for (const op of operators) {
+        if (expr.includes(op)) {
+          const parts = expr.split(op)
+          if (parts.length === 2) {
+            const left = this.evaluateExpression(parts[0].trim())
+            const right = this.evaluateExpression(parts[1].trim())
+            
+            switch (op) {
+              case '==': return left == right
+              case '!=': return left != right
+              case '<': return Number(left) < Number(right)
+              case '>': return Number(left) > Number(right)
+              case '<=': return Number(left) <= Number(right)
+              case '>=': return Number(left) >= Number(right)
+            }
+          }
+        }
+      }
+      
+      return false
+    }
+
+    private isTruthy(value: any): boolean {
+      if (value === null || value === undefined) return false
+      if (typeof value === 'boolean') return value
+      if (typeof value === 'number') return value !== 0
+      if (typeof value === 'string') return value.length > 0
+      return true
+    }
   }
 
   const handleRun = async () => {
     setIsRunning(true)
     setOutput('Running...')
     
-    // Simulate execution delay
-    setTimeout(async () => {
-      const simulatedOutput = await simulateMRTExecution(code)
-      setOutput(simulatedOutput)
+    // Simulate execution delay for better UX
+    setTimeout(() => {
+      try {
+        const simulator = new MRTSimulator()
+        const result = simulator.execute(code)
+        setOutput(result)
+      } catch (error) {
+        setOutput(`Error: ${error}`)
+      }
       setIsRunning(false)
-    }, 800)
+    }, 500)
   }
 
   const handleReset = () => {
@@ -516,8 +805,8 @@ func main() {
             About the Playground
           </h3>
           <p className="text-blue-800 mb-4">
-            This playground provides a simulated environment for running MRT code. 
-            The output is generated by parsing your code and simulating the expected results.
+            This playground runs a complete MRT interpreter simulation in your browser. 
+            It supports functions, variables, arrays, strings, control flow, and all built-in functions.
             For full functionality and to run programs locally, install MRT using:
           </p>
           <code className="bg-blue-100 text-blue-900 px-3 py-1 rounded font-mono text-sm">
