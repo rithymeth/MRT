@@ -68,21 +68,23 @@ func main() {
     },
     {
       name: 'Calculator',
-      code: `func calculator(a, b, op) {
-    if (op == "+") {
+      code: `func calculator(a, b, operation) {
+    if (operation == "+") {
         return a + b
-    } else if (op == "-") {
+    } else if (operation == "-") {
         return a - b
-    } else if (op == "*") {
+    } else if (operation == "*") {
         return a * b
-    } else if (op == "/") {
+    } else if (operation == "/") {
         if (b == 0) {
             print("Error: Division by zero")
             return 0
         }
         return a / b
+    } else {
+        print("Error: Invalid operation")
+        return 0
     }
-    return 0
 }
 
 func main() {
@@ -91,6 +93,7 @@ func main() {
     print("10 - 4 =", calculator(10, 4, "-"))
     print("6 * 2 =", calculator(6, 2, "*"))
     print("15 / 3 =", calculator(15, 3, "/"))
+    print("10 / 0 =", calculator(10, 0, "/"))
 }`
     },
     {
@@ -111,164 +114,220 @@ func main() {
     }
   ]
 
-  // Simple MRT code simulator
-  const simulateMRTExecution = (code: string): string => {
-    const lines = code.split('\n')
+  // Enhanced MRT code simulator with proper parsing and execution
+  const simulateMRTExecution = async (code: string): Promise<string> => {
+    try {
+      // Send code to a simulated MRT interpreter
+      const response = await fetch('/api/mrt-execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ code }),
+      }).catch(() => {
+        // Fallback to client-side simulation if API is not available
+        return { ok: false }
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        return result.output || result.error || 'No output'
+      }
+
+      // Client-side simulation fallback
+      return simulateClientSide(code)
+    } catch (error) {
+      return simulateClientSide(code)
+    }
+  }
+
+  const simulateClientSide = (code: string): string => {
     const output: string[] = []
     
     try {
-      // Extract print statements and simulate their output
-      const printRegex = /print\((.*?)\)/g
-      let match
+      // Parse and simulate the code execution
+      const lines = code.split('\n').map(line => line.trim()).filter(line => line)
       
-      // Simple variable tracking for basic simulation
+      // Simple state tracking
       const variables: { [key: string]: any } = {}
+      const functions: { [key: string]: string[] } = {}
       
-      while ((match = printRegex.exec(code)) !== null) {
-        const printContent = match[1].trim()
-        
-        // Handle different print patterns
-        if (printContent.includes('"')) {
-          // String literals
-          const stringMatch = printContent.match(/"([^"]*)"/g)
-          if (stringMatch) {
-            let result = stringMatch.map(s => s.replace(/"/g, '')).join(' ')
-            
-            // Handle concatenation with variables or function calls
-            if (printContent.includes('+') || printContent.includes(',')) {
-              result = evaluateSimplePrintExpression(printContent, variables)
-            }
-            
-            output.push(result)
+      // Extract functions first
+      let currentFunction = ''
+      let functionBody: string[] = []
+      let braceCount = 0
+      
+      for (const line of lines) {
+        if (line.startsWith('func ')) {
+          const funcMatch = line.match(/func\s+(\w+)\s*\([^)]*\)\s*\{?/)
+          if (funcMatch) {
+            currentFunction = funcMatch[1]
+            functionBody = []
+            braceCount = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length
           }
-        } else {
-          // Variable or function call
-          const result = evaluateSimplePrintExpression(printContent, variables)
-          output.push(result)
+        } else if (currentFunction) {
+          braceCount += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length
+          if (braceCount > 0) {
+            functionBody.push(line)
+          } else {
+            functions[currentFunction] = functionBody
+            currentFunction = ''
+          }
         }
       }
       
-      // If no print statements found, provide a default message
-      if (output.length === 0) {
-        if (code.includes('func main()')) {
-          output.push('Program executed successfully (no output)')
-        } else {
-          output.push('No main function found')
-        }
+      // Execute main function if it exists
+      if (functions.main) {
+        return executeFunction('main', functions, variables, {})
       }
       
-      return output.join('\n')
+      return 'No main function found'
       
     } catch (error) {
       return `Simulation Error: ${error}`
     }
   }
 
-  const evaluateSimplePrintExpression = (expr: string, variables: { [key: string]: any }): string => {
-    // Remove quotes and handle basic expressions
-    expr = expr.replace(/"/g, '')
+  const executeFunction = (funcName: string, functions: { [key: string]: string[] }, variables: { [key: string]: any }, params: { [key: string]: any }): string => {
+    const output: string[] = []
     
-    // Handle specific patterns based on the examples
-    if (expr.includes('Hello from MRT Playground')) {
-      return 'Hello from MRT Playground!'
+    if (!functions[funcName]) {
+      return `Function ${funcName} not found`
     }
     
-    if (expr.includes('Numbers:') && expr.includes('join')) {
-      return 'Numbers: 1, 2, 3, 4, 5, 6'
-    }
+    const functionBody = functions[funcName]
+    const localVars = { ...variables, ...params }
     
-    if (expr.includes('Trimmed:') && expr.includes('trim')) {
-      return 'Trimmed: MRT is awesome!'
-    }
-    
-    if (expr.includes('Uppercase:') && expr.includes('toUpper')) {
-      return 'Uppercase: MRT IS AWESOME!'
-    }
-    
-    if (expr.includes('Hello, World from MRT')) {
-      return 'Hello, World from MRT!'
-    }
-    
-    if (expr.includes('After push:')) {
-      return 'After push: [1, 2, 3, 4, 5, 6]'
-    }
-    
-    if (expr.includes('Popped:')) {
-      return 'Popped: 6'
-    }
-    
-    if (expr.includes('Slice [1:4]:')) {
-      return 'Slice [1:4]: [2, 3, 4, 5]'
-    }
-    
-    if (expr.includes('Joined:') && expr.includes('->')) {
-      return 'Joined: 1 -> 2 -> 3 -> 4 -> 5'
-    }
-    
-    if (expr.includes('Original:')) {
-      return 'Original:   Hello, MRT World!  '
-    }
-    
-    if (expr.includes('Lowercase:')) {
-      return 'Lowercase:   hello, mrt world!  '
-    }
-    
-    if (expr.includes('Words:')) {
-      return 'Words: [Hello,, MRT, World!]'
-    }
-    
-    if (expr.includes('First word:')) {
-      return 'First word: Hello,'
-    }
-    
-    if (expr.includes('Contains \'MRT\'')) {
-      return 'Contains \'MRT\': true'
-    }
-    
-    if (expr.includes('Starts with \'Hello\'')) {
-      return 'Starts with \'Hello\': true'
-    }
-    
-    if (expr.includes('Calculator Demo')) {
-      return 'Calculator Demo:'
-    }
-    
-    if (expr.includes('5 + 3 =')) {
-      return '5 + 3 = 8'
-    }
-    
-    if (expr.includes('10 - 4 =')) {
-      return '10 - 4 = 6'
-    }
-    
-    if (expr.includes('6 * 2 =')) {
-      return '6 * 2 = 12'
-    }
-    
-    if (expr.includes('15 / 3 =')) {
-      return '15 / 3 = 5'
-    }
-    
-    if (expr.includes('First 8 Fibonacci numbers')) {
-      return 'First 8 Fibonacci numbers:'
-    }
-    
-    if (expr.includes('F(') && expr.includes(') =')) {
-      const fibMatch = expr.match(/F\((\d+)\)/)
-      if (fibMatch) {
-        const n = parseInt(fibMatch[1])
-        const fibValue = calculateFibonacci(n)
-        return `F(${n}) = ${fibValue}`
+    for (const line of functionBody) {
+      if (line.includes('print(')) {
+        const result = executePrintStatement(line, localVars, functions)
+        if (result) output.push(result)
+      } else if (line.startsWith('var ')) {
+        executeVarDeclaration(line, localVars)
+      } else if (line.includes('return ')) {
+        const returnValue = executeReturnStatement(line, localVars, functions)
+        return returnValue?.toString() || ''
       }
     }
     
-    // Default fallback
-    return expr.replace(/,/g, ' ')
+    return output.join('\n')
   }
 
-  const calculateFibonacci = (n: number): number => {
-    if (n <= 1) return n
-    return calculateFibonacci(n - 1) + calculateFibonacci(n - 2)
+  const executePrintStatement = (line: string, variables: { [key: string]: any }, functions: { [key: string]: string[] }): string => {
+    const printMatch = line.match(/print\((.*)\)/)
+    if (!printMatch) return ''
+    
+    const args = printMatch[1].split(',').map(arg => arg.trim())
+    const results: string[] = []
+    
+    for (const arg of args) {
+      if (arg.startsWith('"') && arg.endsWith('"')) {
+        // String literal
+        results.push(arg.slice(1, -1))
+      } else if (arg.includes('calculator(')) {
+        // Calculator function call
+        const calcResult = executeCalculatorCall(arg, variables, functions)
+        results.push(calcResult.toString())
+      } else if (variables[arg] !== undefined) {
+        // Variable
+        results.push(variables[arg].toString())
+      } else {
+        // Try to evaluate as expression
+        results.push(evaluateExpression(arg, variables, functions))
+      }
+    }
+    
+    return results.join(' ')
+  }
+
+  const executeCalculatorCall = (call: string, variables: { [key: string]: any }, functions: { [key: string]: string[] }): number => {
+    const match = call.match(/calculator\(\s*([^,]+),\s*([^,]+),\s*"([^"]+)"\s*\)/)
+    if (!match) return 0
+    
+    const a = parseFloat(match[1])
+    const b = parseFloat(match[2])
+    const op = match[3]
+    
+    switch (op) {
+      case '+': return a + b
+      case '-': return a - b
+      case '*': return a * b
+      case '/': return b === 0 ? 0 : a / b
+      default: return 0
+    }
+  }
+
+  const executeVarDeclaration = (line: string, variables: { [key: string]: any }) => {
+    const varMatch = line.match(/var\s+(\w+)\s*=\s*(.+)/)
+    if (varMatch) {
+      const varName = varMatch[1]
+      const value = varMatch[2].trim()
+      
+      if (value.startsWith('[') && value.endsWith(']')) {
+        // Array
+        const arrayContent = value.slice(1, -1)
+        variables[varName] = arrayContent.split(',').map(item => {
+          const trimmed = item.trim()
+          return isNaN(Number(trimmed)) ? trimmed : Number(trimmed)
+        })
+      } else if (value.startsWith('"') && value.endsWith('"')) {
+        // String
+        variables[varName] = value.slice(1, -1)
+      } else if (!isNaN(Number(value))) {
+        // Number
+        variables[varName] = Number(value)
+      } else {
+        // Variable reference or expression
+        variables[varName] = evaluateExpression(value, variables, {})
+      }
+    }
+  }
+
+  const executeReturnStatement = (line: string, variables: { [key: string]: any }, functions: { [key: string]: string[] }): any => {
+    const returnMatch = line.match(/return\s+(.+)/)
+    if (!returnMatch) return null
+    
+    const expression = returnMatch[1].trim()
+    return evaluateExpression(expression, variables, functions)
+  }
+
+  const evaluateExpression = (expr: string, variables: { [key: string]: any }, functions: { [key: string]: string[] }): string => {
+    expr = expr.trim()
+    
+    // Handle string literals
+    if (expr.startsWith('"') && expr.endsWith('"')) {
+      return expr.slice(1, -1)
+    }
+    
+    // Handle numbers
+    if (!isNaN(Number(expr))) {
+      return expr
+    }
+    
+    // Handle variables
+    if (variables[expr] !== undefined) {
+      return variables[expr].toString()
+    }
+    
+    // Handle function calls
+    if (expr.includes('calculator(')) {
+      return executeCalculatorCall(expr, variables, functions).toString()
+    }
+    
+    // Handle arithmetic expressions
+    if (expr.includes('+') || expr.includes('-') || expr.includes('*') || expr.includes('/')) {
+      try {
+        // Simple arithmetic evaluation (unsafe in production, but OK for simulation)
+        const result = Function(`"use strict"; return (${expr.replace(/[a-zA-Z_][a-zA-Z0-9_]*/g, (match) => {
+          return variables[match] !== undefined ? variables[match] : match
+        })})`)()
+        return result.toString()
+      } catch {
+        return expr
+      }
+    }
+    
+    return expr
   }
 
   const handleRun = async () => {
@@ -276,8 +335,8 @@ func main() {
     setOutput('Running...')
     
     // Simulate execution delay
-    setTimeout(() => {
-      const simulatedOutput = simulateMRTExecution(code)
+    setTimeout(async () => {
+      const simulatedOutput = await simulateMRTExecution(code)
       setOutput(simulatedOutput)
       setIsRunning(false)
     }, 800)

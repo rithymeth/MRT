@@ -210,9 +210,10 @@ class Interpreter:
     def __init__(self):
         self.globals = Environment()
         self.environment = self.globals
+        self.output = []  # Capture output for web playground
         
         # Add built-in functions
-        self.globals.define("print", lambda x: print(x))
+        self.globals.define("print", self.print_function)
         self.globals.define("len", MRTBuiltin.len)
         self.globals.define("push", MRTBuiltin.push)
         self.globals.define("pop", MRTBuiltin.pop)
@@ -230,17 +231,48 @@ class Interpreter:
         self.globals.define("endsWith", MRTBuiltin.endsWith)
         self.globals.define("contains", MRTBuiltin.contains)
 
+    def print_function(self, *args):
+        """Custom print function that captures output"""
+        output_str = " ".join(str(arg) for arg in args)
+        self.output.append(output_str)
+        print(output_str)  # Also print to console for local execution
+
+    def get_output(self):
+        """Get captured output for web playground"""
+        return "\n".join(self.output)
+
+    def clear_output(self):
+        """Clear captured output"""
+        self.output = []
+
     def interpret(self, statements: List[Stmt]):
         try:
-            print("Starting interpretation...")
+            self.clear_output()
+            # First pass: define all functions
             for statement in statements:
-                self.execute(statement)
-                if isinstance(statement, Function) and statement.name.lexeme == "main":
-                    # Call main function if found
-                    main_func = self.environment.get(statement.name)
-                    main_func.call(self, [])
+                if isinstance(statement, Function):
+                    self.execute(statement)
+            
+            # Second pass: look for and execute main function
+            main_func = None
+            try:
+                main_token = Token(TokenType.IDENTIFIER, "main", None, 1)
+                main_func = self.environment.get(main_token)
+            except RuntimeError:
+                pass
+            
+            if main_func and isinstance(main_func, MRTFunction):
+                main_func.call(self, [])
+            else:
+                # If no main function, execute all non-function statements
+                for statement in statements:
+                    if not isinstance(statement, Function):
+                        self.execute(statement)
+                        
         except Exception as e:
-            print(f"Runtime Error: {str(e)}")
+            error_msg = f"Runtime Error: {str(e)}"
+            self.output.append(error_msg)
+            print(error_msg)
 
     def execute(self, stmt: Stmt):
         match stmt:
@@ -258,7 +290,7 @@ class Interpreter:
                     self.execute(stmt.else_branch)
             case Print():
                 value = self.evaluate(stmt.expression)
-                print(str(value))
+                self.print_function(value)
             case Return():
                 value = None
                 if stmt.value:
@@ -320,15 +352,20 @@ class Interpreter:
 
                 match expr.operator.type:
                     case TokenType.PLUS:
+                        # Handle string concatenation
+                        if isinstance(left, str) or isinstance(right, str):
+                            return str(left) + str(right)
                         return float(left) + float(right)
                     case TokenType.MINUS:
                         return float(left) - float(right)
                     case TokenType.MULTIPLY:
                         return float(left) * float(right)
                     case TokenType.DIVIDE:
+                        if float(right) == 0:
+                            raise RuntimeError("Division by zero.")
                         return float(left) / float(right)
                     case TokenType.EQUALS:
-                        return left == right
+                        return self.is_equal(left, right)
                     case TokenType.GREATER:
                         return float(left) > float(right)
                     case TokenType.LESS:
@@ -357,6 +394,14 @@ class Interpreter:
                     return -float(right)
             case Variable():
                 return self.environment.get(expr.name)
+
+    def is_equal(self, a: Any, b: Any) -> bool:
+        """Check equality between two values"""
+        if a is None and b is None:
+            return True
+        if a is None:
+            return False
+        return a == b
 
     def is_truthy(self, obj: Any) -> bool:
         if obj is None:

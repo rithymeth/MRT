@@ -9,8 +9,11 @@ class TokenType(Enum):
     IF = auto()
     ELSE = auto()
     WHILE = auto()
+    FOR = auto()
     PRINT = auto()
     VAR = auto()
+    TRUE = auto()
+    FALSE = auto()
     
     # Literals
     IDENTIFIER = auto()
@@ -24,8 +27,11 @@ class TokenType(Enum):
     DIVIDE = auto()
     ASSIGN = auto()
     EQUALS = auto()
+    NOT_EQUALS = auto()
     GREATER = auto()
+    GREATER_EQUAL = auto()
     LESS = auto()
+    LESS_EQUAL = auto()
     
     # Delimiters
     LPAREN = auto()
@@ -61,8 +67,11 @@ class Lexer:
             "if": TokenType.IF,
             "else": TokenType.ELSE,
             "while": TokenType.WHILE,
+            "for": TokenType.FOR,
             "print": TokenType.PRINT,
             "var": TokenType.VAR,
+            "true": TokenType.TRUE,
+            "false": TokenType.FALSE,
         }
     
     def scan_tokens(self) -> List[Token]:
@@ -92,18 +101,34 @@ class Lexer:
                     # Comment goes until end of line
                     while self.peek() != '\n' and not self.is_at_end():
                         self.advance()
+                elif self.match('*'):
+                    # Multi-line comment
+                    self.block_comment()
                 else:
                     self.add_token(TokenType.DIVIDE)
             case ' ' | '\r' | '\t': pass  # Ignore whitespace
             case '\n': self.line += 1
             case '"': self.string()
-            case '>': self.add_token(TokenType.GREATER)
-            case '<': self.add_token(TokenType.LESS)
+            case '>': 
+                if self.match('='):
+                    self.add_token(TokenType.GREATER_EQUAL)
+                else:
+                    self.add_token(TokenType.GREATER)
+            case '<':
+                if self.match('='):
+                    self.add_token(TokenType.LESS_EQUAL)
+                else:
+                    self.add_token(TokenType.LESS)
             case '=':
                 if self.match('='):
                     self.add_token(TokenType.EQUALS)
                 else:
                     self.add_token(TokenType.ASSIGN)
+            case '!':
+                if self.match('='):
+                    self.add_token(TokenType.NOT_EQUALS)
+                else:
+                    raise Exception(f"Unexpected character '!' at line {self.line}")
             case _:
                 if self.is_digit(c):
                     self.number()
@@ -112,13 +137,35 @@ class Lexer:
                 else:
                     raise Exception(f"Unexpected character '{c}' at line {self.line}")
     
+    def block_comment(self):
+        """Handle multi-line comments /* ... */"""
+        while not self.is_at_end():
+            if self.peek() == '*' and self.peek_next() == '/':
+                # Consume the closing */
+                self.advance()  # consume *
+                self.advance()  # consume /
+                return
+            if self.peek() == '\n':
+                self.line += 1
+            self.advance()
+        
+        # If we reach here, the comment was not closed
+        raise Exception(f"Unterminated comment starting at line {self.line}")
+    
     def identifier(self):
         while self.is_alphanumeric(self.peek()):
             self.advance()
             
         text = self.source[self.start:self.current]
         token_type = self.keywords.get(text, TokenType.IDENTIFIER)
-        self.add_token(token_type)
+        
+        # Handle boolean literals
+        if token_type == TokenType.TRUE:
+            self.add_token(token_type, True)
+        elif token_type == TokenType.FALSE:
+            self.add_token(token_type, False)
+        else:
+            self.add_token(token_type)
     
     def number(self):
         while self.is_digit(self.peek()):
@@ -134,9 +181,6 @@ class Lexer:
         self.add_token(TokenType.NUMBER, value)
     
     def string(self):
-        # Skip the opening quote
-        self.advance()
-        
         # Find the closing quote
         start_line = self.line
         while self.peek() != '"' and not self.is_at_end():

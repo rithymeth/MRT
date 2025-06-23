@@ -10,10 +10,12 @@ class Parser:
     def parse(self) -> List[Stmt]:
         statements = []
         while not self.is_at_end():
-            statements.append(self.declaration())
+            stmt = self.declaration()
+            if stmt:
+                statements.append(stmt)
         return statements
 
-    def declaration(self) -> Stmt:
+    def declaration(self) -> Optional[Stmt]:
         try:
             if self.match(TokenType.FUNC):
                 return self.function("function")
@@ -44,6 +46,8 @@ class Parser:
         return Function(name, parameters, body)
 
     def statement(self) -> Stmt:
+        if self.match(TokenType.FOR):
+            return self.for_statement()
         if self.match(TokenType.IF):
             return self.if_statement()
         if self.match(TokenType.RETURN):
@@ -55,6 +59,45 @@ class Parser:
         if self.match(TokenType.PRINT):
             return self.print_statement()
         return self.expression_statement()
+
+    def for_statement(self) -> Stmt:
+        self.consume(TokenType.LPAREN, "Expect '(' after 'for'.")
+        
+        # Initializer
+        initializer = None
+        if self.match(TokenType.SEMICOLON):
+            initializer = None
+        elif self.match(TokenType.VAR):
+            initializer = self.var_declaration()
+        else:
+            initializer = self.expression_statement()
+        
+        # Condition
+        condition = None
+        if not self.check(TokenType.SEMICOLON):
+            condition = self.expression()
+        self.consume(TokenType.SEMICOLON, "Expect ';' after loop condition.")
+        
+        # Increment
+        increment = None
+        if not self.check(TokenType.RPAREN):
+            increment = self.expression()
+        self.consume(TokenType.RPAREN, "Expect ')' after for clauses.")
+        
+        body = self.statement()
+        
+        # Desugar for loop into while loop
+        if increment:
+            body = Block([body, Expression(increment)])
+        
+        if not condition:
+            condition = Literal(True)
+        body = While(condition, body)
+        
+        if initializer:
+            body = Block([initializer, body])
+        
+        return body
 
     def if_statement(self) -> If:
         self.consume(TokenType.LPAREN, "Expect '(' after 'if'.")
@@ -88,7 +131,9 @@ class Parser:
     def block(self) -> List[Stmt]:
         statements = []
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
-            statements.append(self.declaration())
+            stmt = self.declaration()
+            if stmt:
+                statements.append(stmt)
 
         self.consume(TokenType.RBRACE, "Expect '}' after block.")
         return statements
@@ -107,7 +152,7 @@ class Parser:
         return self.assignment()
 
     def assignment(self) -> Expr:
-        expr = self.equality()
+        expr = self.or_expression()
 
         if self.match(TokenType.ASSIGN):
             equals = self.previous()
@@ -116,15 +161,23 @@ class Parser:
             if isinstance(expr, Variable):
                 name = expr.name
                 return Assign(name, value)
+            elif isinstance(expr, ArrayAccess):
+                return ArrayAssign(expr.array, expr.index, value)
 
             self.error(equals, "Invalid assignment target.")
 
         return expr
 
+    def or_expression(self) -> Expr:
+        return self.and_expression()
+
+    def and_expression(self) -> Expr:
+        return self.equality()
+
     def equality(self) -> Expr:
         expr = self.comparison()
 
-        while self.match(TokenType.EQUALS):
+        while self.match(TokenType.NOT_EQUALS, TokenType.EQUALS):
             operator = self.previous()
             right = self.comparison()
             expr = Binary(expr, operator, right)
@@ -134,7 +187,7 @@ class Parser:
     def comparison(self) -> Expr:
         expr = self.term()
 
-        while self.match(TokenType.GREATER, TokenType.LESS):
+        while self.match(TokenType.GREATER, TokenType.GREATER_EQUAL, TokenType.LESS, TokenType.LESS_EQUAL):
             operator = self.previous()
             right = self.term()
             expr = Binary(expr, operator, right)
@@ -198,14 +251,13 @@ class Parser:
     def array_access(self, expr: Expr) -> Expr:
         index = self.expression()
         self.consume(TokenType.RBRACKET, "Expect ']' after array index.")
-        
-        if self.match(TokenType.ASSIGN):
-            value = self.expression()
-            return ArrayAssign(expr, index, value)
-            
         return ArrayAccess(expr, index)
 
     def primary(self) -> Expr:
+        if self.match(TokenType.TRUE):
+            return Literal(True)
+        if self.match(TokenType.FALSE):
+            return Literal(False)
         if self.match(TokenType.NUMBER, TokenType.STRING):
             return Literal(self.previous().literal)
         if self.match(TokenType.IDENTIFIER):
@@ -279,7 +331,7 @@ class Parser:
                 return
 
             match self.peek().type:
-                case TokenType.FUNC | TokenType.IF | TokenType.RETURN | TokenType.WHILE | TokenType.VAR:
+                case TokenType.FUNC | TokenType.IF | TokenType.RETURN | TokenType.WHILE | TokenType.VAR | TokenType.FOR:
                     return
 
             self.advance()
