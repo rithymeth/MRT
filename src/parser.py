@@ -1,11 +1,13 @@
 from typing import List, Optional
 from .lexer import Token, TokenType
 from .ast import *
+from .errors import MRTSyntaxError
 
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.current = 0
+        self.errors: List["ParseError"] = []
 
     def parse(self) -> List[Stmt]:
         statements = []
@@ -22,13 +24,14 @@ class Parser:
             if self.match(TokenType.VAR):
                 return self.var_declaration()
             return self.statement()
-        except ParseError:
+        except ParseError as e:
+            self.errors.append(e)
             self.synchronize()
             return None
 
     def function(self, kind: str) -> Function:
         name = self.consume(TokenType.IDENTIFIER, f"Expect {kind} name.")
-        
+
         self.consume(TokenType.LPAREN, f"Expect '(' after {kind} name.")
         parameters = []
         if not self.check(TokenType.RPAREN):
@@ -54,6 +57,10 @@ class Parser:
             return self.return_statement()
         if self.match(TokenType.WHILE):
             return self.while_statement()
+        if self.match(TokenType.BREAK):
+            return self.break_statement()
+        if self.match(TokenType.CONTINUE):
+            return self.continue_statement()
         if self.match(TokenType.LBRACE):
             return Block(self.block())
         if self.match(TokenType.PRINT):
@@ -62,7 +69,7 @@ class Parser:
 
     def for_statement(self) -> Stmt:
         self.consume(TokenType.LPAREN, "Expect '(' after 'for'.")
-        
+
         # Initializer
         initializer = None
         if self.match(TokenType.SEMICOLON):
@@ -71,33 +78,25 @@ class Parser:
             initializer = self.var_declaration()
         else:
             initializer = self.expression_statement()
-        
+
         # Condition
         condition = None
         if not self.check(TokenType.SEMICOLON):
             condition = self.expression()
         self.consume(TokenType.SEMICOLON, "Expect ';' after loop condition.")
-        
+
         # Increment
         increment = None
         if not self.check(TokenType.RPAREN):
             increment = self.expression()
         self.consume(TokenType.RPAREN, "Expect ')' after for clauses.")
-        
+
         body = self.statement()
-        
-        # Desugar for loop into while loop
-        if increment:
-            body = Block([body, Expression(increment)])
-        
-        if not condition:
-            condition = Literal(True)
-        body = While(condition, body)
-        
-        if initializer:
-            body = Block([initializer, body])
-        
-        return body
+
+        # Kept as a dedicated node (rather than desugared into `while`) so
+        # that `continue` inside the body still runs the increment step
+        # before re-checking the condition.
+        return For(initializer, condition, increment, body)
 
     def if_statement(self) -> If:
         self.consume(TokenType.LPAREN, "Expect '(' after 'if'.")
@@ -114,10 +113,17 @@ class Parser:
     def return_statement(self) -> Return:
         keyword = self.previous()
         value = None
-        if not self.check(TokenType.SEMICOLON):
+        # A bare `return` is only ambiguous with `return <expr>` when there is
+        # no semicolon; require the value to start on the same line (like
+        # JavaScript's ASI rule for `return`) so `return\nfoo()` is parsed as
+        # two statements rather than swallowing `foo()` as the return value.
+        if (not self.check(TokenType.SEMICOLON)
+                and not self.check(TokenType.RBRACE)
+                and not self.is_at_end()
+                and self.peek().line == keyword.line):
             value = self.expression()
 
-        self.consume(TokenType.SEMICOLON, "Expect ';' after return value.")
+        self.consume_statement_end("Expect ';' after return value.")
         return Return(keyword, value)
 
     def while_statement(self) -> While:
@@ -127,6 +133,16 @@ class Parser:
         body = self.statement()
 
         return While(condition, body)
+
+    def break_statement(self) -> Break:
+        keyword = self.previous()
+        self.consume_statement_end("Expect ';' after 'break'.")
+        return Break(keyword)
+
+    def continue_statement(self) -> Continue:
+        keyword = self.previous()
+        self.consume_statement_end("Expect ';' after 'continue'.")
+        return Continue(keyword)
 
     def block(self) -> List[Stmt]:
         statements = []
@@ -140,13 +156,23 @@ class Parser:
 
     def expression_statement(self) -> Stmt:
         expr = self.expression()
-        self.consume(TokenType.SEMICOLON, "Expect ';' after expression.")
+        self.consume_statement_end("Expect ';' after expression.")
         return Expression(expr)
 
     def print_statement(self) -> Print:
-        value = self.expression()
-        self.consume(TokenType.SEMICOLON, "Expect ';' after value.")
-        return Print(value)
+        # `print` takes a parenthesized, comma-separated argument list, e.g.
+        # `print("label:", value)` -- matching every example in the docs and
+        # the bundled .mrt programs, several of which rely on multiple
+        # arguments in a single print call.
+        self.consume(TokenType.LPAREN, "Expect '(' after 'print'.")
+        values = []
+        if not self.check(TokenType.RPAREN):
+            values.append(self.expression())
+            while self.match(TokenType.COMMA):
+                values.append(self.expression())
+        self.consume(TokenType.RPAREN, "Expect ')' after print arguments.")
+        self.consume_statement_end("Expect ';' after value.")
+        return Print(values)
 
     def expression(self) -> Expr:
         return self.assignment()
@@ -169,10 +195,24 @@ class Parser:
         return expr
 
     def or_expression(self) -> Expr:
-        return self.and_expression()
+        expr = self.and_expression()
+
+        while self.match(TokenType.OR):
+            operator = self.previous()
+            right = self.and_expression()
+            expr = Logical(expr, operator, right)
+
+        return expr
 
     def and_expression(self) -> Expr:
-        return self.equality()
+        expr = self.equality()
+
+        while self.match(TokenType.AND):
+            operator = self.previous()
+            right = self.equality()
+            expr = Logical(expr, operator, right)
+
+        return expr
 
     def equality(self) -> Expr:
         expr = self.comparison()
@@ -207,7 +247,7 @@ class Parser:
     def factor(self) -> Expr:
         expr = self.unary()
 
-        while self.match(TokenType.MULTIPLY, TokenType.DIVIDE):
+        while self.match(TokenType.MULTIPLY, TokenType.DIVIDE, TokenType.MODULO):
             operator = self.previous()
             right = self.unary()
             expr = Binary(expr, operator, right)
@@ -215,7 +255,7 @@ class Parser:
         return expr
 
     def unary(self) -> Expr:
-        if self.match(TokenType.MINUS):
+        if self.match(TokenType.MINUS, TokenType.NOT):
             operator = self.previous()
             right = self.unary()
             return Unary(operator, right)
@@ -285,7 +325,7 @@ class Parser:
         if self.match(TokenType.ASSIGN):
             initializer = self.expression()
 
-        self.consume(TokenType.SEMICOLON, "Expect ';' after variable declaration.")
+        self.consume_statement_end("Expect ';' after variable declaration.")
         return Var(name, initializer)
 
     def match(self, *types: TokenType) -> bool:
@@ -319,9 +359,17 @@ class Parser:
             return self.advance()
         raise self.error(self.peek(), message)
 
+    def consume_statement_end(self, message: str):
+        """Statement terminators are optional in MRT: consume a trailing
+        ';' if one is present, but don't error when it's missing."""
+        self.match(TokenType.SEMICOLON)
+
     def error(self, token: Token, message: str):
-        # TODO: Implement proper error handling
-        raise ParseError(f"Error at {token.lexeme}: {message}")
+        if token.type == TokenType.EOF:
+            where = "end of file"
+        else:
+            where = f"'{token.lexeme}'"
+        return ParseError(f"Error at {where}: {message}", token.line)
 
     def synchronize(self):
         self.advance()
@@ -336,5 +384,5 @@ class Parser:
 
             self.advance()
 
-class ParseError(Exception):
+class ParseError(MRTSyntaxError):
     pass

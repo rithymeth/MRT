@@ -40,3 +40,15 @@ build/
 
 # MRT specific
 *.mrt.compiled
+
+# Node / frontend playground
+node_modules/
+.vite/
+*.local
+npm-debug.log*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+

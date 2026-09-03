@@ -10,6 +10,8 @@
 7. [Arrays](#arrays)
 8. [String Operations](#string-operations)
 
+See also the [Operators](#operators) reference and [Break and Continue](#break-and-continue).
+
 ## Introduction
 
 MRT is a modern, expressive programming language designed for simplicity and readability. It combines intuitive syntax with powerful features, making it suitable for both beginners and experienced programmers.
@@ -27,6 +29,19 @@ MRT is a modern, expressive programming language designed for simplicity and rea
 ### Statements
 - Each statement can end with an optional semicolon
 - Blocks are defined using curly braces `{}`
+- Because semicolons are optional, avoid starting a line with `-`, `(` or
+  `[` right after a statement with no semicolon -- MRT doesn't treat
+  newlines as separators, so `foo()\n-bar()` parses as the single
+  expression `foo() - bar()`. Adding a `;` after `foo()` removes the
+  ambiguity (this is the same caveat JavaScript's ASI has).
+
+### Operators
+```mrt
++  -  *  /  %          // arithmetic (% is modulo/remainder)
+== !=  <  >  <=  >=    // comparison (numbers or strings)
+&&  ||  !               // logical AND / OR (short-circuiting) / NOT
+=                        // assignment
+```
 
 ## Data Types
 
@@ -89,6 +104,15 @@ while (condition) {
 ```mrt
 for (var i = 0; i < 10; i = i + 1) {
     // code
+}
+```
+
+### Break and Continue
+```mrt
+for (var i = 0; i < 10; i = i + 1) {
+    if (i == 3) { continue }  // skip this iteration, still runs i = i + 1
+    if (i == 6) { break }     // exit the loop entirely
+    print(i)
 }
 ```
 

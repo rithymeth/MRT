@@ -28,6 +28,12 @@ class Unary(Expr):
     right: Expr
 
 @dataclass
+class Logical(Expr):
+    left: Expr
+    operator: 'Token'
+    right: Expr
+
+@dataclass
 class Variable(Expr):
     name: 'Token'
 
@@ -85,12 +91,27 @@ class While(Stmt):
     body: Stmt
 
 @dataclass
+class For(Stmt):
+    initializer: Optional[Stmt]
+    condition: Optional[Expr]
+    increment: Optional[Expr]
+    body: Stmt
+
+@dataclass
+class Break(Stmt):
+    keyword: 'Token'
+
+@dataclass
+class Continue(Stmt):
+    keyword: 'Token'
+
+@dataclass
 class Block(Stmt):
     statements: List[Stmt]
 
 @dataclass
 class Print(Stmt):
-    expression: Expr
+    expressions: List[Expr]
 
 @dataclass
 class Var(Stmt):

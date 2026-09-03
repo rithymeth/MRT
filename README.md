@@ -73,6 +73,16 @@ func string_demo() {
 }
 ```
 
+## Operators
+
+```mrt
++  -  *  /  %          // arithmetic (% is modulo)
+== !=  <  >  <=  >=    // comparison
+&&  ||  !               // logical AND / OR / NOT
+```
+
+Loops also support `break` and `continue`.
+
 ## Built-in Functions
 
 ### Array Operations
@@ -121,8 +131,8 @@ To set up the development environment:
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd mrt
+git clone https://github.com/rithymeth/MRT.git
+cd MRT
 ```
 
 2. Install in development mode:
@@ -133,6 +143,11 @@ pip install -e .
 3. Install development dependencies:
 ```bash
 pip install -r requirements-dev.txt
+```
+
+4. Run the test suite:
+```bash
+pytest tests/
 ```
 
 ## Contributing

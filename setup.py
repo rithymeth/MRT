@@ -2,14 +2,17 @@ from setuptools import setup, find_packages
 
 setup(
     name="mrt-lang",
-    version="0.1.0",
+    version="0.2.0",
     description="MRT Programming Language - A modern, expressive programming language",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="MRT Team",
-    author_email="your.email@example.com",
-    url="https://github.com/yourusername/mrt",
-    packages=find_packages(),
+    url="https://github.com/rithymeth/MRT",
+    project_urls={
+        "Source": "https://github.com/rithymeth/MRT",
+        "Issues": "https://github.com/rithymeth/MRT/issues",
+    },
+    packages=find_packages(exclude=("tests", "tests.*")),
     install_requires=[],
     python_requires=">=3.10",  # We use match statements which require Python 3.10+
     entry_points={
