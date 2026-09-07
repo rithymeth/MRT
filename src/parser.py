@@ -3,6 +3,16 @@ from .lexer import Token, TokenType
 from .ast import *
 from .errors import MRTSyntaxError
 
+# Maps each compound-assignment token to the plain binary operator it
+# desugars into, e.g. `x += 1` becomes `x = x + 1`.
+COMPOUND_ASSIGN_OPS = {
+    TokenType.PLUS_ASSIGN: (TokenType.PLUS, '+'),
+    TokenType.MINUS_ASSIGN: (TokenType.MINUS, '-'),
+    TokenType.MULTIPLY_ASSIGN: (TokenType.MULTIPLY, '*'),
+    TokenType.DIVIDE_ASSIGN: (TokenType.DIVIDE, '/'),
+    TokenType.MODULO_ASSIGN: (TokenType.MODULO, '%'),
+}
+
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
@@ -183,16 +193,30 @@ class Parser:
         if self.match(TokenType.ASSIGN):
             equals = self.previous()
             value = self.assignment()
+            return self._make_assign_target(expr, equals, value)
 
-            if isinstance(expr, Variable):
-                name = expr.name
-                return Assign(name, value)
-            elif isinstance(expr, ArrayAccess):
-                return ArrayAssign(expr.array, expr.index, value)
-
-            self.error(equals, "Invalid assignment target.")
+        if self.match(*COMPOUND_ASSIGN_OPS.keys()):
+            op_token = self.previous()
+            base_type, base_lexeme = COMPOUND_ASSIGN_OPS[op_token.type]
+            value = self.assignment()
+            # Desugar `target += value` into `target = target + value`. For
+            # an ArrayAssign target this evaluates the array/index
+            # sub-expressions twice (once to read, once to write) -- fine
+            # for the simple variable/literal indices idiomatic MRT code
+            # uses, but not side-effect-safe for an index with a function
+            # call in it.
+            synthetic_operator = Token(base_type, base_lexeme, None, op_token.line)
+            combined = Binary(expr, synthetic_operator, value)
+            return self._make_assign_target(expr, op_token, combined)
 
         return expr
+
+    def _make_assign_target(self, target: Expr, error_token: Token, value: Expr) -> Expr:
+        if isinstance(target, Variable):
+            return Assign(target.name, value)
+        if isinstance(target, ArrayAccess):
+            return ArrayAssign(target.array, target.index, value)
+        raise self.error(error_token, "Invalid assignment target.")
 
     def or_expression(self) -> Expr:
         expr = self.and_expression()
@@ -270,6 +294,10 @@ class Parser:
                 expr = self.finish_call(expr)
             elif self.match(TokenType.LBRACKET):
                 expr = self.array_access(expr)
+            elif self.match(TokenType.DOT):
+                name = self.consume(TokenType.IDENTIFIER, "Expect property name after '.'.")
+                # `obj.name` is sugar for `obj["name"]`.
+                expr = ArrayAccess(expr, Literal(name.lexeme))
             else:
                 break
 
@@ -315,6 +343,18 @@ class Parser:
                         break
             self.consume(TokenType.RBRACKET, "Expect ']' after array elements.")
             return Array(elements)
+        if self.match(TokenType.LBRACE):
+            pairs: List[tuple] = []
+            if not self.check(TokenType.RBRACE):
+                while True:
+                    key = self.expression()
+                    self.consume(TokenType.COLON, "Expect ':' after dictionary key.")
+                    value = self.expression()
+                    pairs.append((key, value))
+                    if not self.match(TokenType.COMMA):
+                        break
+            self.consume(TokenType.RBRACE, "Expect '}' after dictionary literal.")
+            return DictLiteral(pairs)
 
         raise self.error(self.peek(), "Expect expression.")
 

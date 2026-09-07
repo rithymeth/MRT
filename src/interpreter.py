@@ -1,3 +1,4 @@
+import math
 from typing import Any, Dict, List, Optional
 from .ast import *
 from .lexer import Token, TokenType
@@ -18,7 +19,34 @@ def stringify(value: Any) -> str:
         return str(value)
     if isinstance(value, list):
         return "[" + ", ".join(stringify(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{stringify(k)}: {stringify(v)}" for k, v in value.items()) + "}"
     return str(value)
+
+
+def values_equal(a: Any, b: Any) -> bool:
+    """Structural equality between two MRT values (see Interpreter.is_equal
+    for why this can't just be Python's `==`: `True == 1` in Python, but not
+    in MRT, and that has to hold at every nesting level). Shared by the `==`
+    operator and by the indexOf()/has() built-ins, which need the same
+    "does this array contain a value equal to X" semantics."""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    if isinstance(a, bool) != isinstance(b, bool):
+        return False
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(values_equal(x, y) for x, y in zip(a, b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        if len(a) != len(b):
+            return False
+        return all(k in b and values_equal(v, b[k]) for k, v in a.items())
+    if isinstance(a, list) != isinstance(b, list):
+        return False
+    if isinstance(a, dict) != isinstance(b, dict):
+        return False
+    return a == b
 
 
 class MRTFunction:
@@ -84,11 +112,9 @@ class MRTBuiltin:
     def len(*args):
         if len(args) != 1:
             raise MRTRuntimeError("len() takes exactly one argument.")
-        if isinstance(args[0], str):
+        if isinstance(args[0], (str, list, dict)):
             return float(len(args[0]))
-        if not isinstance(args[0], list):
-            raise MRTRuntimeError("len() argument must be an array or string.")
-        return float(len(args[0]))
+        raise MRTRuntimeError("len() argument must be an array, object, or string.")
 
     @staticmethod
     def push(*args):
@@ -144,10 +170,10 @@ class MRTBuiltin:
         if not isinstance(args[0], list):
             raise MRTRuntimeError("First argument to indexOf() must be an array.")
 
-        try:
-            return float(args[0].index(args[1]))
-        except ValueError:
-            return -1.0
+        for i, item in enumerate(args[0]):
+            if values_equal(item, args[1]):
+                return float(i)
+        return -1.0
 
     @staticmethod
     def split(*args):
@@ -233,6 +259,155 @@ class MRTBuiltin:
             raise MRTRuntimeError("First argument to contains() must be a string.")
         return str(args[1]) in args[0]
 
+    # -- Type / conversion -------------------------------------------------
+
+    @staticmethod
+    def type_(*args):
+        if len(args) != 1:
+            raise MRTRuntimeError("type() takes exactly one argument.")
+        value = args[0]
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, (int, float)):
+            return "number"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, list):
+            return "array"
+        if isinstance(value, dict):
+            return "object"
+        if isinstance(value, MRTFunction) or callable(value):
+            return "function"
+        return "unknown"
+
+    @staticmethod
+    def toNumber(*args):
+        if len(args) != 1:
+            raise MRTRuntimeError("toNumber() takes exactly one argument.")
+        value = args[0]
+        if isinstance(value, bool):
+            return 1.0 if value else 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except ValueError:
+                raise MRTRuntimeError(f"Cannot convert '{value}' to a number.")
+        raise MRTRuntimeError("toNumber() argument must be a string, number, or boolean.")
+
+    @staticmethod
+    def toString(*args):
+        if len(args) != 1:
+            raise MRTRuntimeError("toString() takes exactly one argument.")
+        return stringify(args[0])
+
+    # -- Math ----------------------------------------------------------------
+
+    @staticmethod
+    def _num(value, who: str) -> float:
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise MRTRuntimeError(f"{who}() argument must be a number.")
+        return float(value)
+
+    @staticmethod
+    def abs_(*args):
+        if len(args) != 1:
+            raise MRTRuntimeError("abs() takes exactly one argument.")
+        return abs(MRTBuiltin._num(args[0], "abs"))
+
+    @staticmethod
+    def min_(*args):
+        values = args[0] if len(args) == 1 and isinstance(args[0], list) else list(args)
+        if not values:
+            raise MRTRuntimeError("min() requires at least one argument.")
+        return min(MRTBuiltin._num(v, "min") for v in values)
+
+    @staticmethod
+    def max_(*args):
+        values = args[0] if len(args) == 1 and isinstance(args[0], list) else list(args)
+        if not values:
+            raise MRTRuntimeError("max() requires at least one argument.")
+        return max(MRTBuiltin._num(v, "max") for v in values)
+
+    @staticmethod
+    def round_(*args):
+        if len(args) not in (1, 2):
+            raise MRTRuntimeError("round() takes 1 or 2 arguments.")
+        value = MRTBuiltin._num(args[0], "round")
+        digits = int(MRTBuiltin._num(args[1], "round")) if len(args) == 2 else 0
+        return float(round(value, digits))
+
+    @staticmethod
+    def floor(*args):
+        if len(args) != 1:
+            raise MRTRuntimeError("floor() takes exactly one argument.")
+        return float(math.floor(MRTBuiltin._num(args[0], "floor")))
+
+    @staticmethod
+    def ceil(*args):
+        if len(args) != 1:
+            raise MRTRuntimeError("ceil() takes exactly one argument.")
+        return float(math.ceil(MRTBuiltin._num(args[0], "ceil")))
+
+    @staticmethod
+    def sqrt(*args):
+        if len(args) != 1:
+            raise MRTRuntimeError("sqrt() takes exactly one argument.")
+        value = MRTBuiltin._num(args[0], "sqrt")
+        if value < 0:
+            raise MRTRuntimeError("sqrt() argument must not be negative.")
+        return math.sqrt(value)
+
+    @staticmethod
+    def pow_(*args):
+        if len(args) != 2:
+            raise MRTRuntimeError("pow() takes exactly 2 arguments.")
+        return MRTBuiltin._num(args[0], "pow") ** MRTBuiltin._num(args[1], "pow")
+
+    # -- Objects (dicts) -----------------------------------------------------
+
+    @staticmethod
+    def keys(*args):
+        if len(args) != 1 or not isinstance(args[0], dict):
+            raise MRTRuntimeError("keys() takes exactly one object argument.")
+        return list(args[0].keys())
+
+    @staticmethod
+    def values(*args):
+        if len(args) != 1 or not isinstance(args[0], dict):
+            raise MRTRuntimeError("values() takes exactly one object argument.")
+        return list(args[0].values())
+
+    @staticmethod
+    def has(*args):
+        if len(args) != 2:
+            raise MRTRuntimeError("has() takes exactly 2 arguments.")
+        container, key = args
+        if isinstance(container, dict):
+            return key in container
+        if isinstance(container, list):
+            return any(values_equal(item, key) for item in container)
+        raise MRTRuntimeError("First argument to has() must be an array or object.")
+
+    @staticmethod
+    def get(*args):
+        if len(args) not in (2, 3):
+            raise MRTRuntimeError("get() takes 2 or 3 arguments.")
+        container, key = args[0], args[1]
+        default = args[2] if len(args) == 3 else None
+        if isinstance(container, dict):
+            return container.get(key, default)
+        if isinstance(container, list):
+            if isinstance(key, (int, float)) and not isinstance(key, bool):
+                i = int(key)
+                if 0 <= i < len(container):
+                    return container[i]
+            return default
+        raise MRTRuntimeError("First argument to get() must be an array or object.")
+
 class Interpreter:
     def __init__(self):
         self.globals = Environment()
@@ -257,6 +432,24 @@ class Interpreter:
         self.globals.define("startsWith", MRTBuiltin.startsWith)
         self.globals.define("endsWith", MRTBuiltin.endsWith)
         self.globals.define("contains", MRTBuiltin.contains)
+        # Type / conversion
+        self.globals.define("type", MRTBuiltin.type_)
+        self.globals.define("toNumber", MRTBuiltin.toNumber)
+        self.globals.define("toString", MRTBuiltin.toString)
+        # Math
+        self.globals.define("abs", MRTBuiltin.abs_)
+        self.globals.define("min", MRTBuiltin.min_)
+        self.globals.define("max", MRTBuiltin.max_)
+        self.globals.define("round", MRTBuiltin.round_)
+        self.globals.define("floor", MRTBuiltin.floor)
+        self.globals.define("ceil", MRTBuiltin.ceil)
+        self.globals.define("sqrt", MRTBuiltin.sqrt)
+        self.globals.define("pow", MRTBuiltin.pow_)
+        # Objects (dicts)
+        self.globals.define("keys", MRTBuiltin.keys)
+        self.globals.define("values", MRTBuiltin.values)
+        self.globals.define("has", MRTBuiltin.has)
+        self.globals.define("get", MRTBuiltin.get)
 
     def print_function(self, *args):
         """Custom print function that captures output"""
@@ -383,35 +576,22 @@ class Interpreter:
             case Array():
                 return [self.evaluate(element) for element in expr.elements]
             case ArrayAccess():
-                array = self.evaluate(expr.array)
-                index = self.evaluate(expr.index)
-                if not isinstance(array, list):
-                    raise MRTRuntimeError("Can only index into arrays.")
-                if not isinstance(index, (int, float)) or isinstance(index, bool):
-                    raise MRTRuntimeError("Array index must be a number.")
-                index = int(index)
-                if index < 0 or index >= len(array):
-                    raise MRTRuntimeError(f"Array index {index} out of bounds for array of length {len(array)}.")
-                return array[index]
+                return self.evaluate_index_get(expr)
             case ArrayAssign():
-                array = self.evaluate(expr.array)
-                index = self.evaluate(expr.index)
-                if not isinstance(array, list):
-                    raise MRTRuntimeError("Can only index into arrays.")
-                if not isinstance(index, (int, float)) or isinstance(index, bool):
-                    raise MRTRuntimeError("Array index must be a number.")
-                index = int(index)
-                if index < 0 or index >= len(array):
-                    raise MRTRuntimeError(f"Array index {index} out of bounds for array of length {len(array)}.")
-                value = self.evaluate(expr.value)
-                array[index] = value
-                return value
+                return self.evaluate_index_set(expr)
             case Assign():
                 value = self.evaluate(expr.value)
                 self.environment.assign(expr.name, value)
                 return value
             case Binary():
                 return self.evaluate_binary(expr)
+            case DictLiteral():
+                result: Dict[Any, Any] = {}
+                for key_expr, value_expr in expr.pairs:
+                    key = self.evaluate(key_expr)
+                    self._check_hashable_key(key)
+                    result[key] = self.evaluate(value_expr)
+                return result
             case Call():
                 callee = self.evaluate(expr.callee)
                 arguments = [self.evaluate(arg) for arg in expr.arguments]
@@ -456,6 +636,58 @@ class Interpreter:
                     return not self.is_truthy(right)
             case Variable():
                 return self.environment.get(expr.name)
+
+    def evaluate_index_get(self, expr: ArrayAccess) -> Any:
+        target = self.evaluate(expr.array)
+        index = self.evaluate(expr.index)
+
+        if isinstance(target, dict):
+            self._check_hashable_key(index)
+            if index not in target:
+                raise MRTRuntimeError(f"Key {stringify(index)!r} not found in object.")
+            return target[index]
+
+        if isinstance(target, list):
+            i = self._require_array_index(index, len(target))
+            return target[i]
+
+        if isinstance(target, str):
+            i = self._require_array_index(index, len(target))
+            return target[i]
+
+        raise MRTRuntimeError("Can only index into arrays, objects, or strings.")
+
+    def evaluate_index_set(self, expr: ArrayAssign) -> Any:
+        target = self.evaluate(expr.array)
+        index = self.evaluate(expr.index)
+        value = self.evaluate(expr.value)
+
+        if isinstance(target, dict):
+            self._check_hashable_key(index)
+            target[index] = value
+            return value
+
+        if isinstance(target, list):
+            i = self._require_array_index(index, len(target))
+            target[i] = value
+            return value
+
+        if isinstance(target, str):
+            raise MRTRuntimeError("Strings are immutable; cannot assign to a character index.")
+
+        raise MRTRuntimeError("Can only assign into arrays or objects.")
+
+    def _require_array_index(self, index: Any, length: int) -> int:
+        if not isinstance(index, (int, float)) or isinstance(index, bool):
+            raise MRTRuntimeError("Array index must be a number.")
+        i = int(index)
+        if i < 0 or i >= length:
+            raise MRTRuntimeError(f"Array index {i} out of bounds for array of length {length}.")
+        return i
+
+    def _check_hashable_key(self, key: Any):
+        if isinstance(key, (list, dict)):
+            raise MRTRuntimeError("Object keys must be numbers, strings, or booleans (not arrays or objects).")
 
     def evaluate_binary(self, expr: Binary) -> Any:
         left = self.evaluate(expr.left)
@@ -519,14 +751,7 @@ class Interpreter:
             "Comparison operators require two numbers or two strings.", line)
 
     def is_equal(self, a: Any, b: Any) -> bool:
-        """Check equality between two values"""
-        if a is None and b is None:
-            return True
-        if a is None or b is None:
-            return False
-        if isinstance(a, bool) != isinstance(b, bool):
-            return False
-        return a == b
+        return values_equal(a, b)
 
     def is_truthy(self, obj: Any) -> bool:
         if obj is None:

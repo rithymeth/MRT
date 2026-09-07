@@ -75,6 +75,29 @@ func array_demo() {
 }
 ```
 
+## Objects
+
+### Object Manipulation
+```mrt
+func object_demo() {
+    var person = {"name": "Ada Lovelace", "age": 36};
+
+    print("Name:", person.name);
+    print("Age:", person.age);
+
+    person.age += 1;
+    print("After a birthday:", person.age);
+
+    person["job"] = "Mathematician";
+    print("Keys:", keys(person));
+    print("Has 'job'?", has(person, "job"));
+    print("Get 'salary' (default):", get(person, "salary", "unknown"));
+}
+```
+
+See `examples/objects.mrt` for the full runnable version, which also
+covers `type()`, the math built-ins, and compound assignment together.
+
 ## String Operations
 
 ### String Manipulation

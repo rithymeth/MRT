@@ -42,3 +42,36 @@ jobs:
             echo "--- $f ---"
             mrt "$f"
           done
+
+  playground:
+    name: Playground (build, lint, and check parity with the Python interpreter)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the Python package (used by the parity check below)
+        run: pip install -e .
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check the Playground's TS interpreter matches the Python interpreter
+        run: npm run check:parity

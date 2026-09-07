@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Any, Optional
+from typing import List, Any, Optional, Tuple
 
 # Base class for all AST nodes
 class Expr:
@@ -54,14 +54,32 @@ class Array(Expr):
 
 @dataclass
 class ArrayAccess(Expr):
+    """Indexing get: `target[index]`, and also `target.name` (desugared to
+    `target["name"]` by the parser). `target` may evaluate to an array, a
+    dict, or (read-only) a string."""
     array: Expr
     index: Expr
 
 @dataclass
 class ArrayAssign(Expr):
+    """Indexing set: `target[index] = value`, and also `target.name = value`.
+    `target` may evaluate to an array or a dict."""
     array: Expr
     index: Expr
     value: Expr
+
+@dataclass
+class DictLiteral(Expr):
+    """A `{key: value, ...}` object literal. Keys are arbitrary expressions
+    (evaluated at construction time), not bareword shorthand -- so string
+    keys must be quoted, e.g. `{"name": "Ada"}`.
+
+    Named `DictLiteral` rather than `Dict` deliberately: interpreter.py
+    already imports `typing.Dict` for type hints, and `from .ast import *`
+    would otherwise silently shadow it (the same class of bug that used to
+    make every `return` statement in this interpreter a no-op -- see
+    interpreter.py's history)."""
+    pairs: List[Tuple[Expr, Expr]]
 
 # Statement nodes
 @dataclass

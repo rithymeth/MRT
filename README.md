@@ -73,12 +73,23 @@ func string_demo() {
 }
 ```
 
+### Objects
+```mrt
+func object_demo() {
+    var person = {"name": "Ada", "age": 36}
+    print(person.name)
+    person.age += 1
+    print("Keys:", keys(person))
+}
+```
+
 ## Operators
 
 ```mrt
-+  -  *  /  %          // arithmetic (% is modulo)
-== !=  <  >  <=  >=    // comparison
-&&  ||  !               // logical AND / OR / NOT
++  -  *  /  %              // arithmetic (% is modulo)
+== !=  <  >  <=  >=        // comparison
+&&  ||  !                   // logical AND / OR / NOT
+=  += -= *= /= %=           // assignment and compound assignment
 ```
 
 Loops also support `break` and `continue`.
@@ -92,6 +103,17 @@ Loops also support `break` and `continue`.
 - `slice(array, start, end)`: Returns array subset
 - `join(array, separator)`: Joins elements into string
 - `indexOf(array, element)`: Finds element index
+- `has(array, element)` / `get(array, index, default)`: Membership check / safe read
+
+### Object Operations
+- `keys(obj)` / `values(obj)`: Arrays of an object's keys/values
+- `has(obj, key)` / `get(obj, key, default)`: Membership check / safe read
+- `len(obj)`: Number of keys
+
+### Type and Math
+- `type(value)`: `"number" | "string" | "boolean" | "array" | "object" | "null" | "function"`
+- `toNumber(value)` / `toString(value)`: Convert to/from a string
+- `abs`, `min`, `max`, `round`, `floor`, `ceil`, `sqrt`, `pow`
 
 ### String Operations
 - `split(str, separator)`: Splits string into array
@@ -121,7 +143,8 @@ Loops also support `break` and `continue`.
 ## Documentation
 
 For more detailed information, check out:
-- [Language Guide](docs/language_guide.md): Complete language reference
+- [Language Specification](docs/LANGUAGE_SPEC.md): Formal grammar, types, and semantics -- the precise reference
+- [Language Guide](docs/language_guide.md): Friendlier, example-driven reference
 - [Examples](docs/examples.md): Example programs and tutorials
 - [Getting Started](docs/getting_started.md): Installation and quick start
 

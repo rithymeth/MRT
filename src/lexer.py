@@ -30,6 +30,11 @@ class TokenType(Enum):
     MULTIPLY = auto()
     DIVIDE = auto()
     MODULO = auto()
+    PLUS_ASSIGN = auto()
+    MINUS_ASSIGN = auto()
+    MULTIPLY_ASSIGN = auto()
+    DIVIDE_ASSIGN = auto()
+    MODULO_ASSIGN = auto()
     ASSIGN = auto()
     EQUALS = auto()
     NOT_EQUALS = auto()
@@ -50,6 +55,8 @@ class TokenType(Enum):
     RBRACKET = auto()
     COMMA = auto()
     SEMICOLON = auto()
+    DOT = auto()
+    COLON = auto()
 
     # Special
     EOF = auto()
@@ -103,10 +110,12 @@ class Lexer:
             case ']': self.add_token(TokenType.RBRACKET)
             case ',': self.add_token(TokenType.COMMA)
             case ';': self.add_token(TokenType.SEMICOLON)
-            case '+': self.add_token(TokenType.PLUS)
-            case '-': self.add_token(TokenType.MINUS)
-            case '*': self.add_token(TokenType.MULTIPLY)
-            case '%': self.add_token(TokenType.MODULO)
+            case '.': self.add_token(TokenType.DOT)
+            case ':': self.add_token(TokenType.COLON)
+            case '+': self.add_token(TokenType.PLUS_ASSIGN if self.match('=') else TokenType.PLUS)
+            case '-': self.add_token(TokenType.MINUS_ASSIGN if self.match('=') else TokenType.MINUS)
+            case '*': self.add_token(TokenType.MULTIPLY_ASSIGN if self.match('=') else TokenType.MULTIPLY)
+            case '%': self.add_token(TokenType.MODULO_ASSIGN if self.match('=') else TokenType.MODULO)
             case '/':
                 if self.match('/'):
                     # Comment goes until end of line
@@ -115,6 +124,8 @@ class Lexer:
                 elif self.match('*'):
                     # Multi-line comment
                     self.block_comment()
+                elif self.match('='):
+                    self.add_token(TokenType.DIVIDE_ASSIGN)
                 else:
                     self.add_token(TokenType.DIVIDE)
             case ' ' | '\r' | '\t': pass  # Ignore whitespace
