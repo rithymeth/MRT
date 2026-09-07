@@ -24,6 +24,10 @@ class TokenType(Enum):
     FINALLY = auto()
     THROW = auto()
     IN = auto()
+    IMPORT = auto()
+    EXPORT = auto()
+    FROM = auto()
+    AS = auto()
 
     # Literals
     IDENTIFIER = auto()
@@ -66,6 +70,7 @@ class TokenType(Enum):
     COMMA = auto()
     SEMICOLON = auto()
     DOT = auto()
+    ELLIPSIS = auto()
     COLON = auto()
 
     # Special
@@ -105,6 +110,10 @@ class Lexer:
             "finally": TokenType.FINALLY,
             "throw": TokenType.THROW,
             "in": TokenType.IN,
+            "import": TokenType.IMPORT,
+            "export": TokenType.EXPORT,
+            "from": TokenType.FROM,
+            "as": TokenType.AS,
         }
 
     def scan_tokens(self) -> List[Token]:
@@ -126,7 +135,15 @@ class Lexer:
             case ']': self.add_token(TokenType.RBRACKET)
             case ',': self.add_token(TokenType.COMMA)
             case ';': self.add_token(TokenType.SEMICOLON)
-            case '.': self.add_token(TokenType.DOT)
+            case '.':
+                # `...` is the rest/spread marker; a single '.' is property
+                # access. Two dots is not a token, so `a..b` stays an error.
+                if self.peek() == '.' and self.peek_next() == '.':
+                    self.advance()
+                    self.advance()
+                    self.add_token(TokenType.ELLIPSIS)
+                else:
+                    self.add_token(TokenType.DOT)
             case ':': self.add_token(TokenType.COLON)
             case '+': self.add_token(TokenType.PLUS_ASSIGN if self.match('=') else TokenType.PLUS)
             case '-': self.add_token(TokenType.MINUS_ASSIGN if self.match('=') else TokenType.MINUS)

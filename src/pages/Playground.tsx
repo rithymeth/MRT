@@ -3,6 +3,22 @@ import Editor from '@monaco-editor/react'
 import { Play, Download, Share, RotateCcw, Settings } from 'lucide-react'
 import { runMRT } from '../lib/mrtInterpreter'
 
+// The Playground edits a single buffer, so there is no file tree for
+// `import` to resolve against. Instead it ships a few built-in modules,
+// keyed by the exact specifier a program writes. They are ordinary MRT
+// source, run by the same interpreter as everything else -- this is the
+// seam the interpreter's `resolveModule` option exists for, and on the
+// command line the identical programs resolve against real files.
+const PLAYGROUND_MODULES: Record<string, string> = {
+  './stats.mrt': "// A small statistics module, importable from the Playground.\n\nexport func mean(nums) {\n    if (len(nums) == 0) { throw \"mean() needs at least one number\"; }\n    return sum(nums) / len(nums);\n}\n\nexport func median(nums) {\n    if (len(nums) == 0) { throw \"median() needs at least one number\"; }\n    var ordered = sort(nums);\n    var mid = floor(len(ordered) / 2);\n    if (len(ordered) % 2 == 1) { return ordered[mid]; }\n    return (ordered[mid - 1] + ordered[mid]) / 2;\n}\n\nexport func spread(nums) {\n    var ordered = sort(nums);\n    return [ordered[0], ordered[len(ordered) - 1]];\n}\n\nexport func describe(nums, label = \"data\") {\n    var bounds = spread(nums);\n    return \"${label}: n=${len(nums)} mean=${round(mean(nums), 2)} median=${median(nums)} range=${bounds[0]}..${bounds[1]}\";\n}\n",
+  './text.mrt': "// Small text helpers, importable from the Playground.\n\nexport func titleCase(s) {\n    var out = [];\n    for (word in split(s, \" \")) {\n        if (len(word) == 0) { continue; }\n        push(out, toUpper(substring(word, 0, 1)) + toLower(substring(word, 1, len(word))));\n    }\n    return join(out, \" \");\n}\n\nexport func wordCount(s) {\n    return len(filter(split(trim(s), \" \"), func(w) { return len(w) > 0; }));\n}\n\nexport func truncate(s, width = 20, ellipsis = \"...\") {\n    if (len(s) <= width) { return s; }\n    return substring(s, 0, width - len(ellipsis)) + ellipsis;\n}\n",
+}
+
+const resolvePlaygroundModule = (specifier: string) => {
+  const source = PLAYGROUND_MODULES[specifier]
+  return source === undefined ? null : { path: specifier, source }
+}
+
 const Playground: React.FC = () => {
   const [code, setCode] = React.useState(`// Welcome to the MRT Playground!
 // Try editing this code and click "Run" to see the output
@@ -190,6 +206,29 @@ func safeDivide(a, b) {
 }`
     },
     {
+      name: 'Modules',
+      code: `// The Playground ships two built-in modules you can import.
+// Run the same program from the command line and the imports
+// resolve against real files instead -- the semantics are identical.
+import { mean, median, describe } from "./stats.mrt";
+import { titleCase, wordCount, truncate } from "./text.mrt";
+
+func main() {
+    var scores = [88, 92, 79, 95, 84, 92];
+    print("mean:  ", round(mean(scores), 2));
+    print("median:", median(scores));
+    print(describe(scores, "scores"));
+
+    var phrase = "the quick brown fox jumps";
+    print(titleCase(phrase));
+    print("words:", wordCount(phrase));
+    print(truncate(phrase, 15));
+
+    // Modules throw like any other code, and you can catch it.
+    try { mean([]); } catch (e) { print("caught:", e); }
+}`
+    },
+    {
       name: 'Modern Syntax',
       code: `func main() {
     // String interpolation and bareword object keys.
@@ -228,7 +267,10 @@ func safeDivide(a, b) {
     // too, so the button feedback doesn't feel like it did nothing.
     setTimeout(() => {
       try {
-        const { output, errors } = runMRT(code)
+        const { output, errors } = runMRT(code, {
+          path: './main.mrt',
+          resolveModule: resolvePlaygroundModule,
+        })
         if (errors.length > 0) {
           setOutput(errors.join('\n'))
         } else {

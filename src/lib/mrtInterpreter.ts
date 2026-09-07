@@ -16,6 +16,7 @@ type TokenType =
   | 'FUNC' | 'RETURN' | 'IF' | 'ELSE' | 'WHILE' | 'FOR' | 'PRINT' | 'VAR'
   | 'TRUE' | 'FALSE' | 'BREAK' | 'CONTINUE'
   | 'NULL' | 'TRY' | 'CATCH' | 'FINALLY' | 'THROW' | 'IN'
+  | 'IMPORT' | 'EXPORT' | 'FROM' | 'AS'
   | 'IDENTIFIER' | 'NUMBER' | 'STRING' | 'TEMPLATE'
   | 'PLUS' | 'MINUS' | 'MULTIPLY' | 'DIVIDE' | 'MODULO'
   | 'PLUS_ASSIGN' | 'MINUS_ASSIGN' | 'MULTIPLY_ASSIGN' | 'DIVIDE_ASSIGN' | 'MODULO_ASSIGN'
@@ -23,7 +24,7 @@ type TokenType =
   | 'GREATER' | 'GREATER_EQUAL' | 'LESS' | 'LESS_EQUAL'
   | 'AND' | 'OR' | 'NOT'
   | 'LPAREN' | 'RPAREN' | 'LBRACE' | 'RBRACE' | 'LBRACKET' | 'RBRACKET'
-  | 'COMMA' | 'SEMICOLON' | 'DOT' | 'COLON' | 'EOF'
+  | 'COMMA' | 'SEMICOLON' | 'DOT' | 'ELLIPSIS' | 'COLON' | 'EOF'
 
 export interface Token {
   type: TokenType
@@ -32,16 +33,34 @@ export interface Token {
   line: number
 }
 
+/** The closed set of error kinds a `catch` guard can branch on. Mirrors
+ * ERROR_KINDS in src/errors.py; the two must stay in step. */
+export type ErrorKind =
+  | 'TypeError'        // a value of the wrong type
+  | 'ArityError'       // wrong number of arguments
+  | 'IndexError'       // index outside an array/string, or a non-numeric index
+  | 'KeyError'         // object key that isn't present
+  | 'NameError'        // undefined variable
+  | 'ValueError'       // right type, unusable value (sqrt(-1), a zero step)
+  | 'ArithmeticError'  // division or modulo by zero
+  | 'RuntimeError'     // anything not covered above
+
 export class MRTError extends Error {
   line?: number
   /** The message without the " [line N]" suffix `message` carries. `catch`
    * hands this to the program, so that a caught error's `.message` reads the
    * same here as in the Python interpreter (which stores the two apart). */
   rawMessage: string
-  constructor(message: string, line?: number) {
+  kind: ErrorKind
+  /** The MRT-level call stack, innermost first. Filled in as the error
+   * propagates outward through MRTFunction.call rather than captured at the
+   * raise site, because only the callers know their own names. */
+  mrtStack: string[] = []
+  constructor(message: string, line?: number, kind: ErrorKind = 'RuntimeError') {
     super(line !== undefined ? `${message} [line ${line}]` : message)
     this.line = line
     this.rawMessage = message
+    this.kind = kind
   }
 }
 
@@ -59,6 +78,7 @@ const KEYWORDS: Map<string, TokenType> = new Map([
   ['break', 'BREAK'], ['continue', 'CONTINUE'],
   ['null', 'NULL'], ['try', 'TRY'], ['catch', 'CATCH'], ['finally', 'FINALLY'],
   ['throw', 'THROW'], ['in', 'IN'],
+  ['import', 'IMPORT'], ['export', 'EXPORT'], ['from', 'FROM'], ['as', 'AS'],
 ])
 
 // `\$` escapes an interpolation, so "\${x}" is the literal text "${x}".
@@ -95,7 +115,16 @@ class Lexer {
       case ']': this.addToken('RBRACKET'); break
       case ',': this.addToken('COMMA'); break
       case ';': this.addToken('SEMICOLON'); break
-      case '.': this.addToken('DOT'); break
+      case '.':
+        // `...` is the rest/spread marker; a single '.' is property access.
+        // Two dots is not a token, so `a..b` stays an error.
+        if (this.peek() === '.' && this.peekNext() === '.') {
+          this.advance(); this.advance()
+          this.addToken('ELLIPSIS')
+        } else {
+          this.addToken('DOT')
+        }
+        break
       case ':': this.addToken('COLON'); break
       case '+': this.addToken(this.match('=') ? 'PLUS_ASSIGN' : 'PLUS'); break
       case '-': this.addToken(this.match('=') ? 'MINUS_ASSIGN' : 'MINUS'); break
@@ -121,16 +150,16 @@ class Lexer {
       case '!': this.addToken(this.match('=') ? 'NOT_EQUALS' : 'NOT'); break
       case '&':
         if (this.match('&')) this.addToken('AND')
-        else throw new MRTError("Unexpected character '&' (did you mean '&&'?)", this.line)
+        else throw new MRTError("Unexpected character '&' (did you mean '&&'?)", this.line, 'RuntimeError')
         break
       case '|':
         if (this.match('|')) this.addToken('OR')
-        else throw new MRTError("Unexpected character '|' (did you mean '||'?)", this.line)
+        else throw new MRTError("Unexpected character '|' (did you mean '||'?)", this.line, 'RuntimeError')
         break
       default:
         if (this.isDigit(c)) this.number()
         else if (this.isAlpha(c)) this.identifier()
-        else throw new MRTError(`Unexpected character '${c}'`, this.line)
+        else throw new MRTError(`Unexpected character '${c}'`, this.line, 'RuntimeError')
     }
   }
 
@@ -143,7 +172,7 @@ class Lexer {
       if (this.peek() === '\n') this.line++
       this.advance()
     }
-    throw new MRTError('Unterminated comment', this.line)
+    throw new MRTError('Unterminated comment', this.line, 'RuntimeError')
   }
 
   private identifier() {
@@ -194,7 +223,7 @@ class Lexer {
         chars.push(this.advance())
       }
     }
-    if (this.isAtEnd()) throw new MRTError('Unterminated string', startLine)
+    if (this.isAtEnd()) throw new MRTError('Unterminated string', startLine, 'RuntimeError')
     this.advance()
 
     if (parts.length === 0) { this.addToken('STRING', chars.join('')); return }
@@ -220,7 +249,7 @@ class Lexer {
           if (this.peek() === '\\') this.advance()
           this.advance()
         }
-        if (this.isAtEnd()) throw new MRTError('Unterminated string', stringStartLine)
+        if (this.isAtEnd()) throw new MRTError('Unterminated string', stringStartLine, 'RuntimeError')
         this.advance()
         continue
       }
@@ -236,7 +265,7 @@ class Lexer {
       this.advance()
     }
 
-    throw new MRTError("Unterminated interpolation: expected '}'", exprLine)
+    throw new MRTError("Unterminated interpolation: expected '}'", exprLine, 'RuntimeError')
   }
 
   private match(expected: string): boolean {
@@ -262,6 +291,12 @@ class Lexer {
 // AST
 // ---------------------------------------------------------------------------
 
+/** One declared parameter. `default` is evaluated at call time in the
+ * callee's own scope, so a later default may refer to an earlier parameter
+ * (`func f(a, b = a * 2)`). `rest` marks a `...name` parameter, which
+ * collects any remaining arguments into an array and must come last. */
+interface Param { name: Token; default: Expr | null; rest: boolean }
+
 type Expr =
   | { kind: 'Binary'; left: Expr; operator: Token; right: Expr }
   | { kind: 'Logical'; left: Expr; operator: Token; right: Expr }
@@ -275,12 +310,18 @@ type Expr =
   | { kind: 'ArrayAccess'; array: Expr; index: Expr }
   | { kind: 'ArrayAssign'; array: Expr; index: Expr; value: Expr }
   | { kind: 'DictLiteral'; pairs: [Expr, Expr][] }
-  | { kind: 'FunctionExpr'; params: Token[]; body: Stmt[]; name: Token | null }
+  | { kind: 'FunctionExpr'; params: Param[]; body: Stmt[]; name: Token | null }
+  | { kind: 'Spread'; value: Expr; token: Token }
   | { kind: 'Interpolation'; parts: (string | Expr)[] }
+
+/** One `catch (e) { }` clause, optionally guarded by `if (cond)`. The guard
+ * is evaluated with `name` already bound to the error, so it can inspect
+ * it: `catch (e) if (e.kind == "IndexError") { ... }`. */
+interface CatchClause { name: Token; guard: Expr | null; block: Stmt }
 
 type Stmt =
   | { kind: 'Expression'; expression: Expr }
-  | { kind: 'Function'; name: Token; params: Token[]; body: Stmt[] }
+  | { kind: 'Function'; name: Token; params: Param[]; body: Stmt[] }
   | { kind: 'If'; condition: Expr; thenBranch: Stmt; elseBranch: Stmt | null }
   | { kind: 'Return'; keyword: Token; value: Expr | null }
   | { kind: 'While'; condition: Expr; body: Stmt }
@@ -292,7 +333,9 @@ type Stmt =
   | { kind: 'Var'; name: Token; initializer: Expr | null }
   | { kind: 'ForIn'; name: Token; iterable: Expr; body: Stmt }
   | { kind: 'Throw'; keyword: Token; value: Expr }
-  | { kind: 'Try'; tryBlock: Stmt; catchName: Token | null; catchBlock: Stmt | null; finallyBlock: Stmt | null }
+  | { kind: 'Try'; tryBlock: Stmt; catches: CatchClause[]; finallyBlock: Stmt | null }
+  | { kind: 'Import'; names: [Token, Token][]; specifier: Token; keyword: Token }
+  | { kind: 'Export'; declaration: Stmt; name: Token }
 
 // ---------------------------------------------------------------------------
 // Parser
@@ -311,6 +354,9 @@ const COMPOUND_ASSIGN_OPS: Partial<Record<TokenType, [TokenType, string]>> = {
 class Parser {
   private current = 0
   errors: MRTError[] = []
+  /** `import`/`export` are only meaningful at the top level of a file, so
+   * the parser tracks how deep into blocks it currently is. */
+  private blockDepth = 0
 
   constructor(private tokens: Token[]) {}
 
@@ -325,6 +371,8 @@ class Parser {
 
   private declaration(): Stmt | null {
     try {
+      if (this.match('IMPORT')) return this.importStatement()
+      if (this.match('EXPORT')) return this.exportDeclaration()
       // `func name(...)` is a declaration; a bare `func(...)` in statement
       // position is an anonymous function *expression* and falls through to
       // expressionStatement below.
@@ -341,6 +389,48 @@ class Parser {
     }
   }
 
+  private importStatement(): Stmt {
+    const keyword = this.previous()
+    if (this.blockDepth > 0) {
+      throw this.error(keyword, "'import' is only allowed at the top level of a file.")
+    }
+
+    this.consume('LBRACE', "Expect '{' after 'import'.")
+    const names: [Token, Token][] = []
+    if (!this.check('RBRACE')) {
+      do {
+        const exported = this.consume('IDENTIFIER', 'Expect an imported name.')
+        let local = exported
+        if (this.match('AS')) local = this.consume('IDENTIFIER', "Expect a local name after 'as'.")
+        names.push([exported, local])
+      } while (this.match('COMMA'))
+    }
+    this.consume('RBRACE', "Expect '}' after imported names.")
+
+    this.consume('FROM', "Expect 'from' after imported names.")
+    const specifier = this.consume('STRING', "Expect a module path string after 'from'.")
+    this.consumeStatementEnd()
+    return { kind: 'Import', names, specifier, keyword }
+  }
+
+  private exportDeclaration(): Stmt {
+    const keyword = this.previous()
+    if (this.blockDepth > 0) {
+      throw this.error(keyword, "'export' is only allowed at the top level of a file.")
+    }
+
+    if (this.check('FUNC') && this.checkNext('IDENTIFIER')) {
+      this.advance()
+      const declaration = this.function_('function') as Extract<Stmt, { kind: 'Function' }>
+      return { kind: 'Export', declaration, name: declaration.name }
+    }
+    if (this.match('VAR')) {
+      const declaration = this.varDeclaration() as Extract<Stmt, { kind: 'Var' }>
+      return { kind: 'Export', declaration, name: declaration.name }
+    }
+    throw this.error(this.peek(), "Expect a 'func' or 'var' declaration after 'export'.")
+  }
+
   private function_(kind: string): Stmt {
     const name = this.consume('IDENTIFIER', `Expect ${kind} name.`)
     const params = this.parameterList(`Expect '(' after ${kind} name.`)
@@ -349,16 +439,51 @@ class Parser {
     return { kind: 'Function', name, params, body }
   }
 
-  private parameterList(lparenMessage: string): Token[] {
+  /** Parse `(a, b = expr, ...rest)`. Two shape rules are enforced here
+   * rather than at run time, because they are always mistakes: a rest
+   * parameter must be last, and a required parameter may not follow a
+   * defaulted one (which would make it unreachable by position). */
+  private parameterList(lparenMessage: string): Param[] {
     this.consume('LPAREN', lparenMessage)
-    const params: Token[] = []
+    const params: Param[] = []
+    let seenDefault = false
+    let seenRest = false
+
     if (!this.check('RPAREN')) {
       do {
-        params.push(this.consume('IDENTIFIER', 'Expect parameter name.'))
+        if (seenRest) throw this.error(this.peek(), 'A rest parameter must be the last parameter.')
+
+        const isRest = this.match('ELLIPSIS')
+        const name = this.consume('IDENTIFIER', 'Expect parameter name.')
+
+        let def: Expr | null = null
+        if (isRest) {
+          seenRest = true
+          if (this.check('ASSIGN')) {
+            throw this.error(this.peek(), "A rest parameter can't have a default value.")
+          }
+        } else if (this.match('ASSIGN')) {
+          def = this.expression()
+          seenDefault = true
+        } else if (seenDefault) {
+          throw this.error(name, "A required parameter can't follow one with a default value.")
+        }
+
+        params.push({ name, default: def, rest: isRest })
       } while (this.match('COMMA'))
     }
+
     this.consume('RPAREN', "Expect ')' after parameters.")
     return params
+  }
+
+  /** An argument, array element or print value, which may be `...expr`. */
+  private spreadOrExpression(): Expr {
+    if (this.match('ELLIPSIS')) {
+      const token = this.previous()
+      return { kind: 'Spread', value: this.expression(), token }
+    }
+    return this.expression()
   }
 
   /** An anonymous `func(a, b) { ... }` in expression position. An optional
@@ -456,14 +581,22 @@ class Parser {
     this.consume('LBRACE', "Expect '{' after 'try'.")
     const tryBlock: Stmt = { kind: 'Block', statements: this.block() }
 
-    let catchName: Token | null = null
-    let catchBlock: Stmt | null = null
-    if (this.match('CATCH')) {
+    const catches: CatchClause[] = []
+    while (this.match('CATCH')) {
       this.consume('LPAREN', "Expect '(' after 'catch'.")
-      catchName = this.consume('IDENTIFIER', 'Expect variable name in catch.')
+      const name = this.consume('IDENTIFIER', 'Expect variable name in catch.')
       this.consume('RPAREN', "Expect ')' after catch variable.")
+
+      // An optional guard: `catch (e) if (cond) { ... }`.
+      let guard: Expr | null = null
+      if (this.match('IF')) {
+        this.consume('LPAREN', "Expect '(' after 'if' in catch guard.")
+        guard = this.expression()
+        this.consume('RPAREN', "Expect ')' after catch guard.")
+      }
+
       this.consume('LBRACE', "Expect '{' after catch.")
-      catchBlock = { kind: 'Block', statements: this.block() }
+      catches.push({ name, guard, block: { kind: 'Block', statements: this.block() } })
     }
 
     let finallyBlock: Stmt | null = null
@@ -472,11 +605,11 @@ class Parser {
       finallyBlock = { kind: 'Block', statements: this.block() }
     }
 
-    if (catchBlock === null && finallyBlock === null) {
+    if (catches.length === 0 && finallyBlock === null) {
       throw this.error(keyword, "Expect 'catch' or 'finally' after 'try' block.")
     }
 
-    return { kind: 'Try', tryBlock, catchName, catchBlock, finallyBlock }
+    return { kind: 'Try', tryBlock, catches, finallyBlock }
   }
 
   private throwStatement(): Stmt {
@@ -488,9 +621,14 @@ class Parser {
 
   private block(): Stmt[] {
     const statements: Stmt[] = []
-    while (!this.check('RBRACE') && !this.isAtEnd()) {
-      const stmt = this.declaration()
-      if (stmt) statements.push(stmt)
+    this.blockDepth++
+    try {
+      while (!this.check('RBRACE') && !this.isAtEnd()) {
+        const stmt = this.declaration()
+        if (stmt) statements.push(stmt)
+      }
+    } finally {
+      this.blockDepth--
     }
     this.consume('RBRACE', "Expect '}' after block.")
     return statements
@@ -506,8 +644,8 @@ class Parser {
     this.consume('LPAREN', "Expect '(' after 'print'.")
     const values: Expr[] = []
     if (!this.check('RPAREN')) {
-      values.push(this.expression())
-      while (this.match('COMMA')) values.push(this.expression())
+      values.push(this.spreadOrExpression())
+      while (this.match('COMMA')) values.push(this.spreadOrExpression())
     }
     this.consume('RPAREN', "Expect ')' after print arguments.")
     this.consumeStatementEnd()
@@ -627,7 +765,7 @@ class Parser {
   private finishCall(callee: Expr): Expr {
     const args: Expr[] = []
     if (!this.check('RPAREN')) {
-      do { args.push(this.expression()) } while (this.match('COMMA'))
+      do { args.push(this.spreadOrExpression()) } while (this.match('COMMA'))
     }
     const paren = this.consume('RPAREN', "Expect ')' after arguments.")
     return { kind: 'Call', callee, paren, arguments: args }
@@ -655,7 +793,7 @@ class Parser {
     if (this.match('LBRACKET')) {
       const elements: Expr[] = []
       if (!this.check('RBRACKET')) {
-        do { elements.push(this.expression()) } while (this.match('COMMA'))
+        do { elements.push(this.spreadOrExpression()) } while (this.match('COMMA'))
       }
       this.consume('RBRACKET', "Expect ']' after array elements.")
       return { kind: 'Array', elements }
@@ -750,7 +888,7 @@ class Parser {
 
   private error(token: Token, message: string): MRTError {
     const where = token.type === 'EOF' ? 'end of file' : `'${token.lexeme}'`
-    return new MRTError(`Error at ${where}: ${message}`, token.line)
+    return new MRTError(`Error at ${where}: ${message}`, token.line, 'RuntimeError')
   }
 
   private synchronize() {
@@ -820,20 +958,67 @@ function valuesEqual(a: unknown, b: unknown): boolean {
  * runtime, differing only in whether `name` is set. */
 class MRTFunction {
   constructor(
-    public params: Token[],
+    public params: Param[],
     public body: Stmt[],
     public closure: Environment,
     public name: string | null = null,
   ) {}
 
-  call(interpreter: Interpreter, args: unknown[]): unknown {
+  /** How this function's accepted argument count reads in an error. */
+  arityDescription(): string {
+    const positional = this.params.filter((p) => !p.rest)
+    const required = positional.filter((p) => p.default === null).length
+    if (this.params.some((p) => p.rest)) return `at least ${required}`
+    if (required === positional.length) return String(required)
+    return `between ${required} and ${positional.length}`
+  }
+
+  accepts(count: number): boolean {
+    const positional = this.params.filter((p) => !p.rest)
+    const required = positional.filter((p) => p.default === null).length
+    if (count < required) return false
+    return this.params.some((p) => p.rest) || count <= positional.length
+  }
+
+  /** Bind arguments to parameters in a fresh scope. Defaults are evaluated
+   * here, at call time and in the callee's own scope, so a default may
+   * refer to a parameter to its left. A rest parameter always binds -- to
+   * an empty array when nothing is left over. */
+  bind(interpreter: Interpreter, args: unknown[]): Environment {
     const environment = new Environment(this.closure)
-    this.params.forEach((param, i) => environment.define(param.lexeme, args[i]))
+    const positional = this.params.filter((p) => !p.rest)
+
+    const previous = interpreter.environment
+    try {
+      interpreter.environment = environment
+      positional.forEach((param, i) => {
+        const value = i < args.length ? args[i] : interpreter.evaluate(param.default as Expr)
+        environment.define(param.name.lexeme, value)
+      })
+    } finally {
+      interpreter.environment = previous
+    }
+
+    for (const param of this.params) {
+      if (param.rest) environment.define(param.name.lexeme, args.slice(positional.length))
+    }
+
+    return environment
+  }
+
+  call(interpreter: Interpreter, args: unknown[]): unknown {
+    const environment = this.bind(interpreter, args)
+    const frame = this.name ?? '<anonymous>'
     try {
       interpreter.executeBlock(this.body, environment)
       return null
     } catch (e) {
       if (e instanceof ReturnSignal) return e.value
+      // Build the trace on the way out: a raise site knows nothing about
+      // who called it, but every frame the error passes through knows its
+      // own name. Innermost first.
+      if (e instanceof MRTError) e.mrtStack.push(frame)
+      else if (e instanceof MRTThrow) e.stack.push(frame)
       throw e
     }
   }
@@ -846,12 +1031,20 @@ class MRTFunction {
  * MRTError is the interpreter's own failure. Built-in runtime errors become
  * catchable by being converted into the standard error object below. */
 class MRTThrow {
+  stack: string[] = []
   constructor(public value: unknown) {}
 }
 
-/** The object a `catch` block receives for an interpreter-raised error. */
-function makeErrorValue(message: string, line: number | null): Map<unknown, unknown> {
-  return new Map<unknown, unknown>([['message', message], ['line', line === null ? null : line]])
+/** The object a `catch` block receives for an interpreter-raised error: a
+ * message, the line it happened on, a coarse `kind` to branch on, and the
+ * MRT call stack innermost-first. */
+function makeErrorValue(error: MRTError): Map<unknown, unknown> {
+  return new Map<unknown, unknown>([
+    ['message', error.rawMessage],
+    ['line', error.line === undefined ? null : error.line],
+    ['kind', error.kind],
+    ['stack', [...error.mrtStack]],
+  ])
 }
 
 class ReturnSignal { constructor(public value: unknown) {} }
@@ -867,13 +1060,13 @@ class Environment {
   get(name: Token): unknown {
     if (this.values.has(name.lexeme)) return this.values.get(name.lexeme)
     if (this.enclosing) return this.enclosing.get(name)
-    throw new MRTError(`Undefined variable '${name.lexeme}'.`, name.line)
+    throw new MRTError(`Undefined variable '${name.lexeme}'.`, name.line, 'NameError')
   }
 
   assign(name: Token, value: unknown) {
     if (this.values.has(name.lexeme)) { this.values.set(name.lexeme, value); return }
     if (this.enclosing) { this.enclosing.assign(name, value); return }
-    throw new MRTError(`Undefined variable '${name.lexeme}'.`, name.line)
+    throw new MRTError(`Undefined variable '${name.lexeme}'.`, name.line, 'NameError')
   }
 }
 
@@ -881,24 +1074,24 @@ function isNumber(v: unknown): v is number { return typeof v === 'number' }
 
 const BUILTINS: Record<string, (...args: unknown[]) => unknown> = {
   len: (...a) => {
-    if (a.length !== 1) throw new MRTError('len() takes exactly one argument.')
+    if (a.length !== 1) throw new MRTError('len() takes exactly one argument.', undefined, 'ArityError')
     if (typeof a[0] === 'string' || Array.isArray(a[0])) return (a[0] as string | unknown[]).length
     if (a[0] instanceof Map) return a[0].size
-    throw new MRTError('len() argument must be an array, object, or string.')
+    throw new MRTError('len() argument must be an array, object, or string.', undefined, 'TypeError')
   },
   push: (...a) => {
-    if (a.length !== 2 || !Array.isArray(a[0])) throw new MRTError('push() takes an array and a value.')
+    if (a.length !== 2 || !Array.isArray(a[0])) throw new MRTError('push() takes an array and a value.', undefined, 'ArityError')
     ;(a[0] as unknown[]).push(a[1])
     return a[1]
   },
   pop: (...a) => {
-    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('pop() takes exactly one array argument.')
+    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('pop() takes exactly one array argument.', undefined, 'ArityError')
     const arr = a[0] as unknown[]
-    if (arr.length === 0) throw new MRTError('Cannot pop from empty array.')
+    if (arr.length === 0) throw new MRTError('Cannot pop from empty array.', undefined, 'ValueError')
     return arr.pop()
   },
   slice: (...a) => {
-    if (!Array.isArray(a[0])) throw new MRTError('First argument to slice() must be an array.')
+    if (!Array.isArray(a[0])) throw new MRTError('First argument to slice() must be an array.', undefined, 'TypeError')
     const arr = a[0] as unknown[]
     let start = isNumber(a[1]) ? Math.trunc(a[1]) : 0
     let end = a.length > 2 && isNumber(a[2]) ? Math.trunc(a[2] as number) : arr.length
@@ -907,22 +1100,22 @@ const BUILTINS: Record<string, (...args: unknown[]) => unknown> = {
     return arr.slice(start, end)
   },
   join: (...a) => {
-    if (!Array.isArray(a[0])) throw new MRTError('First argument to join() must be an array.')
+    if (!Array.isArray(a[0])) throw new MRTError('First argument to join() must be an array.', undefined, 'TypeError')
     const sep = a.length > 1 ? String(a[1]) : ''
     return (a[0] as unknown[]).map(stringify).join(sep)
   },
   indexOf: (...a) => {
-    if (!Array.isArray(a[0])) throw new MRTError('First argument to indexOf() must be an array.')
+    if (!Array.isArray(a[0])) throw new MRTError('First argument to indexOf() must be an array.', undefined, 'TypeError')
     const arr = a[0] as unknown[]
     return arr.findIndex((v) => valuesEqual(v, a[1]))
   },
   split: (...a) => {
-    if (typeof a[0] !== 'string') throw new MRTError('First argument to split() must be a string.')
+    if (typeof a[0] !== 'string') throw new MRTError('First argument to split() must be a string.', undefined, 'TypeError')
     const sep = a.length > 1 ? String(a[1]) : ' '
     return a[0].split(sep)
   },
   substring: (...a) => {
-    if (typeof a[0] !== 'string') throw new MRTError('First argument to substring() must be a string.')
+    if (typeof a[0] !== 'string') throw new MRTError('First argument to substring() must be a string.', undefined, 'TypeError')
     const text = a[0]
     let start = isNumber(a[1]) ? Math.trunc(a[1]) : 0
     let end = a.length > 2 && isNumber(a[2]) ? Math.trunc(a[2] as number) : text.length
@@ -931,37 +1124,37 @@ const BUILTINS: Record<string, (...args: unknown[]) => unknown> = {
     return text.slice(start, end)
   },
   toUpper: (...a) => {
-    if (typeof a[0] !== 'string') throw new MRTError('toUpper() argument must be a string.')
+    if (typeof a[0] !== 'string') throw new MRTError('toUpper() argument must be a string.', undefined, 'TypeError')
     return a[0].toUpperCase()
   },
   toLower: (...a) => {
-    if (typeof a[0] !== 'string') throw new MRTError('toLower() argument must be a string.')
+    if (typeof a[0] !== 'string') throw new MRTError('toLower() argument must be a string.', undefined, 'TypeError')
     return a[0].toLowerCase()
   },
   trim: (...a) => {
-    if (typeof a[0] !== 'string') throw new MRTError('trim() argument must be a string.')
+    if (typeof a[0] !== 'string') throw new MRTError('trim() argument must be a string.', undefined, 'TypeError')
     return a[0].trim()
   },
   replace: (...a) => {
-    if (typeof a[0] !== 'string') throw new MRTError('First argument to replace() must be a string.')
+    if (typeof a[0] !== 'string') throw new MRTError('First argument to replace() must be a string.', undefined, 'TypeError')
     return a[0].split(String(a[1])).join(String(a[2]))
   },
   startsWith: (...a) => {
-    if (typeof a[0] !== 'string') throw new MRTError('First argument to startsWith() must be a string.')
+    if (typeof a[0] !== 'string') throw new MRTError('First argument to startsWith() must be a string.', undefined, 'TypeError')
     return a[0].startsWith(String(a[1]))
   },
   endsWith: (...a) => {
-    if (typeof a[0] !== 'string') throw new MRTError('First argument to endsWith() must be a string.')
+    if (typeof a[0] !== 'string') throw new MRTError('First argument to endsWith() must be a string.', undefined, 'TypeError')
     return a[0].endsWith(String(a[1]))
   },
   contains: (...a) => {
-    if (typeof a[0] !== 'string') throw new MRTError('First argument to contains() must be a string.')
+    if (typeof a[0] !== 'string') throw new MRTError('First argument to contains() must be a string.', undefined, 'TypeError')
     return a[0].includes(String(a[1]))
   },
 
   // -- Type / conversion --
   type: (...a) => {
-    if (a.length !== 1) throw new MRTError('type() takes exactly one argument.')
+    if (a.length !== 1) throw new MRTError('type() takes exactly one argument.', undefined, 'ArityError')
     const v = a[0]
     if (v === null || v === undefined) return 'null'
     if (typeof v === 'boolean') return 'boolean'
@@ -973,107 +1166,111 @@ const BUILTINS: Record<string, (...args: unknown[]) => unknown> = {
     return 'unknown'
   },
   toNumber: (...a) => {
-    if (a.length !== 1) throw new MRTError('toNumber() takes exactly one argument.')
+    if (a.length !== 1) throw new MRTError('toNumber() takes exactly one argument.', undefined, 'ArityError')
     const v = a[0]
     if (typeof v === 'boolean') return v ? 1 : 0
     if (typeof v === 'number') return v
     if (typeof v === 'string') {
       const n = Number(v.trim())
-      if (Number.isNaN(n) || v.trim() === '') throw new MRTError(`Cannot convert '${v}' to a number.`)
+      if (Number.isNaN(n) || v.trim() === '') throw new MRTError(`Cannot convert '${v}' to a number.`, undefined, 'ValueError')
       return n
     }
-    throw new MRTError('toNumber() argument must be a string, number, or boolean.')
+    throw new MRTError('toNumber() argument must be a string, number, or boolean.', undefined, 'TypeError')
   },
   // -- Math --
   abs: (...a) => {
-    if (a.length !== 1) throw new MRTError('abs() takes exactly one argument.')
+    if (a.length !== 1) throw new MRTError('abs() takes exactly one argument.', undefined, 'ArityError')
     return Math.abs(numArg(a[0], 'abs'))
   },
   min: (...a) => {
     const values = a.length === 1 && Array.isArray(a[0]) ? (a[0] as unknown[]) : a
-    if (values.length === 0) throw new MRTError('min() requires at least one argument.')
+    if (values.length === 0) throw new MRTError('min() requires at least one argument.', undefined, 'ArityError')
     return Math.min(...values.map((v) => numArg(v, 'min')))
   },
   max: (...a) => {
     const values = a.length === 1 && Array.isArray(a[0]) ? (a[0] as unknown[]) : a
-    if (values.length === 0) throw new MRTError('max() requires at least one argument.')
+    if (values.length === 0) throw new MRTError('max() requires at least one argument.', undefined, 'ArityError')
     return Math.max(...values.map((v) => numArg(v, 'max')))
   },
   round: (...a) => {
-    if (a.length < 1 || a.length > 2) throw new MRTError('round() takes 1 or 2 arguments.')
+    if (a.length < 1 || a.length > 2) throw new MRTError('round() takes 1 or 2 arguments.', undefined, 'ArityError')
     const value = numArg(a[0], 'round')
     const digits = a.length === 2 ? Math.trunc(numArg(a[1], 'round')) : 0
     const factor = 10 ** digits
     return Math.round(value * factor) / factor
   },
   floor: (...a) => {
-    if (a.length !== 1) throw new MRTError('floor() takes exactly one argument.')
+    if (a.length !== 1) throw new MRTError('floor() takes exactly one argument.', undefined, 'ArityError')
     return Math.floor(numArg(a[0], 'floor'))
   },
   ceil: (...a) => {
-    if (a.length !== 1) throw new MRTError('ceil() takes exactly one argument.')
+    if (a.length !== 1) throw new MRTError('ceil() takes exactly one argument.', undefined, 'ArityError')
     return Math.ceil(numArg(a[0], 'ceil'))
   },
   sqrt: (...a) => {
-    if (a.length !== 1) throw new MRTError('sqrt() takes exactly one argument.')
+    if (a.length !== 1) throw new MRTError('sqrt() takes exactly one argument.', undefined, 'ArityError')
     const value = numArg(a[0], 'sqrt')
-    if (value < 0) throw new MRTError('sqrt() argument must not be negative.')
+    if (value < 0) throw new MRTError('sqrt() argument must not be negative.', undefined, 'ValueError')
     return Math.sqrt(value)
   },
   pow: (...a) => {
-    if (a.length !== 2) throw new MRTError('pow() takes exactly 2 arguments.')
+    if (a.length !== 2) throw new MRTError('pow() takes exactly 2 arguments.', undefined, 'ArityError')
     return numArg(a[0], 'pow') ** numArg(a[1], 'pow')
   },
 
   // -- Objects (dicts, represented as Map so keys can be numbers/booleans too) --
   keys: (...a) => {
-    if (a.length !== 1 || !(a[0] instanceof Map)) throw new MRTError('keys() takes exactly one object argument.')
+    if (a.length !== 1 || !(a[0] instanceof Map)) throw new MRTError('keys() takes exactly one object argument.', undefined, 'ArityError')
     return Array.from(a[0].keys())
   },
   values: (...a) => {
-    if (a.length !== 1 || !(a[0] instanceof Map)) throw new MRTError('values() takes exactly one object argument.')
+    if (a.length !== 1 || !(a[0] instanceof Map)) throw new MRTError('values() takes exactly one object argument.', undefined, 'ArityError')
     return Array.from(a[0].values())
   },
   has: (...a) => {
-    if (a.length !== 2) throw new MRTError('has() takes exactly 2 arguments.')
+    if (a.length !== 2) throw new MRTError('has() takes exactly 2 arguments.', undefined, 'ArityError')
     const [container, key] = a
     if (container instanceof Map) return container.has(key)
     if (Array.isArray(container)) return container.some((v) => valuesEqual(v, key))
-    throw new MRTError('First argument to has() must be an array or object.')
+    throw new MRTError('First argument to has() must be an array or object.', undefined, 'TypeError')
   },
   get: (...a) => {
-    if (a.length < 2 || a.length > 3) throw new MRTError('get() takes 2 or 3 arguments.')
+    if (a.length < 2 || a.length > 3) throw new MRTError('get() takes 2 or 3 arguments.', undefined, 'ArityError')
     const [container, key] = a
     const fallback = a.length === 3 ? a[2] : null
     if (container instanceof Map) return container.has(key) ? container.get(key) : fallback
-    if (Array.isArray(container)) {
+    if (Array.isArray(container) || typeof container === 'string') {
       if (typeof key === 'number') {
         const i = Math.trunc(key)
         if (i >= 0 && i < container.length) return container[i]
       }
       return fallback
     }
-    throw new MRTError('First argument to get() must be an array or object.')
+    // Anything else has no keys at all, so the fallback is the answer.
+    // get() is the total, never-raising accessor -- throwing here would
+    // break its whole contract, and would make the natural `catch` guard
+    // `get(e, "kind", "")` blow up on a thrown string or number.
+    return fallback
   },
   // -- Sequences --
   reverse: (...a) => {
-    if (a.length !== 1) throw new MRTError('reverse() takes exactly one argument.')
+    if (a.length !== 1) throw new MRTError('reverse() takes exactly one argument.', undefined, 'ArityError')
     if (typeof a[0] === 'string') return [...a[0]].reverse().join('')
     if (Array.isArray(a[0])) return [...a[0]].reverse()
-    throw new MRTError('reverse() argument must be an array or string.')
+    throw new MRTError('reverse() argument must be an array or string.', undefined, 'TypeError')
   },
   unique: (...a) => {
-    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('unique() takes exactly one array argument.')
+    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('unique() takes exactly one array argument.', undefined, 'ArityError')
     const result: unknown[] = []
     for (const item of a[0]) if (!result.some((seen) => valuesEqual(item, seen))) result.push(item)
     return result
   },
   flatten: (...a) => {
     if (a.length < 1 || a.length > 2 || !Array.isArray(a[0])) {
-      throw new MRTError('flatten() takes an array and an optional depth.')
+      throw new MRTError('flatten() takes an array and an optional depth.', undefined, 'ArityError')
     }
     const depth = a.length === 1 ? 1 : Math.trunc(numArg(a[1], 'flatten'))
-    if (depth < 0) throw new MRTError('flatten() depth must not be negative.')
+    if (depth < 0) throw new MRTError('flatten() depth must not be negative.', undefined, 'ValueError')
     const go = (items: unknown[], d: number): unknown[] => {
       const out: unknown[] = []
       for (const item of items) {
@@ -1086,7 +1283,7 @@ const BUILTINS: Record<string, (...args: unknown[]) => unknown> = {
   },
   zip: (...a) => {
     if (a.length !== 2 || !Array.isArray(a[0]) || !Array.isArray(a[1])) {
-      throw new MRTError('zip() takes exactly two array arguments.')
+      throw new MRTError('zip() takes exactly two array arguments.', undefined, 'ArityError')
     }
     const n = Math.min(a[0].length, a[1].length)
     const out: unknown[] = []
@@ -1094,47 +1291,47 @@ const BUILTINS: Record<string, (...args: unknown[]) => unknown> = {
     return out
   },
   enumerate: (...a) => {
-    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('enumerate() takes exactly one array argument.')
+    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('enumerate() takes exactly one array argument.', undefined, 'ArityError')
     return a[0].map((v, i) => [i, v])
   },
   count: (...a) => {
-    if (a.length !== 2 || !Array.isArray(a[0])) throw new MRTError('count() takes an array and a value.')
+    if (a.length !== 2 || !Array.isArray(a[0])) throw new MRTError('count() takes an array and a value.', undefined, 'ArityError')
     return a[0].filter((item) => valuesEqual(item, a[1])).length
   },
   sum: (...a) => {
-    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('sum() takes exactly one array argument.')
+    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('sum() takes exactly one array argument.', undefined, 'ArityError')
     let total = 0
     for (const item of a[0]) total += numArg(item, 'sum')
     return total
   },
   range: (...a) => {
-    if (a.length < 1 || a.length > 3) throw new MRTError('range() takes one to three number arguments.')
+    if (a.length < 1 || a.length > 3) throw new MRTError('range() takes one to three number arguments.', undefined, 'ArityError')
     const nums = a.map((v) => numArg(v, 'range'))
     let start = 0, end = 0, step = 1
     if (nums.length === 1) { end = nums[0] }
     else if (nums.length === 2) { start = nums[0]; end = nums[1] }
     else { start = nums[0]; end = nums[1]; step = nums[2] }
-    if (step === 0) throw new MRTError('range() step must not be zero.')
+    if (step === 0) throw new MRTError('range() step must not be zero.', undefined, 'ValueError')
     const out: number[] = []
     for (let c = start; step > 0 ? c < end : c > end; c += step) out.push(c)
     return out
   },
   // -- More strings --
   repeat: (...a) => {
-    if (a.length !== 2 || typeof a[0] !== 'string') throw new MRTError('repeat() takes a string and a count.')
+    if (a.length !== 2 || typeof a[0] !== 'string') throw new MRTError('repeat() takes a string and a count.', undefined, 'ArityError')
     const n = Math.trunc(numArg(a[1], 'repeat'))
-    if (n < 0) throw new MRTError('repeat() count must not be negative.')
+    if (n < 0) throw new MRTError('repeat() count must not be negative.', undefined, 'ValueError')
     return a[0].repeat(n)
   },
   padStart: (...a) => pad(a, 'padStart', true),
   padEnd: (...a) => pad(a, 'padEnd', false),
   // -- Deterministic, seeded randomness --
   random: (...a) => {
-    if (a.length !== 1) throw new MRTError('random() takes exactly one seed argument.')
+    if (a.length !== 1) throw new MRTError('random() takes exactly one seed argument.', undefined, 'ArityError')
     const seed = Math.trunc(numArg(a[0], 'random')) >>> 0
     let state = seed !== 0 ? seed : 1
     return (...callArgs: unknown[]) => {
-      if (callArgs.length) throw new MRTError('A random generator takes no arguments.')
+      if (callArgs.length) throw new MRTError('A random generator takes no arguments.', undefined, 'ArityError')
       // xorshift32 over uint32 state -- identical arithmetic to the Python
       // reference implementation, so a seeded program prints the same
       // numbers in the browser as it does on the command line.
@@ -1148,13 +1345,13 @@ const BUILTINS: Record<string, (...args: unknown[]) => unknown> = {
 
 function pad(args: unknown[], who: string, atStart: boolean): string {
   if (args.length < 2 || args.length > 3 || typeof args[0] !== 'string') {
-    throw new MRTError(`${who}() takes a string, a width, and an optional pad string.`)
+    throw new MRTError(`${who}() takes a string, a width, and an optional pad string.`, undefined, 'ArityError')
   }
   const text = args[0]
   const width = Math.trunc(numArg(args[1], who))
   const filler = args.length === 3 ? args[2] : ' '
-  if (typeof filler !== 'string') throw new MRTError(`${who}() pad argument must be a string.`)
-  if (filler === '') throw new MRTError(`${who}() pad string must not be empty.`)
+  if (typeof filler !== 'string') throw new MRTError(`${who}() pad argument must be a string.`, undefined, 'TypeError')
+  if (filler === '') throw new MRTError(`${who}() pad string must not be empty.`, undefined, 'ValueError')
   if (text.length >= width) return text
   const needed = width - text.length
   const padding = filler.repeat(Math.floor(needed / filler.length) + 1).slice(0, needed)
@@ -1162,7 +1359,7 @@ function pad(args: unknown[], who: string, atStart: boolean): string {
 }
 
 function numArg(value: unknown, who: string): number {
-  if (typeof value !== 'number') throw new MRTError(`${who}() argument must be a number.`)
+  if (typeof value !== 'number') throw new MRTError(`${who}() argument must be a number.`, undefined, 'TypeError')
   return value
 }
 
@@ -1175,7 +1372,7 @@ function numArg(value: unknown, who: string): number {
 // after the literal). Giving the function its own explicit type up front
 // sidesteps contextual inference entirely.
 const toStringBuiltin: (...args: unknown[]) => unknown = (...a) => {
-  if (a.length !== 1) throw new MRTError('toString() takes exactly one argument.')
+  if (a.length !== 1) throw new MRTError('toString() takes exactly one argument.', undefined, 'ArityError')
   return stringify(a[0])
 }
 // A literal `.toString` (or even `['toString']`) assignment is still typed
@@ -1185,12 +1382,34 @@ const toStringBuiltin: (...args: unknown[]) => unknown = (...a) => {
 const toStringKey: string = 'toString'
 BUILTINS[toStringKey] = toStringBuiltin
 
+/** Resolves an import specifier to a module's canonical path and source.
+ * Returning null means "no such module". The browser has no filesystem, so
+ * module loading is injected rather than assumed: the Playground can supply
+ * a map of virtual files, a Node host can read from disk, and a page that
+ * supplies nothing simply has no imports. */
+export type ModuleResolver =
+  (specifier: string, fromPath: string) => { path: string; source: string } | null
+
+export interface RunOptions {
+  /** Path of the entry file, used to resolve relative imports against. */
+  path?: string
+  resolveModule?: ModuleResolver
+}
+
 class Interpreter {
   globals = new Environment()
   environment = this.globals
   output: string[] = []
 
-  constructor() {
+  modulePath: string | null
+  resolveModule: ModuleResolver | null
+  private moduleExports = new Map<string, Map<string, unknown>>()
+  private moduleLoading: string[] = []
+  private currentExports = new Map<string, unknown>()
+
+  constructor(options: RunOptions = {}) {
+    this.modulePath = options.path ?? null
+    this.resolveModule = options.resolveModule ?? null
     for (const [name, fn] of Object.entries(BUILTINS)) this.globals.define(name, fn)
     // Higher-order built-ins are defined here rather than in BUILTINS
     // because they have to call back into user code (`this.callValue`),
@@ -1205,23 +1424,23 @@ class Interpreter {
   }
 
   private arrayArg(value: unknown, who: string): unknown[] {
-    if (!Array.isArray(value)) throw new MRTError(`First argument to ${who}() must be an array.`)
+    if (!Array.isArray(value)) throw new MRTError(`First argument to ${who}() must be an array.`, undefined, 'TypeError')
     return value
   }
 
   private builtinMap(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('map() takes an array and a function.')
+    if (a.length !== 2) throw new MRTError('map() takes an array and a function.', undefined, 'ArityError')
     return this.arrayArg(a[0], 'map').map((item) => this.callValue(a[1], [item]))
   }
 
   private builtinFilter(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('filter() takes an array and a function.')
+    if (a.length !== 2) throw new MRTError('filter() takes an array and a function.', undefined, 'ArityError')
     return this.arrayArg(a[0], 'filter').filter((item) => this.isTruthy(this.callValue(a[1], [item])))
   }
 
   private builtinReduce(a: unknown[]): unknown {
     if (a.length < 2 || a.length > 3) {
-      throw new MRTError('reduce() takes an array, a function, and an optional initial value.')
+      throw new MRTError('reduce() takes an array, a function, and an optional initial value.', undefined, 'ArityError')
     }
     const items = this.arrayArg(a[0], 'reduce')
     let accumulator: unknown
@@ -1230,7 +1449,7 @@ class Interpreter {
       accumulator = a[2]
       rest = items
     } else {
-      if (items.length === 0) throw new MRTError('reduce() of an empty array needs an initial value.')
+      if (items.length === 0) throw new MRTError('reduce() of an empty array needs an initial value.', undefined, 'ValueError')
       accumulator = items[0]
       rest = items.slice(1)
     }
@@ -1239,7 +1458,7 @@ class Interpreter {
   }
 
   private builtinFind(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('find() takes an array and a function.')
+    if (a.length !== 2) throw new MRTError('find() takes an array and a function.', undefined, 'ArityError')
     for (const item of this.arrayArg(a[0], 'find')) {
       if (this.isTruthy(this.callValue(a[1], [item]))) return item
     }
@@ -1247,12 +1466,12 @@ class Interpreter {
   }
 
   private builtinSome(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('some() takes an array and a function.')
+    if (a.length !== 2) throw new MRTError('some() takes an array and a function.', undefined, 'ArityError')
     return this.arrayArg(a[0], 'some').some((item) => this.isTruthy(this.callValue(a[1], [item])))
   }
 
   private builtinEvery(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('every() takes an array and a function.')
+    if (a.length !== 2) throw new MRTError('every() takes an array and a function.', undefined, 'ArityError')
     return this.arrayArg(a[0], 'every').every((item) => this.isTruthy(this.callValue(a[1], [item])))
   }
 
@@ -1263,14 +1482,14 @@ class Interpreter {
    * .sort is stable (ES2019+), matching Python's sorted(). */
   private builtinSort(a: unknown[]): unknown {
     if (a.length < 1 || a.length > 2) {
-      throw new MRTError('sort() takes an array and an optional compare function.')
+      throw new MRTError('sort() takes an array and an optional compare function.', undefined, 'ArityError')
     }
     const items = [...this.arrayArg(a[0], 'sort')]
 
     if (a.length === 2) {
       return items.sort((x, y) => {
         const result = this.callValue(a[1], [x, y])
-        if (typeof result !== 'number') throw new MRTError('sort() compare function must return a number.')
+        if (typeof result !== 'number') throw new MRTError('sort() compare function must return a number.', undefined, 'TypeError')
         return result < 0 ? -1 : result > 0 ? 1 : 0
       })
     }
@@ -1281,7 +1500,7 @@ class Interpreter {
     if (items.every((i) => typeof i === 'string')) {
       return items.sort((x, y) => ((x as string) < (y as string) ? -1 : (x as string) > (y as string) ? 1 : 0))
     }
-    throw new MRTError('sort() without a compare function needs an array of all numbers or all strings.')
+    throw new MRTError('sort() without a compare function needs an array of all numbers or all strings.', undefined, 'ValueError')
   }
 
   private printValues(values: unknown[]) {
@@ -1290,20 +1509,20 @@ class Interpreter {
 
   interpret(statements: Stmt[]) {
     try {
-      for (const s of statements) if (s.kind === 'Function') this.execute(s)
+      // Function declarations are registered first (so they can refer to
+      // each other in any order), then the remaining top-level statements
+      // run in source order -- imports among them, which is why they can no
+      // longer be skipped when a main() exists.
+      this.runTopLevel(statements)
 
       let mainFn: unknown = null
       try {
         mainFn = this.environment.get({ type: 'IDENTIFIER', lexeme: 'main', literal: null, line: 1 })
       } catch {
-        // no main() defined -- fall through to running top-level statements
+        // no main() defined -- the top-level statements above were the program
       }
 
-      if (mainFn instanceof MRTFunction) {
-        mainFn.call(this, [])
-      } else {
-        for (const s of statements) if (s.kind !== 'Function') this.execute(s)
-      }
+      if (mainFn instanceof MRTFunction) mainFn.call(this, [])
     } catch (e) {
       // Nothing caught it, so it halts the program like any other runtime
       // failure -- but reports the thrown value, since that's what the
@@ -1341,6 +1560,13 @@ class Interpreter {
       case 'ForIn':
         this.executeForIn(stmt)
         return
+      case 'Import':
+        this.executeImport(stmt)
+        return
+      case 'Export':
+        this.execute(stmt.declaration)
+        this.currentExports.set(stmt.name.lexeme, this.environment.get(stmt.name))
+        return
       case 'Throw':
         throw new MRTThrow(this.evaluate(stmt.value))
       case 'Try':
@@ -1351,7 +1577,7 @@ class Interpreter {
         else if (stmt.elseBranch) this.execute(stmt.elseBranch)
         return
       case 'Print':
-        this.printValues(stmt.expressions.map((e) => this.evaluate(e)))
+        this.printValues(this.evaluateSpreadList(stmt.expressions))
         return
       case 'Return': {
         const value = stmt.value ? this.evaluate(stmt.value) : null
@@ -1397,10 +1623,33 @@ class Interpreter {
   /** Invoke an MRT value with arguments. Shared by the `Call` expression and
    * by the higher-order built-ins (map, filter, sort, ...), which need to
    * call back into user code. */
+  /** Evaluate an argument list or array literal, splicing `...expr`
+   * elements in place. Spreading anything but an array is an error --
+   * there is no implicit iteration of strings or objects here, which keeps
+   * `f(...x)` from silently meaning something different depending on what
+   * `x` happens to hold. */
+  evaluateSpreadList(items: Expr[]): unknown[] {
+    const values: unknown[] = []
+    for (const item of items) {
+      if (item.kind === 'Spread') {
+        const spread = this.evaluate(item.value)
+        if (!Array.isArray(spread)) {
+          throw new MRTError("Can only spread an array with '...'.", item.token.line, 'TypeError')
+        }
+        values.push(...spread)
+      } else {
+        values.push(this.evaluate(item))
+      }
+    }
+    return values
+  }
+
   callValue(callee: unknown, args: unknown[], line?: number): unknown {
     if (callee instanceof MRTFunction) {
-      if (args.length !== callee.params.length) {
-        throw new MRTError(`Expected ${callee.params.length} arguments but got ${args.length}.`, line)
+      if (!callee.accepts(args.length)) {
+        throw new MRTError(
+          `Expected ${callee.arityDescription()} arguments but got ${args.length}.`,
+          line, 'ArityError')
       }
       return callee.call(this, args)
     }
@@ -1412,12 +1661,104 @@ class Interpreter {
         // MRTError bakes the line into its message, so re-wrapping an
         // already-located error would append a second "[line N]".
         if (e instanceof MRTError && e.line === undefined && line !== undefined) {
-          throw new MRTError(e.message, line)
+          // Re-raised only to attach a call-site line; the original
+          // classification and any stack collected so far are the error's
+          // own and must survive.
+          const located = new MRTError(e.rawMessage, line, e.kind)
+          located.mrtStack = e.mrtStack
+          throw located
         }
         throw e
       }
     }
-    throw new MRTError('Can only call functions.', line)
+    throw new MRTError('Can only call functions.', line, 'TypeError')
+  }
+
+  // -- Modules ------------------------------------------------------------
+
+  /** Evaluate a module once and return its export table. Modules are cached
+   * by resolved path, so importing the same file from two places runs it
+   * once and shares the result -- which matters, since a module's top-level
+   * code can have side effects. */
+  private loadModule(specifier: string, line?: number): Map<string, unknown> {
+    if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
+      throw new MRTError(
+        `Module path ${JSON.stringify(specifier)} must start with './' or '../'.`,
+        line, 'ValueError')
+    }
+    if (this.resolveModule === null || this.modulePath === null) {
+      throw new MRTError(
+        'Imports need a file to resolve against; run this program from a file.',
+        line, 'RuntimeError')
+    }
+
+    const resolved = this.resolveModule(specifier, this.modulePath)
+    if (resolved === null) {
+      throw new MRTError(`Cannot find module ${JSON.stringify(specifier)}.`, line, 'ValueError')
+    }
+
+    const cached = this.moduleExports.get(resolved.path)
+    if (cached) return cached
+
+    if (this.moduleLoading.includes(resolved.path)) {
+      const cycle = [...this.moduleLoading, resolved.path]
+        .map((p) => p.split('/').pop())
+        .join(' -> ')
+      throw new MRTError(`Circular import: ${cycle}.`, line, 'RuntimeError')
+    }
+
+    const parser = new Parser(new Lexer(resolved.source).scanTokens())
+    const statements = parser.parse()
+    if (parser.errors.length > 0) {
+      throw new MRTError(
+        `Module ${JSON.stringify(specifier)} has syntax errors: ${parser.errors[0].rawMessage}`,
+        line, 'RuntimeError')
+    }
+
+    const previousEnv = this.environment
+    const previousPath = this.modulePath
+    const previousExports = this.currentExports
+
+    this.moduleLoading.push(resolved.path)
+    this.environment = new Environment(this.globals)
+    this.modulePath = resolved.path
+    this.currentExports = new Map()
+    let exports: Map<string, unknown>
+    try {
+      this.runTopLevel(statements)
+      exports = this.currentExports
+    } finally {
+      this.moduleLoading.pop()
+      this.environment = previousEnv
+      this.modulePath = previousPath
+      this.currentExports = previousExports
+    }
+
+    this.moduleExports.set(resolved.path, exports)
+    return exports
+  }
+
+  private executeImport(stmt: Extract<Stmt, { kind: 'Import' }>) {
+    const specifier = stmt.specifier.literal as string
+    const exports = this.loadModule(specifier, stmt.keyword.line)
+    for (const [exported, local] of stmt.names) {
+      if (!exports.has(exported.lexeme)) {
+        throw new MRTError(
+          `Module ${JSON.stringify(specifier)} has no export named '${exported.lexeme}'.`,
+          exported.line, 'NameError')
+      }
+      this.environment.define(local.lexeme, exports.get(exported.lexeme))
+    }
+  }
+
+  /** Run a file's top-level statements: function declarations first, so they
+   * can refer to each other regardless of order, then everything else in
+   * source order. */
+  runTopLevel(statements: Stmt[]) {
+    const isFunctionDecl = (s: Stmt) =>
+      s.kind === 'Function' || (s.kind === 'Export' && s.declaration.kind === 'Function')
+    for (const s of statements) if (isFunctionDecl(s)) this.execute(s)
+    for (const s of statements) if (!isFunctionDecl(s)) this.execute(s)
   }
 
   private executeForIn(stmt: Extract<Stmt, { kind: 'ForIn' }>) {
@@ -1427,7 +1768,7 @@ class Interpreter {
     if (Array.isArray(iterable)) items = [...iterable]
     else if (typeof iterable === 'string') items = [...iterable]
     else if (iterable instanceof Map) items = [...iterable.keys()]
-    else throw new MRTError('Can only iterate over an array, string, or object.', stmt.name.line)
+    else throw new MRTError('Can only iterate over an array, string, or object.', stmt.name.line, 'TypeError')
 
     const previous = this.environment
     try {
@@ -1455,14 +1796,13 @@ class Interpreter {
         this.execute(stmt.tryBlock)
       } catch (e) {
         if (e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal) throw e
-        if (stmt.catchBlock === null) throw e
         if (e instanceof MRTThrow) {
-          this.runCatch(stmt, e.value)
+          if (!this.runCatch(stmt, e.value)) throw e
         } else if (e instanceof MRTError) {
           // An interpreter-raised failure (bad index, division by zero, ...)
-          // is catchable too: it reaches the program as the standard
-          // {"message", "line"} error object.
-          this.runCatch(stmt, makeErrorValue(e.rawMessage, e.line === undefined ? null : e.line))
+          // is catchable too: it reaches the program as the standard error
+          // object, carrying `kind` for guards to branch on.
+          if (!this.runCatch(stmt, makeErrorValue(e))) throw e
         } else {
           throw e
         }
@@ -1474,10 +1814,31 @@ class Interpreter {
     }
   }
 
-  private runCatch(stmt: Extract<Stmt, { kind: 'Try' }>, value: unknown) {
-    const environment = new Environment(this.environment)
-    environment.define(stmt.catchName!.lexeme, value)
-    this.executeBlock((stmt.catchBlock as Extract<Stmt, { kind: 'Block' }>).statements, environment)
+  /** Run the first `catch` clause that matches, returning whether one did.
+   * A clause with no guard always matches; a guarded one is tried with the
+   * error already bound, so the guard can inspect it. If none match, the
+   * error keeps propagating (and `finally` still runs). */
+  private runCatch(stmt: Extract<Stmt, { kind: 'Try' }>, value: unknown): boolean {
+    for (const clause of stmt.catches) {
+      const environment = new Environment(this.environment)
+      environment.define(clause.name.lexeme, value)
+
+      if (clause.guard !== null) {
+        const previous = this.environment
+        let matched: boolean
+        try {
+          this.environment = environment
+          matched = this.isTruthy(this.evaluate(clause.guard))
+        } finally {
+          this.environment = previous
+        }
+        if (!matched) continue
+      }
+
+      this.executeBlock((clause.block as Extract<Stmt, { kind: 'Block' }>).statements, environment)
+      return true
+    }
+    return false
   }
 
   executeBlock(statements: Stmt[], environment: Environment) {
@@ -1493,7 +1854,7 @@ class Interpreter {
   evaluate(expr: Expr): unknown {
     switch (expr.kind) {
       case 'Array':
-        return expr.elements.map((e) => this.evaluate(e))
+        return this.evaluateSpreadList(expr.elements)
       case 'ArrayAccess':
         return this.evaluateIndexGet(expr)
       case 'ArrayAssign':
@@ -1516,9 +1877,13 @@ class Interpreter {
       }
       case 'Call': {
         const callee = this.evaluate(expr.callee)
-        const args = expr.arguments.map((a) => this.evaluate(a))
+        const args = this.evaluateSpreadList(expr.arguments)
         return this.callValue(callee, args, expr.paren.line)
       }
+      case 'Spread':
+        throw new MRTError(
+          "'...' is only allowed in a call's arguments or an array literal.",
+          expr.token.line, 'TypeError')
       case 'FunctionExpr':
         return new MRTFunction(expr.params, expr.body, this.environment,
           expr.name ? expr.name.lexeme : null)
@@ -1539,7 +1904,7 @@ class Interpreter {
       case 'Unary': {
         const right = this.evaluate(expr.right)
         if (expr.operator.type === 'MINUS') {
-          if (typeof right !== 'number') throw new MRTError("Operand of '-' must be a number.", expr.operator.line)
+          if (typeof right !== 'number') throw new MRTError("Operand of '-' must be a number.", expr.operator.line, 'TypeError')
           return -right
         }
         if (expr.operator.type === 'NOT') return !this.isTruthy(right)
@@ -1556,7 +1921,7 @@ class Interpreter {
 
     if (target instanceof Map) {
       this.checkHashableKey(index)
-      if (!target.has(index)) throw new MRTError(`Key ${JSON.stringify(stringify(index))} not found in object.`)
+      if (!target.has(index)) throw new MRTError(`Key ${JSON.stringify(stringify(index))} not found in object.`, undefined, 'KeyError')
       return target.get(index)
     }
     if (Array.isArray(target)) {
@@ -1567,7 +1932,7 @@ class Interpreter {
       const i = this.requireArrayIndex(index, target.length)
       return target[i]
     }
-    throw new MRTError('Can only index into arrays, objects, or strings.')
+    throw new MRTError('Can only index into arrays, objects, or strings.', undefined, 'TypeError')
   }
 
   private evaluateIndexSet(expr: Extract<Expr, { kind: 'ArrayAssign' }>): unknown {
@@ -1586,21 +1951,21 @@ class Interpreter {
       return value
     }
     if (typeof target === 'string') {
-      throw new MRTError('Strings are immutable; cannot assign to a character index.')
+      throw new MRTError('Strings are immutable; cannot assign to a character index.', undefined, 'TypeError')
     }
-    throw new MRTError('Can only assign into arrays or objects.')
+    throw new MRTError('Can only assign into arrays or objects.', undefined, 'TypeError')
   }
 
   private requireArrayIndex(index: unknown, length: number): number {
-    if (typeof index !== 'number') throw new MRTError('Array index must be a number.')
+    if (typeof index !== 'number') throw new MRTError('Array index must be a number.', undefined, 'IndexError')
     const i = Math.trunc(index)
-    if (i < 0 || i >= length) throw new MRTError(`Array index ${i} out of bounds for array of length ${length}.`)
+    if (i < 0 || i >= length) throw new MRTError(`Array index ${i} out of bounds for array of length ${length}.`, undefined, 'IndexError')
     return i
   }
 
   private checkHashableKey(key: unknown) {
     if (Array.isArray(key) || key instanceof Map) {
-      throw new MRTError('Object keys must be numbers, strings, or booleans (not arrays or objects).')
+      throw new MRTError('Object keys must be numbers, strings, or booleans (not arrays or objects).', undefined, 'TypeError')
     }
   }
 
@@ -1612,7 +1977,7 @@ class Interpreter {
 
     const checkNumbers = (opSym: string) => {
       if (typeof left !== 'number' || typeof right !== 'number') {
-        throw new MRTError(`Operands of '${opSym}' must be numbers.`, line)
+        throw new MRTError(`Operands of '${opSym}' must be numbers.`, line, 'TypeError')
       }
     }
 
@@ -1629,11 +1994,11 @@ class Interpreter {
         return (left as number) * (right as number)
       case 'DIVIDE':
         checkNumbers('/')
-        if ((right as number) === 0) throw new MRTError('Division by zero.', line)
+        if ((right as number) === 0) throw new MRTError('Division by zero.', line, 'ArithmeticError')
         return (left as number) / (right as number)
       case 'MODULO':
         checkNumbers('%')
-        if ((right as number) === 0) throw new MRTError('Modulo by zero.', line)
+        if ((right as number) === 0) throw new MRTError('Modulo by zero.', line, 'ArithmeticError')
         return (left as number) % (right as number)
       case 'EQUALS':
         return this.isEqual(left, right)
@@ -1648,14 +2013,14 @@ class Interpreter {
       case 'LESS_EQUAL':
         return this.compare(left, right, line) <= 0
       default:
-        throw new MRTError(`Unknown binary operator '${expr.operator.lexeme}'.`, line)
+        throw new MRTError(`Unknown binary operator '${expr.operator.lexeme}'.`, line, 'RuntimeError')
     }
   }
 
   private compare(left: unknown, right: unknown, line: number): number {
     if (typeof left === 'string' && typeof right === 'string') return left < right ? -1 : left > right ? 1 : 0
     if (typeof left === 'number' && typeof right === 'number') return left < right ? -1 : left > right ? 1 : 0
-    throw new MRTError('Comparison operators require two numbers or two strings.', line)
+    throw new MRTError('Comparison operators require two numbers or two strings.', line, 'TypeError')
   }
 
   private isEqual(a: unknown, b: unknown): boolean {
@@ -1678,7 +2043,7 @@ export interface RunResult {
   errors: string[]
 }
 
-export function runMRT(source: string): RunResult {
+export function runMRT(source: string, options: RunOptions = {}): RunResult {
   try {
     const tokens = new Lexer(source).scanTokens()
     const parser = new Parser(tokens)
@@ -1688,7 +2053,7 @@ export function runMRT(source: string): RunResult {
       return { output: [], errors: parser.errors.map((e) => `Syntax Error: ${e.message}`) }
     }
 
-    const interpreter = new Interpreter()
+    const interpreter = new Interpreter(options)
     interpreter.interpret(statements)
     return { output: interpreter.output, errors: [] }
   } catch (e) {

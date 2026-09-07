@@ -12,9 +12,11 @@ def run_file(path: str) -> int:
         print(f"Could not read file '{path}': {e.strerror}", file=sys.stderr)
         return 1
 
-    return run(source)
+    # The path is passed through so that `import "./x.mrt"` resolves
+    # relative to this file rather than the working directory.
+    return run(source, path)
 
-def run(source: str) -> int:
+def run(source: str, path: str = None) -> int:
     # Create lexer and generate tokens
     try:
         lexer = Lexer(source)
@@ -33,7 +35,7 @@ def run(source: str) -> int:
         return 65
 
     # Interpret the AST
-    interpreter = Interpreter()
+    interpreter = Interpreter(module_path=path)
     interpreter.interpret(statements)
     return 0
 

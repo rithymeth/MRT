@@ -1,0 +1,14 @@
+// A library module: everything marked `export` is importable, everything
+// else is private to this file.
+
+export var PI = 3.14159265;
+
+export func circleArea(radius) { return PI * radius * radius; }
+export func rectArea(width, height = width) { return width * height; }
+
+// Private helper -- not exported, so importers can't reach it.
+func roundTo(n, places) { return round(n, places); }
+
+export func describeCircle(radius, places = 2) {
+    return "circle r=${radius}: area ${roundTo(circleArea(radius), places)}";
+}

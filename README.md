@@ -8,7 +8,10 @@ MRT is a modern, expressive programming language designed for simplicity and rea
 - Dynamic typing
 - First-class functions: anonymous `func(...)` values, lexical closures, and
   a `map`/`filter`/`reduce`/`sort` pipeline
-- Recoverable errors with `throw` and `try`/`catch`/`finally`
+- Default and rest parameters, plus `...` spread
+- A module system: `export` / `import` across files
+- Recoverable errors with `throw` and `try`/`catch`/`finally`, classified by
+  kind and carrying a stack trace
 - String interpolation, `null`, bareword object keys, and `for`-`in` loops
 - Rich built-in functions for arrays, objects, strings and math
 - Deterministic seeded randomness
@@ -106,6 +109,20 @@ print(reduce(nums, func(a, b) { return a + b; }));      // 17
 print(sort(nums, func(a, b) { return b - a; }));        // [8, 5, 3, 1]
 ```
 
+### Parameters: defaults, rest and spread
+
+```mrt
+func greet(name, greeting = "Hello") { return "${greeting}, ${name}!"; }
+func total(label, ...nums) { return "${label}: ${sum(nums)}"; }
+
+print(greet("Ada"));                                    // Hello, Ada!
+print(total("all", 1, 2, 3));                           // all: 6
+
+var xs = [1, 2];
+print(total("spread", ...xs, 3));                       // spread: 6
+print([0, ...xs, 9]);                                   // [0, 1, 2, 9]
+```
+
 ### Error handling
 
 ```mrt
@@ -115,6 +132,13 @@ func safeDivide(a, b) {
 
 print(safeDivide(10, 0));                               // null
 
+// Errors carry a kind, and catch clauses can be guarded.
+try {
+    risky();
+}
+catch (e) if (get(e, "kind", "") == "IndexError") { print("bad index"); }
+catch (e) { print("something else:", e); }
+
 try {
     throw {field: "age", reason: "must not be negative"};
 } catch (e) {
@@ -122,6 +146,18 @@ try {
 } finally {
     print("always runs");
 }
+```
+
+### Modules
+
+```mrt
+// lib/math.mrt
+export var PI = 3.14159;
+export func square(n) { return n * n; }
+
+// main.mrt
+import { PI, square as sq } from "./lib/math.mrt";
+func main() { print(PI, sq(4)); }
 ```
 
 ### Interpolation, null and for-in
@@ -149,7 +185,9 @@ for (ch in "hi") { print(ch); }
 Loops also support `break` and `continue`.
 
 Reserved words: `func return if else while for print var true false break
-continue null try catch finally throw in`.
+continue null try catch finally throw in import export from as`.
+
+`...` marks a rest parameter or spreads an array.
 
 ## Built-in Functions
 
@@ -205,7 +243,8 @@ continue null try catch finally throw in`.
   - `examples.md`: Example programs and tutorials
   - `getting_started.md`: Installation and quick start
 - `examples/`: Example MRT programs (`functions.mrt`, `errors.mrt`,
-  `modern_syntax.mrt`, `stdlib.mrt`, and more)
+  `modern_syntax.mrt`, `stdlib.mrt`, `modules.mrt`, and more)
+  - `examples/lib/`: library modules imported by `modules.mrt`
 - `tests/`: Test suite
 
 ## Documentation

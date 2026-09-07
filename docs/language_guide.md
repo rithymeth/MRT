@@ -12,6 +12,7 @@
 9. [String Operations](#string-operations)
 10. [Error Handling](#error-handling)
 11. [Sequence and Utility Functions](#sequence-and-utility-functions)
+12. [Modules](#modules)
 
 See also the [Operators](#operators) reference, [Break and Continue](#break-and-continue),
 and the [full language specification](LANGUAGE_SPEC.md) for precise grammar and semantics.
@@ -212,6 +213,42 @@ print(apply(double, 5));      // 10
 
 A declared function's name is an ordinary variable holding the same kind of
 value, so `map([1, 2, 3], add)` works just as well as an inline `func`.
+
+### Default and rest parameters
+
+```mrt
+func greet(name, greeting = "Hello", punct = "!") {
+    return "${greeting}, ${name}${punct}";
+}
+print(greet("Ada"));            // Hello, Ada!
+print(greet("Ada", "Hi"));      // Hi, Ada!
+
+func total(label, ...nums) { return "${label}: ${sum(nums)}"; }
+print(total("all", 1, 2, 3));   // all: 6
+print(total("none"));           // none: 0   -- rest is [], never null
+```
+
+Defaults are worked out on each call, so they can refer to an earlier
+parameter, and a `[]` default is a fresh array every time rather than one
+shared between calls:
+
+```mrt
+func box(width, height = width) { return width * height; }
+print(box(4));                  // 16
+
+func collect(item, into = []) { push(into, item); return into; }
+print(collect(1), collect(2));  // [1] [2]
+```
+
+Spread `...` expands an array into arguments, into an array literal, or
+into `print`:
+
+```mrt
+var xs = [1, 2];
+print(total("spread", ...xs, 3));   // spread: 6
+print([0, ...xs, 9]);               // [0, 1, 2, 9]
+print(...xs);                       // 1 2
+```
 
 ### Closures
 
@@ -476,13 +513,48 @@ print(safeDivide(10, 2));   // 5
 print(safeDivide(10, 0));   // null
 ```
 
+### Sorting errors by kind
+
+Every interpreter-raised error carries a `kind` you can branch on, and a
+`catch` clause can take an `if` guard. Clauses are tried in order, and one
+without a guard is the fallback:
+
+```mrt
+try {
+    risky();
+}
+catch (e) if (get(e, "kind", "") == "IndexError") { print("bad index"); }
+catch (e) if (get(e, "kind", "") == "ArithmeticError") { print("bad maths"); }
+catch (e) { print("something else:", e); }
+```
+
+The kinds are `TypeError`, `ArityError`, `IndexError`, `KeyError`,
+`NameError`, `ValueError`, `ArithmeticError` and `RuntimeError`.
+
+Use `get(e, "kind", "")` rather than `e.kind` in a guard: a `throw` can
+deliver any value, including a string with no `kind` at all, and `e.kind`
+would then fail *inside* the guard.
+
+### Stack traces
+
+`e.stack` names the functions the error came through, innermost first:
+
+```mrt
+func c() { var a = [1]; return a[99]; }
+func b() { return c(); }
+func main() {
+    try { b(); } catch (e) { print(e.stack); }   // [c, b]
+}
+```
+
 Notes:
 
 - `finally` runs on every exit path — normal completion, a caught error, an
   error still propagating, and a `return` passing through it.
-- `catch` and `finally` are each optional, but you need at least one.
-- A `catch` block catches *everything*, including typos inside the `try`, so
-  keep `try` blocks narrow.
+- You need at least one `catch` clause or a `finally`.
+- An unguarded `catch` catches *everything*, including typos inside the
+  `try`, so keep `try` blocks narrow.
+- If no guard matches, the error keeps propagating rather than vanishing.
 
 See `examples/errors.mrt`.
 
@@ -525,3 +597,63 @@ for (i in range(3)) {
 ```
 
 See `examples/stdlib.mrt`.
+
+
+## Modules
+
+A program can span several files. Mark what a file offers with `export`,
+and pull it in elsewhere with `import`.
+
+```mrt
+// lib/math.mrt
+export var PI = 3.14159;
+export func square(n) { return n * n; }
+func helper() { return "private"; }     // not exported
+
+// main.mrt
+import { PI, square } from "./lib/math.mrt";
+import { square as sq } from "./lib/math.mrt";   // or rename it
+
+func main() { print(PI, square(4), sq(3)); }
+```
+
+Run it the usual way — the entry file's directory is what relative paths
+resolve against:
+
+```bash
+python -m src main.mrt
+```
+
+Things worth knowing:
+
+- **Paths are explicitly relative and name a file.** They start with `./`
+  or `../` and include the `.mrt` extension. There is no search path, so an
+  import always tells you exactly which file it loads.
+- **`import` and `export` only work at the top level of a file** — not
+  inside a function or any other block.
+- **A module runs once**, however many files import it. Its top-level code
+  (including `print`) runs at that first import.
+- **Anything not exported stays private** to its file.
+- **Circular imports are reported**, with the cycle named, rather than
+  hanging or handing back a half-built module.
+
+Functions from a module close over that module's variables, so shared state
+really is shared:
+
+```mrt
+// counter.mrt
+var n = 0;
+export func next() { n += 1; return n; }
+export func reset() { n = 0; }
+```
+
+Every importer of `counter.mrt` sees the same `n`.
+
+### In the browser
+
+The Playground edits one buffer, so it ships a couple of built-in modules
+(`./stats.mrt` and `./text.mrt`) you can import to try the feature out. The
+same program run from the command line resolves those imports against real
+files instead — the semantics are identical.
+
+See `examples/modules.mrt` and `examples/lib/`.
