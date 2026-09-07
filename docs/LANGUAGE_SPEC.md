@@ -34,12 +34,14 @@ languages. Concretely:
 
 - **Goals:** readable C/JS-family syntax; a handful of clean, orthogonal
   data types (number, string, boolean, array, object, null, function);
-  predictable, strict runtime errors (index out of bounds, division by
-  zero, and similar always raise rather than silently producing `null` or
-  `NaN`); a reference implementation short enough to read start to finish.
-- **Non-goals (for now):** a module/import system, exceptions/`try`-`catch`,
-  a static type system, integers distinct from floats, user-defined types
-  or classes, string interpolation, or multi-file programs. See
+  first-class functions with lexical closures; predictable, strict runtime
+  errors (index out of bounds, division by zero, and similar always raise
+  rather than silently producing `null` or `NaN`) that a program may
+  nonetheless catch and recover from; a reference implementation short
+  enough to read start to finish.
+- **Non-goals (for now):** a module/import system, a static type system,
+  integers distinct from floats, user-defined types or classes, or
+  multi-file programs. See
   [Future work](#future-work--explicitly-out-of-scope).
 
 ## Lexical grammar
@@ -60,9 +62,36 @@ statement separators (see [Known ambiguities](#known-ambiguities-by-design)).
 | Kind    | Examples                    | Notes |
 |---------|------------------------------|-------|
 | Number  | `0`, `42`, `3.14159`         | Always stored as a 64-bit float internally, even for `42`. Printed without a trailing `.0` when the value is whole. |
-| String  | `"hello"`, `"line1\nline2"`  | Double-quoted only. Supports the escapes `\n \t \r \" \\ \0`. No string interpolation. |
+| String  | `"hello"`, `"line1\nline2"`  | Double-quoted only. Supports the escapes `\n \t \r \" \\ \0 \$`. |
+| Template | `"Hi ${name}, ${1 + 2}"`    | A string containing one or more `${ expression }` runs. See [String interpolation](#string-interpolation) below. |
 | Boolean | `true`, `false`               | |
-| Null    | *(no literal — see below)*    | There is no `null` keyword. A value is `null` when a function falls off its end without a `return`, or a `var` is declared without an initializer. `toString(x)` renders it as `"null"`. |
+| Null    | `null`                        | Also the value of a function that falls off its end without a `return`, and of a `var` declared without an initializer. `toString(x)` renders it as `"null"`. |
+
+### String interpolation
+
+Inside a double-quoted string, `${ expression }` is replaced by the
+expression's value rendered exactly as `print` and `toString` render it:
+
+```mrt
+var name = "Ada";
+var scores = [90, 85];
+print("Hi ${name}, you have ${len(scores)} scores: ${scores}");
+// Hi Ada, you have 2 scores: [90, 85]
+```
+
+Details:
+
+- The embedded text is a full expression, including calls, object
+  literals, and even an immediately-invoked function — `"${ func(x) { return x + 1; }(41) }"`
+  prints `42`. Nested braces and nested string literals are tracked, so
+  `"${ get({"a": 5}, "a") }"` works.
+- Interpolation is resolved at *parse* time: the lexer captures each
+  fragment's source text and the parser re-lexes it into a real AST. There
+  is no runtime `eval`, and a malformed fragment is a syntax error
+  reported against the line the fragment appears on.
+- `\${` produces a literal `${`. An empty `${}` is a syntax error.
+- A string containing no `${` is lexed exactly as before, so interpolation
+  costs existing programs nothing.
 
 ### Identifiers and keywords
 
@@ -73,7 +102,12 @@ Reserved keywords (cannot be used as identifiers):
 ```
 func return if else while for print var
 true false break continue
+null try catch finally throw in
 ```
+
+The second row was added in the current revision. In particular `in` is now
+reserved: a program that used `in` as a variable or function name no longer
+parses.
 
 ### Operators and punctuation
 
@@ -98,7 +132,7 @@ MRT has exactly seven kinds of runtime value:
 | `array`    | `[1, 2, 3]`                     | always truthy (including `[]`) |
 | `object`   | `{"a": 1}`                      | always truthy (including `{}`) |
 | `null`     | *(see above)*                   | always falsy |
-| `function` | a `func` declaration, passed by reference | always truthy |
+| `function` | a `func` declaration or a `func(...) { ... }` expression, passed by reference | always truthy |
 
 **Truthiness** (used by `if`, `while`, `for`'s condition, and `&&`/`||`):
 only `null` and `false` are falsy. Every other value — including `0`,
@@ -146,12 +180,15 @@ varDecl        = "var" IDENTIFIER ( "=" expression )? ";"? ;
 
 statement      = exprStmt
                | forStmt
+               | forInStmt
                | ifStmt
                | printStmt
                | returnStmt
                | whileStmt
                | breakStmt
                | continueStmt
+               | tryStmt
+               | throwStmt
                | block ;
 
 exprStmt       = expression ";"? ;
@@ -159,6 +196,8 @@ exprStmt       = expression ";"? ;
 forStmt        = "for" "(" ( varDecl | exprStmt | ";" )
                             expression? ";"
                             expression? ")" statement ;
+
+forInStmt      = "for" "(" "var"? IDENTIFIER "in" expression ")" statement ;
 
 ifStmt         = "if" "(" expression ")" statement ( "else" statement )? ;
 
@@ -172,6 +211,13 @@ whileStmt      = "while" "(" expression ")" statement ;
 
 breakStmt      = "break" ";"? ;
 continueStmt   = "continue" ";"? ;
+
+tryStmt        = "try" block
+                 ( "catch" "(" IDENTIFIER ")" block )?
+                 ( "finally" block )? ;
+               (* at least one of catch/finally must be present *)
+
+throwStmt      = "throw" expression ";"? ;
 
 block          = "{" declaration* "}" ;
 
@@ -191,12 +237,20 @@ unary          = ( "-" | "!" ) unary | call ;
 call           = primary ( "(" arguments? ")" | "[" expression "]" | "." IDENTIFIER )* ;
 arguments      = expression ( "," expression )* ;
 
-primary        = NUMBER | STRING | "true" | "false"
+primary        = NUMBER | STRING | TEMPLATE | "true" | "false" | "null"
                | IDENTIFIER
+               | funcExpr
                | "(" expression ")"
                | "[" ( expression ( "," expression )* )? "]"
                | "{" ( objectEntry ( "," objectEntry )* )? "}" ;
-objectEntry    = expression ":" expression ;
+
+funcExpr       = "func" IDENTIFIER? "(" parameters? ")" block ;
+
+objectEntry    = ( IDENTIFIER | expression ) ":" expression ;
+               (* a bareword IDENTIFIER key is the *string* of that name;
+                  see Known ambiguities *)
+
+TEMPLATE       = (* a string literal containing >= 1 "${" expression "}" *) ;
 ```
 
 Notes on the grammar as written above (a simplification of the actual
@@ -210,6 +264,15 @@ recursive-descent parser in `src/parser.py`):
 - `x += y` desugars to `x = x + y` at parse time (and similarly for
   `-= *= /= %=`); there is no separate compound-assignment AST node.
 - `obj.key` desugars to `obj["key"]` at parse time.
+- `func` is a *declaration* only when immediately followed by an
+  identifier; `func(` in statement position starts an anonymous function
+  expression. This is decided with one token of lookahead.
+- `for (` likewise uses one token of lookahead to tell `forInStmt` from
+  the C-style `forStmt`.
+- A TEMPLATE token carries the alternating literal-text and
+  expression-source fragments; the parser lexes and parses each fragment
+  into a normal expression, so an interpolation is an ordinary AST node
+  by the time the interpreter sees it.
 
 ## Expressions and operator precedence
 
@@ -252,10 +315,21 @@ Otherwise both operands must be numbers.
   after each iteration, *including* one that used `continue`. `init`'s
   scope is the loop's own scope (a `var i` in the initializer doesn't leak
   into the surrounding block).
-- **`break`**: exits the nearest enclosing `while` or `for` immediately.
+- **`for (x in iterable) body`** / **`for (var x in iterable) body`**:
+  iterates an array's *elements*, a string's *characters*, or an object's
+  *keys* (in insertion order). Anything else is a runtime error. The loop
+  variable is bound afresh in a new scope on each iteration — see
+  [Scoping and closures](#scoping-and-closures) for why that matters. The
+  optional `var` is accepted but changes nothing.
+- **`break`**: exits the nearest enclosing `while`, `for`, or `for`-`in`
+  immediately.
 - **`continue`**: skips to the next iteration — for `while`, straight to
   the condition check; for `for`, first running the increment, then the
-  condition check.
+  condition check; for `for`-`in`, straight to the next element.
+- **`throw expr`**: raises `expr` (*any* MRT value) as an error, unwinding
+  until a `catch` catches it. Uncaught, it halts the program with
+  `Runtime Error: Uncaught <value>`.
+- **`try` / `catch` / `finally`**: see [Error model](#error-model).
 - **`return`**: exits the current function immediately with a value
   (`null` if none given). A bare `return` at the top level, outside any
   function, is a runtime error (there's no implicit outer function).
@@ -297,16 +371,54 @@ func main() {
 }
 ```
 
-Functions are not first-class in the sense of anonymous function
-expressions (`func` is always a *declaration* with a name) — but a
-declared function's name is just a regular variable holding a function
-value, so it can be passed around, stored in arrays/objects, and returned,
-as above.
+Functions are fully first-class. Besides the `func name(...)` declaration
+above, `func(...) { ... }` is an *expression* producing an anonymous
+function value:
+
+```mrt
+var double = func(x) { return x * 2; };
+var adder  = func(n) { return func(x) { return x + n; }; };
+print(map([1, 2, 3], double));   // [2, 4, 6]
+print(adder(10)(5));             // 15
+```
+
+A declaration and an expression produce the same kind of value; they
+differ only in that a declaration also binds a name (and that the value
+prints as `<function name>` rather than `<function>`). An anonymous
+function may optionally carry a name purely for that printed form:
+`func fact(n) { ... }` in expression position.
+
+Recursion through a `var` works because the initializer is evaluated
+before the name is bound *in the same environment* the closure captured —
+by the time the body runs, the name resolves:
+
+```mrt
+var fact = func(n) {
+    if (n <= 1) { return 1; }
+    return n * fact(n - 1);
+};
+```
+
+### Per-iteration binding in `for`-`in`
+
+The C-style `for` loop has a single loop variable that every iteration
+mutates, so closures created in the body all observe its final value.
+`for`-`in` deliberately differs: it creates a *new* binding each
+iteration, so closures capture that iteration's value.
+
+```mrt
+var fns = [];
+for (x in [1, 2, 3]) { push(fns, func() { return x; }); }
+print(map(fns, func(f) { return f(); }));   // [1, 2, 3], not [3, 3, 3]
+```
+
+This is the same choice JavaScript made for `let` in `for...of`, and it is
+the main reason to prefer `for`-`in` when the body creates closures.
 
 ## Error model
 
-There are exactly two error phases, both fatal to the whole program (MRT
-has no exception handling — a runtime error always stops execution):
+There are two error phases. Syntax errors are always fatal; runtime
+errors halt the program *unless* a `try`/`catch` catches them:
 
 1. **Syntax errors** (`MRTSyntaxError`, raised by the lexer or parser).
    The parser collects *all* syntax errors it can find in one pass (via
@@ -318,18 +430,66 @@ has no exception handling — a runtime error always stops execution):
 2. **Runtime errors** (`MRTRuntimeError`), such as division/modulo by
    zero, an out-of-bounds array index, an undefined variable, a type
    mismatch (e.g. comparing a number to an array), or calling a
-   non-function. These are reported (with a source line number when one
-   is available) and the program halts at that point — any output already
-   produced via `print` before the error stays in the output.
+   non-function. Uncaught, these are reported (with a source line number
+   when one is available) and the program halts at that point — any output
+   already produced via `print` before the error stays in the output.
 
 Error messages include a `[line N]` suffix whenever the offending token's
 line is known.
+
+### Catching errors
+
+```mrt
+try {
+    risky();
+} catch (e) {
+    print("failed:", e);
+} finally {
+    print("always runs");
+}
+```
+
+- **`catch (e)`** binds the error to `e` in a scope private to the catch
+  block; an outer variable of the same name is untouched.
+- **What `e` holds** depends on where the error came from:
+  - `throw expr` delivers `expr` itself, whatever its type — a string, an
+    object, `null`, anything.
+  - An interpreter-raised runtime error is converted to an *object* with
+    exactly two keys: `message` (the text without the `[line N]` suffix)
+    and `line` (a number, or `null` if unknown). So
+    `catch (e) { print(e.message); }` works uniformly for built-in
+    failures.
+- **`finally`** runs on every path out of the `try`: normal completion, a
+  caught throw, an uncaught throw still unwinding, and a `return`,
+  `break` or `continue` passing through it.
+- Either `catch` or `finally` may be omitted, but not both — `try { }`
+  alone is a syntax error. A `try`/`finally` with no `catch` runs the
+  cleanup and lets the error keep propagating.
+- Re-throwing from inside a `catch` block is allowed and propagates to the
+  next enclosing `try`.
+
+Because `catch` binds the interpreter's own errors, a program can wrap a
+partial operation instead of aborting:
+
+```mrt
+func safeDivide(a, b) {
+    try { return a / b; } catch (e) { return null; }
+}
+```
 
 ## Built-in functions
 
 All built-ins are ordinary global variables holding function values —
 nothing stops a program from shadowing one with `var len = ...;` inside a
-narrower scope (not recommended, but not special-cased either).
+narrower scope (not recommended, but not special-cased either), and they
+can be passed to higher-order functions like any other value
+(`map(xs, toUpper)`).
+
+`toString`/`print` render a function as `<function name>` for a named
+declaration, `<function>` for an anonymous one, and `<builtin>` for a
+built-in. (Built-ins deliberately do not expose their host-language
+identity: rendering them naively would print a Python repr complete with a
+memory address on one side and JavaScript source text on the other.)
 
 ### Arrays
 
@@ -343,12 +503,41 @@ narrower scope (not recommended, but not special-cased either).
 | `indexOf(arr, v)` | `(array, any) -> number` | `-1` if not found |
 | `has(arr\|obj, v\|k)` | `(array\|object, any) -> boolean` | value-membership for arrays, key-membership for objects |
 | `get(arr\|obj, k, default?)` | `(array\|object, any, any?) -> any` | never raises; returns `default` (or `null`) instead of erroring |
+| `reverse(x)` | `(array\|string) -> array\|string` | returns a new value; does not mutate |
+| `unique(arr)` | `(array) -> array` | first occurrence wins; uses structural equality |
+| `flatten(arr, depth?)` | `(array, number?) -> array` | `depth` defaults to `1` |
+| `zip(a, b)` | `(array, array) -> array` | array of `[a[i], b[i]]`, truncated to the shorter |
+| `enumerate(arr)` | `(array) -> array` | array of `[index, value]` |
+| `count(arr, v)` | `(array, any) -> number` | structural equality |
+| `sum(arr)` | `(array) -> number` | error if any element isn't a number; `sum([])` is `0` |
+| `range(end)` / `range(start, end)` / `range(start, end, step)` | `(number, number?, number?) -> array` | half-open, like Python; `step` may be negative but not `0` |
+
+### Higher-order
+
+Each takes the function as its *last* argument and never mutates its
+input. The callback is called with one element at a time (two for
+`reduce` and `sort`).
+
+| Function | Signature | Notes |
+|---|---|---|
+| `map(arr, f)` | `(array, function) -> array` | |
+| `filter(arr, f)` | `(array, function) -> array` | keeps elements where `f(x)` is truthy |
+| `reduce(arr, f, init?)` | `(array, function, any?) -> any` | without `init`, starts from `arr[0]`; an empty array without `init` is an error |
+| `find(arr, f)` | `(array, function) -> any` | first match, or `null` |
+| `some(arr, f)` / `every(arr, f)` | `(array, function) -> boolean` | |
+| `sort(arr, compare?)` | `(array, function?) -> array` | returns a **new** array. Without `compare`, the array must be all numbers or all strings. `compare(a, b)` returns negative / zero / positive. Stable in both implementations. |
 
 ### Strings
 
 `split`, `substring`, `toUpper`, `toLower`, `trim`, `replace`,
 `startsWith`, `endsWith`, `contains` — see `docs/language_guide.md` for
 signatures; unchanged in this revision.
+
+| Function | Signature | Notes |
+|---|---|---|
+| `repeat(s, n)` | `(string, number) -> string` | `n` must not be negative |
+| `padStart(s, width, pad?)` | `(string, number, string?) -> string` | `pad` defaults to `" "`; a longer string is returned unchanged; a multi-character pad is truncated to fit |
+| `padEnd(s, width, pad?)` | `(string, number, string?) -> string` | as above, on the right |
 
 ### Objects
 
@@ -372,6 +561,29 @@ signatures; unchanged in this revision.
 | `type(v)` | `(any) -> string` | one of `"number" "string" "boolean" "array" "object" "null" "function"` |
 | `toNumber(v)` | `(string\|number\|boolean) -> number` | error if a string doesn't parse |
 | `toString(v)` | `(any) -> string` | same formatting `print` uses |
+
+### Randomness
+
+| Function | Signature | Notes |
+|---|---|---|
+| `random(seed)` | `(number) -> function` | returns a zero-argument generator producing the next value in `[0, 1)` |
+
+`random` is *seeded and deterministic*: there is no unseeded global
+random, and both implementations run the identical xorshift32 over uint32
+state, so a seeded program prints the same numbers in the browser
+Playground as on the command line (which is also what lets the parity
+checker compare them). Each call to `random(seed)` yields an independent
+generator.
+
+```mrt
+var rng = random(2026);
+var roll = floor(rng() * 6) + 1;
+```
+
+Raw generator output is a fraction with a 2^32 denominator; prefer
+`floor(rng() * n)` when you want whole numbers, both for readability and
+because it avoids relying on float-formatting agreement between the two
+runtimes.
 
 ## Known ambiguities (by design)
 
@@ -398,15 +610,23 @@ signatures; unchanged in this revision.
   effects and immediately discarded, which isn't meaningful anyway —
   assign it to a variable or pass it to a function instead. Same
   ambiguity as JavaScript.
-- **Object keys are expressions, not bareword identifiers.**
-  `{"name": "Ada"}` is a string-keyed object. `{name: "Ada"}` is *not*
-  shorthand for the same thing — `name` there is parsed as a variable
-  reference and evaluated, raising "Undefined variable 'name'" unless a
-  variable named `name` happens to be in scope (in which case its
-  *value* becomes the key, probably not what was intended). This is a
-  deliberate departure from JavaScript's object-literal shorthand, chosen
-  to keep the grammar unambiguous without lookahead: always quote your
-  keys.
+- **A bareword object key is the string of that name, not a variable
+  reference.** `{name: "Ada"}` means `{"name": "Ada"}`, matching
+  JavaScript. **This reverses the previous revision's behaviour**, where
+  `name` was evaluated as a variable — a program relying on the old
+  meaning changes silently rather than erroring, so it is worth grepping
+  for unquoted keys when upgrading. To use a variable's *value* as the
+  key, parenthesise it:
+
+  ```mrt
+  var k = "dyn";
+  print({k: 1});     // {k: 1}    -- the literal key "k"
+  print({(k): 1});   // {dyn: 1}  -- the variable's value
+  ```
+
+  The parser decides with one token of lookahead: an `IDENTIFIER`
+  immediately followed by `:` is a bareword key; anything else is parsed
+  as an expression.
 - **Compound assignment on an indexed target evaluates the target and
   index expressions twice.** `arr[f()] += 1` desugars to
   `arr[f()] = arr[f()] + 1`, calling `f()` twice. Harmless for the
@@ -420,6 +640,23 @@ signatures; unchanged in this revision.
   (and `false`/`0`) identically, so `{1: "a"}[true]` returns `"a"` instead
   of raising a missing-key error. Avoid mixing boolean and numeric keys in
   the same object.
+- **`in` is now a reserved word.** `for (x in xs)` needs it, so a program
+  that used `in` as a variable or function name no longer parses. The same
+  applies to `null`, `try`, `catch`, `finally` and `throw`.
+- **`${` inside a string always begins an interpolation.** A string that
+  legitimately contains that character pair must escape it as `\${`. This
+  is the one way an existing string literal's meaning can change under
+  this revision.
+- **A `catch` block catches *everything*, including the interpreter's own
+  errors.** There is no error-type filter, so a `catch` meant for a
+  program's own `throw` will also swallow a typo'd variable name inside
+  the `try` block. Keep `try` blocks narrow, and check `type(e)` or
+  `has(e, "message")` if the distinction matters.
+- **`sort()` without a comparator refuses mixed types.** JavaScript's
+  default of coercing every element to a string and comparing
+  lexicographically (so `[10, 9]` sorts to `[10, 9]`) is a well-known
+  footgun; MRT raises instead. Pass an explicit comparator for anything
+  other than a uniform array of numbers or strings.
 
 ## Future work / explicitly out of scope
 
@@ -427,13 +664,13 @@ Deliberately not implemented in this revision (candidates for a future
 one, listed so a contributor doesn't have to guess whether an omission
 was an oversight):
 
-- `try` / `catch` / user-recoverable exceptions (today, any runtime error
-  halts the whole program).
-- Anonymous function expressions / lambdas (`func` is always a named
-  declaration).
 - A module or `import` system (every program is a single file).
 - User-defined types, classes, or structs.
 - Integer vs. float distinction (everything numeric is a 64-bit float).
-- String interpolation (`` `Hello, ${name}` ``-style).
-- A standard library beyond the built-ins listed above (no file I/O,
-  no randomness, no date/time).
+- Typed or filtered `catch` clauses (`catch (e: SomeType)`), and a stack
+  trace on the error object — today `e` carries only `message` and `line`.
+- Iterator protocol / generators; `for`-`in` works on the three built-in
+  container types and nothing else.
+- Variadic user functions and default parameter values (arity is exact).
+- File I/O and date/time. `random` is seeded and deterministic by design,
+  so there is deliberately no entropy source either.

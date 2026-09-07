@@ -5,12 +5,15 @@ MRT is a modern, expressive programming language designed for simplicity and rea
 ## Features
 
 - Simple and expressive syntax
-- Dynamic typing with type inference
-- First-class functions
-- Rich built-in functions
-- Comprehensive array operations
-- Powerful string manipulation
-- Modern module system
+- Dynamic typing
+- First-class functions: anonymous `func(...)` values, lexical closures, and
+  a `map`/`filter`/`reduce`/`sort` pipeline
+- Recoverable errors with `throw` and `try`/`catch`/`finally`
+- String interpolation, `null`, bareword object keys, and `for`-`in` loops
+- Rich built-in functions for arrays, objects, strings and math
+- Deterministic seeded randomness
+- A browser Playground running a second interpreter kept byte-identical to
+  the reference one by an automated parity check
 
 ## Installation
 
@@ -83,6 +86,57 @@ func object_demo() {
 }
 ```
 
+### Functions, closures and pipelines
+
+```mrt
+var double = func(x) { return x * 2; };
+print(map([1, 2, 3], double));                          // [2, 4, 6]
+
+func makeCounter() {
+    var count = 0;
+    return func() { count += 1; return count; };
+}
+var next = makeCounter();
+next();
+print(next());                                          // 2
+
+var nums = [5, 3, 8, 1];
+print(filter(nums, func(x) { return x > 3; }));         // [5, 8]
+print(reduce(nums, func(a, b) { return a + b; }));      // 17
+print(sort(nums, func(a, b) { return b - a; }));        // [8, 5, 3, 1]
+```
+
+### Error handling
+
+```mrt
+func safeDivide(a, b) {
+    try { return a / b; } catch (e) { return null; }
+}
+
+print(safeDivide(10, 0));                               // null
+
+try {
+    throw {field: "age", reason: "must not be negative"};
+} catch (e) {
+    print(e.field, "-", e.reason);
+} finally {
+    print("always runs");
+}
+```
+
+### Interpolation, null and for-in
+
+```mrt
+var name = "Ada";
+var person = {name: "Ada", age: 36};                    // bareword keys
+
+print("Hi ${name}, you are ${person.age}!");
+print(type(null));                                      // null
+
+for (key in person) { print("${key} = ${get(person, key)}"); }
+for (ch in "hi") { print(ch); }
+```
+
 ## Operators
 
 ```mrt
@@ -94,6 +148,9 @@ func object_demo() {
 
 Loops also support `break` and `continue`.
 
+Reserved words: `func return if else while for print var true false break
+continue null try catch finally throw in`.
+
 ## Built-in Functions
 
 ### Array Operations
@@ -104,6 +161,13 @@ Loops also support `break` and `continue`.
 - `join(array, separator)`: Joins elements into string
 - `indexOf(array, element)`: Finds element index
 - `has(array, element)` / `get(array, index, default)`: Membership check / safe read
+- `reverse(x)`, `unique(arr)`, `flatten(arr, depth)`, `zip(a, b)`, `enumerate(arr)`
+- `count(arr, value)`, `sum(arr)`, `range(start, end, step)`
+
+### Higher-Order Functions
+- `map(arr, f)` / `filter(arr, f)` / `reduce(arr, f, init)`
+- `find(arr, f)` / `some(arr, f)` / `every(arr, f)`
+- `sort(arr, compare)`: Returns a new sorted array (stable; never mutates)
 
 ### Object Operations
 - `keys(obj)` / `values(obj)`: Arrays of an object's keys/values
@@ -114,6 +178,7 @@ Loops also support `break` and `continue`.
 - `type(value)`: `"number" | "string" | "boolean" | "array" | "object" | "null" | "function"`
 - `toNumber(value)` / `toString(value)`: Convert to/from a string
 - `abs`, `min`, `max`, `round`, `floor`, `ceil`, `sqrt`, `pow`
+- `random(seed)`: Returns a deterministic generator function
 
 ### String Operations
 - `split(str, separator)`: Splits string into array
@@ -125,6 +190,8 @@ Loops also support `break` and `continue`.
 - `startsWith(str, prefix)`: Checks string start
 - `endsWith(str, suffix)`: Checks string end
 - `contains(str, substr)`: Checks for substring
+- `repeat(str, n)`: Repeats a string
+- `padStart(str, width, pad)` / `padEnd(str, width, pad)`: Pads to a width
 
 ## Project Structure
 
@@ -137,7 +204,8 @@ Loops also support `break` and `continue`.
   - `language_guide.md`: Complete language reference
   - `examples.md`: Example programs and tutorials
   - `getting_started.md`: Installation and quick start
-- `examples/`: Example MRT programs
+- `examples/`: Example MRT programs (`functions.mrt`, `errors.mrt`,
+  `modern_syntax.mrt`, `stdlib.mrt`, and more)
 - `tests/`: Test suite
 
 ## Documentation

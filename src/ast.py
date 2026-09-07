@@ -69,6 +69,28 @@ class ArrayAssign(Expr):
     value: Expr
 
 @dataclass
+class FunctionExpr(Expr):
+    """An anonymous function used as a value: `func(a, b) { ... }`.
+
+    `name` is normally None; a named function *declaration* is still the
+    `Function` statement below. The two share `MRTFunction` at runtime, so a
+    closure made here is indistinguishable from a declared one apart from
+    how it prints."""
+    params: List['Token']
+    body: List[Stmt]
+    name: Optional['Token'] = None
+
+
+@dataclass
+class Interpolation(Expr):
+    """A string template like `"Hi ${name}!"`. `parts` alternates between
+    plain `str` (literal text) and `Expr` (an embedded expression), and the
+    interpreter renders each expression with the same `stringify` that
+    `print` and `toString` use."""
+    parts: List[Any]
+
+
+@dataclass
 class DictLiteral(Expr):
     """A `{key: value, ...}` object literal. Keys are arbitrary expressions
     (evaluated at construction time), not bareword shorthand -- so string
@@ -122,6 +144,35 @@ class Break(Stmt):
 @dataclass
 class Continue(Stmt):
     keyword: 'Token'
+
+@dataclass
+class ForIn(Stmt):
+    """`for (x in iterable) { ... }` -- iterates an array's elements, a
+    string's characters, or an object's keys.
+
+    Unlike the C-style `For` above, the loop variable is bound afresh in a
+    new scope on every iteration, so a closure created inside the body
+    captures that iteration's value rather than sharing one mutable slot."""
+    name: 'Token'
+    iterable: Expr
+    body: Stmt
+
+
+@dataclass
+class Throw(Stmt):
+    keyword: 'Token'
+    value: Expr
+
+
+@dataclass
+class Try(Stmt):
+    """`try { } catch (e) { } finally { }` -- `catch` and `finally` are each
+    optional, but at least one must be present."""
+    try_block: Stmt
+    catch_name: Optional['Token']
+    catch_block: Optional[Stmt]
+    finally_block: Optional[Stmt]
+
 
 @dataclass
 class Block(Stmt):

@@ -18,11 +18,21 @@ class TokenType(Enum):
     FALSE = auto()
     BREAK = auto()
     CONTINUE = auto()
+    NULL = auto()
+    TRY = auto()
+    CATCH = auto()
+    FINALLY = auto()
+    THROW = auto()
+    IN = auto()
 
     # Literals
     IDENTIFIER = auto()
     NUMBER = auto()
     STRING = auto()
+    # A string literal containing at least one `${...}` interpolation. Its
+    # `literal` is a list of parts (see Lexer.string) rather than a str;
+    # a string with no interpolations stays a plain STRING.
+    TEMPLATE = auto()
 
     # Operators
     PLUS = auto()
@@ -89,6 +99,12 @@ class Lexer:
             "false": TokenType.FALSE,
             "break": TokenType.BREAK,
             "continue": TokenType.CONTINUE,
+            "null": TokenType.NULL,
+            "try": TokenType.TRY,
+            "catch": TokenType.CATCH,
+            "finally": TokenType.FINALLY,
+            "throw": TokenType.THROW,
+            "in": TokenType.IN,
         }
 
     def scan_tokens(self) -> List[Token]:
@@ -155,12 +171,12 @@ class Lexer:
                 if self.match('&'):
                     self.add_token(TokenType.AND)
                 else:
-                    raise MRTSyntaxError(f"Unexpected character '&' (did you mean '&&'?)", self.line)
+                    raise MRTSyntaxError("Unexpected character '&' (did you mean '&&'?)", self.line)
             case '|':
                 if self.match('|'):
                     self.add_token(TokenType.OR)
                 else:
-                    raise MRTSyntaxError(f"Unexpected character '|' (did you mean '||'?)", self.line)
+                    raise MRTSyntaxError("Unexpected character '|' (did you mean '||'?)", self.line)
             case _:
                 if self.is_digit(c):
                     self.number()
@@ -219,14 +235,31 @@ class Lexer:
         '"': '"',
         '\\': '\\',
         '0': '\0',
+        # `\$` escapes an interpolation, so "\${x}" is the literal text
+        # "${x}" rather than a substitution.
+        '$': '$',
     }
 
     def string(self):
         # Find the closing quote, processing backslash escapes as we go
         # (e.g. "\n", "\t", "\"", "\\") so a source string like "a\nb"
         # produces an actual newline rather than the two characters '\'+'n'.
+        #
+        # A `${ ... }` run makes this a *template*: the literal text and the
+        # embedded expression sources are collected as alternating parts, and
+        # the parser re-lexes each expression source into a real AST (see
+        # Parser.interpolation). A string with no `${` is emitted as a plain
+        # STRING exactly as before, so nothing about existing programs
+        # changes.
         start_line = self.line
         chars = []
+        parts: List[tuple] = []
+
+        def flush_text():
+            if chars:
+                parts.append(('str', "".join(chars)))
+                chars.clear()
+
         while self.peek() != '"' and not self.is_at_end():
             c = self.peek()
             if c == '\n':
@@ -236,6 +269,11 @@ class Lexer:
                 self.advance()  # consume the backslash
                 escape = self.advance()
                 chars.append(self.ESCAPES[escape])
+            elif c == '$' and self.peek_next() == '{':
+                self.advance()  # consume '$'
+                self.advance()  # consume '{'
+                flush_text()
+                parts.append(self.interpolated_expression(start_line))
             else:
                 chars.append(self.advance())
 
@@ -245,7 +283,53 @@ class Lexer:
         # Skip the closing quote
         self.advance()
 
-        self.add_token(TokenType.STRING, "".join(chars))
+        if not parts:
+            self.add_token(TokenType.STRING, "".join(chars))
+            return
+
+        flush_text()
+        self.add_token(TokenType.TEMPLATE, parts)
+
+    def interpolated_expression(self, string_start_line: int) -> tuple:
+        """Consume the source text of a `${ ... }` interpolation, starting
+        just after the `{`, and return an ('expr', source, line) part.
+
+        Brace depth is tracked so an object literal or a block nested inside
+        the expression doesn't end it early, and string literals are skipped
+        wholesale so a `}` or a quote inside them is treated as text."""
+        expr_line = self.line
+        start = self.current
+        depth = 1
+
+        while not self.is_at_end():
+            c = self.peek()
+            if c == '"':
+                self.advance()
+                # Skip a nested string literal, honouring its escapes so an
+                # escaped quote doesn't look like the terminator.
+                while self.peek() != '"' and not self.is_at_end():
+                    if self.peek() == '\n':
+                        self.line += 1
+                    if self.peek() == '\\' and not self.is_at_end():
+                        self.advance()
+                    self.advance()
+                if self.is_at_end():
+                    raise MRTSyntaxError("Unterminated string", string_start_line)
+                self.advance()  # closing quote
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    source = self.source[start:self.current]
+                    self.advance()  # consume the closing '}'
+                    return ('expr', source, expr_line)
+            elif c == '\n':
+                self.line += 1
+            self.advance()
+
+        raise MRTSyntaxError("Unterminated interpolation: expected '}'", expr_line)
 
     def match(self, expected: str) -> bool:
         if self.is_at_end():

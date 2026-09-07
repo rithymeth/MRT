@@ -218,3 +218,168 @@ func word_counter_demo() {
     print("Last word:", words[len(words) - 1])
 }
 ```
+
+## Functions and Closures
+
+### Functions as values
+```mrt
+func main() {
+    var double = func(x) { return x * 2; };
+    var apply = func(f, v) { return f(v); };
+
+    print(double(21));            // 42
+    print(apply(double, 5));      // 10
+    print(type(double));          // function
+}
+```
+
+### Closures for private state
+```mrt
+func makeCounter() {
+    var count = 0;
+    return func() { count += 1; return count; };
+}
+
+func main() {
+    var a = makeCounter();
+    var b = makeCounter();
+    a(); a();
+    print(a(), b());              // 3 1  -- independent counters
+}
+```
+
+### A collection pipeline
+```mrt
+func main() {
+    var people = [
+        {name: "Ada", age: 36},
+        {name: "Bob", age: 17},
+        {name: "Cy",  age: 44}
+    ];
+
+    var adults = filter(people, func(p) { return p.age >= 18; });
+    var names  = sort(map(adults, func(p) { return p.name; }));
+
+    for (n in names) { print("adult: ${n}"); }
+
+    var total = reduce(map(people, func(p) { return p.age; }),
+                       func(a, b) { return a + b; });
+    print("combined age: ${total}");
+}
+```
+
+Full program: `examples/functions.mrt`.
+
+## Error Handling
+
+### Structured errors
+```mrt
+func withdraw(balance, amount) {
+    if (amount <= 0) {
+        throw {code: "INVALID", reason: "amount must be positive"};
+    }
+    if (amount > balance) {
+        throw {code: "FUNDS", reason: "insufficient balance"};
+    }
+    return balance - amount;
+}
+
+func main() {
+    for (amount in [50, -10, 500]) {
+        try {
+            print("new balance:", withdraw(100, amount));
+        } catch (e) {
+            print("rejected ${amount}: ${e.code} - ${e.reason}");
+        }
+    }
+}
+```
+
+### Recovering from a runtime error
+```mrt
+func parseOrDefault(text, fallback) {
+    try {
+        return toNumber(text);
+    } catch (e) {
+        return fallback;
+    }
+}
+
+func main() {
+    print(parseOrDefault("42", 0));       // 42
+    print(parseOrDefault("oops", 0));     // 0
+}
+```
+
+### Guaranteed cleanup
+```mrt
+func process(items) {
+    try {
+        for (item in items) {
+            if (item == "bad") { throw "hit a bad item"; }
+            print("processed ${item}");
+        }
+        return "all done";
+    } finally {
+        print("cleanup runs either way");
+    }
+}
+
+func main() {
+    print(process(["a", "b"]));
+    try { process(["a", "bad", "c"]); } catch (e) { print("caught: ${e}"); }
+}
+```
+
+Full program: `examples/errors.mrt`.
+
+## Modern Syntax
+
+### Interpolation and objects
+```mrt
+func main() {
+    var person = {name: "Ada", age: 36, langs: ["MRT"]};
+
+    print("Hi ${person.name}, you are ${person.age}");
+    print("Languages: ${person.langs}");
+    print("Next year: ${person.age + 1}");
+
+    for (key in person) {
+        print("  ${key} = ${get(person, key)}");
+    }
+}
+```
+
+### A formatted table
+```mrt
+func main() {
+    var rows = [
+        {label: "apples", n: 7},
+        {label: "pears",  n: 128},
+        {label: "figs",   n: 44}
+    ];
+
+    print(repeat("-", 16));
+    for (row in rows) {
+        print("${padEnd(row.label, 8)}${padStart(toString(row.n), 5)}");
+    }
+    print(repeat("-", 16));
+    print("${padEnd("total", 8)}${padStart(toString(sum(map(rows, func(r) { return r.n; }))), 5)}");
+}
+```
+
+### Repeatable randomness
+```mrt
+func main() {
+    // The same seed always produces the same sequence, here and in the
+    // browser Playground.
+    var rng = random(2026);
+    var rolls = [];
+    for (i in range(5)) {
+        push(rolls, floor(rng() * 6) + 1);
+    }
+    print("rolls: ${rolls}");
+}
+```
+
+Full programs: `examples/modern_syntax.mrt`, `examples/stdlib.mrt`.

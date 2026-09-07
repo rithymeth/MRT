@@ -15,7 +15,8 @@
 type TokenType =
   | 'FUNC' | 'RETURN' | 'IF' | 'ELSE' | 'WHILE' | 'FOR' | 'PRINT' | 'VAR'
   | 'TRUE' | 'FALSE' | 'BREAK' | 'CONTINUE'
-  | 'IDENTIFIER' | 'NUMBER' | 'STRING'
+  | 'NULL' | 'TRY' | 'CATCH' | 'FINALLY' | 'THROW' | 'IN'
+  | 'IDENTIFIER' | 'NUMBER' | 'STRING' | 'TEMPLATE'
   | 'PLUS' | 'MINUS' | 'MULTIPLY' | 'DIVIDE' | 'MODULO'
   | 'PLUS_ASSIGN' | 'MINUS_ASSIGN' | 'MULTIPLY_ASSIGN' | 'DIVIDE_ASSIGN' | 'MODULO_ASSIGN'
   | 'ASSIGN' | 'EQUALS' | 'NOT_EQUALS'
@@ -33,9 +34,14 @@ export interface Token {
 
 export class MRTError extends Error {
   line?: number
+  /** The message without the " [line N]" suffix `message` carries. `catch`
+   * hands this to the program, so that a caught error's `.message` reads the
+   * same here as in the Python interpreter (which stores the two apart). */
+  rawMessage: string
   constructor(message: string, line?: number) {
     super(line !== undefined ? `${message} [line ${line}]` : message)
     this.line = line
+    this.rawMessage = message
   }
 }
 
@@ -51,9 +57,15 @@ const KEYWORDS: Map<string, TokenType> = new Map([
   ['func', 'FUNC'], ['return', 'RETURN'], ['if', 'IF'], ['else', 'ELSE'], ['while', 'WHILE'],
   ['for', 'FOR'], ['print', 'PRINT'], ['var', 'VAR'], ['true', 'TRUE'], ['false', 'FALSE'],
   ['break', 'BREAK'], ['continue', 'CONTINUE'],
+  ['null', 'NULL'], ['try', 'TRY'], ['catch', 'CATCH'], ['finally', 'FINALLY'],
+  ['throw', 'THROW'], ['in', 'IN'],
 ])
 
-const ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r', '"': '"', '\\': '\\', '0': '\0' }
+// `\$` escapes an interpolation, so "\${x}" is the literal text "${x}".
+const ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r', '"': '"', '\\': '\\', '0': '\0', $: '$' }
+
+/** One piece of a `"...${...}..."` template, as produced by the lexer. */
+type TemplatePart = { kind: 'str'; value: string } | { kind: 'expr'; source: string; line: number }
 
 class Lexer {
   private start = 0
@@ -152,9 +164,20 @@ class Lexer {
     this.addToken('NUMBER', parseFloat(this.source.slice(this.start, this.current)))
   }
 
+  // A `${ ... }` run makes this a *template*: the literal text and the
+  // embedded expression sources are collected as alternating parts, and the
+  // parser re-lexes each expression source into a real AST (see
+  // Parser.interpolation). A string with no `${` is emitted as a plain
+  // STRING exactly as before, so nothing about existing programs changes.
   private string() {
     const startLine = this.line
-    const chars: string[] = []
+    let chars: string[] = []
+    const parts: TemplatePart[] = []
+
+    const flushText = () => {
+      if (chars.length) { parts.push({ kind: 'str', value: chars.join('') }); chars = [] }
+    }
+
     while (this.peek() !== '"' && !this.isAtEnd()) {
       const c = this.peek()
       if (c === '\n') this.line++
@@ -162,13 +185,58 @@ class Lexer {
         this.advance()
         const escape = this.advance()
         chars.push(ESCAPES[escape])
+      } else if (c === '$' && this.peekNext() === '{') {
+        this.advance()  // '$'
+        this.advance()  // '{'
+        flushText()
+        parts.push(this.interpolatedExpression(startLine))
       } else {
         chars.push(this.advance())
       }
     }
     if (this.isAtEnd()) throw new MRTError('Unterminated string', startLine)
     this.advance()
-    this.addToken('STRING', chars.join(''))
+
+    if (parts.length === 0) { this.addToken('STRING', chars.join('')); return }
+    flushText()
+    this.addToken('TEMPLATE', parts)
+  }
+
+  /** Consume the source text of a `${ ... }` interpolation, starting just
+   * after the `{`. Brace depth is tracked so an object literal nested inside
+   * the expression doesn't end it early, and string literals are skipped
+   * wholesale so a `}` or quote inside them is treated as text. */
+  private interpolatedExpression(stringStartLine: number): TemplatePart {
+    const exprLine = this.line
+    const start = this.current
+    let depth = 1
+
+    while (!this.isAtEnd()) {
+      const c = this.peek()
+      if (c === '"') {
+        this.advance()
+        while (this.peek() !== '"' && !this.isAtEnd()) {
+          if (this.peek() === '\n') this.line++
+          if (this.peek() === '\\') this.advance()
+          this.advance()
+        }
+        if (this.isAtEnd()) throw new MRTError('Unterminated string', stringStartLine)
+        this.advance()
+        continue
+      }
+      if (c === '{') depth++
+      else if (c === '}') {
+        depth--
+        if (depth === 0) {
+          const source = this.source.slice(start, this.current)
+          this.advance()
+          return { kind: 'expr', source, line: exprLine }
+        }
+      } else if (c === '\n') this.line++
+      this.advance()
+    }
+
+    throw new MRTError("Unterminated interpolation: expected '}'", exprLine)
   }
 
   private match(expected: string): boolean {
@@ -207,6 +275,8 @@ type Expr =
   | { kind: 'ArrayAccess'; array: Expr; index: Expr }
   | { kind: 'ArrayAssign'; array: Expr; index: Expr; value: Expr }
   | { kind: 'DictLiteral'; pairs: [Expr, Expr][] }
+  | { kind: 'FunctionExpr'; params: Token[]; body: Stmt[]; name: Token | null }
+  | { kind: 'Interpolation'; parts: (string | Expr)[] }
 
 type Stmt =
   | { kind: 'Expression'; expression: Expr }
@@ -220,6 +290,9 @@ type Stmt =
   | { kind: 'Block'; statements: Stmt[] }
   | { kind: 'Print'; expressions: Expr[] }
   | { kind: 'Var'; name: Token; initializer: Expr | null }
+  | { kind: 'ForIn'; name: Token; iterable: Expr; body: Stmt }
+  | { kind: 'Throw'; keyword: Token; value: Expr }
+  | { kind: 'Try'; tryBlock: Stmt; catchName: Token | null; catchBlock: Stmt | null; finallyBlock: Stmt | null }
 
 // ---------------------------------------------------------------------------
 // Parser
@@ -252,7 +325,10 @@ class Parser {
 
   private declaration(): Stmt | null {
     try {
-      if (this.match('FUNC')) return this.function_('function')
+      // `func name(...)` is a declaration; a bare `func(...)` in statement
+      // position is an anonymous function *expression* and falls through to
+      // expressionStatement below.
+      if (this.check('FUNC') && this.checkNext('IDENTIFIER')) { this.advance(); return this.function_('function') }
       if (this.match('VAR')) return this.varDeclaration()
       return this.statement()
     } catch (e) {
@@ -267,7 +343,14 @@ class Parser {
 
   private function_(kind: string): Stmt {
     const name = this.consume('IDENTIFIER', `Expect ${kind} name.`)
-    this.consume('LPAREN', `Expect '(' after ${kind} name.`)
+    const params = this.parameterList(`Expect '(' after ${kind} name.`)
+    this.consume('LBRACE', `Expect '{' before ${kind} body.`)
+    const body = this.block()
+    return { kind: 'Function', name, params, body }
+  }
+
+  private parameterList(lparenMessage: string): Token[] {
+    this.consume('LPAREN', lparenMessage)
     const params: Token[] = []
     if (!this.check('RPAREN')) {
       do {
@@ -275,9 +358,18 @@ class Parser {
       } while (this.match('COMMA'))
     }
     this.consume('RPAREN', "Expect ')' after parameters.")
-    this.consume('LBRACE', `Expect '{' before ${kind} body.`)
+    return params
+  }
+
+  /** An anonymous `func(a, b) { ... }` in expression position. An optional
+   * name is accepted purely so the function has something to print as. */
+  private functionExpression(): Expr {
+    let name: Token | null = null
+    if (this.check('IDENTIFIER')) name = this.advance()
+    const params = this.parameterList("Expect '(' after 'func'.")
+    this.consume('LBRACE', "Expect '{' before function body.")
     const body = this.block()
-    return { kind: 'Function', name, params, body }
+    return { kind: 'FunctionExpr', params, body, name }
   }
 
   private statement(): Stmt {
@@ -287,6 +379,8 @@ class Parser {
     if (this.match('WHILE')) return this.whileStatement()
     if (this.match('BREAK')) { this.consumeStatementEnd(); return { kind: 'Break' } }
     if (this.match('CONTINUE')) { this.consumeStatementEnd(); return { kind: 'Continue' } }
+    if (this.match('TRY')) return this.tryStatement()
+    if (this.match('THROW')) return this.throwStatement()
     if (this.match('LBRACE')) return { kind: 'Block', statements: this.block() }
     if (this.match('PRINT')) return this.printStatement()
     return this.expressionStatement()
@@ -294,6 +388,24 @@ class Parser {
 
   private forStatement(): Stmt {
     this.consume('LPAREN', "Expect '(' after 'for'.")
+
+    // `for (x in xs)` / `for (var x in xs)` -- decided by lookahead so the
+    // C-style three-clause form below is untouched.
+    if ((this.check('IDENTIFIER') && this.checkNext('IN')) ||
+        (this.check('VAR') && this.checkNext('IDENTIFIER'))) {
+      const saved = this.current
+      this.match('VAR')
+      if (this.check('IDENTIFIER') && this.checkNext('IN')) {
+        const name = this.advance()
+        this.advance()  // 'in'
+        const iterable = this.expression()
+        this.consume('RPAREN', "Expect ')' after for-in iterable.")
+        const body = this.statement()
+        return { kind: 'ForIn', name, iterable, body }
+      }
+      this.current = saved
+    }
+
     let initializer: Stmt | null
     if (this.match('SEMICOLON')) initializer = null
     else if (this.match('VAR')) initializer = this.varDeclaration()
@@ -337,6 +449,41 @@ class Parser {
     this.consume('RPAREN', "Expect ')' after condition.")
     const body = this.statement()
     return { kind: 'While', condition, body }
+  }
+
+  private tryStatement(): Stmt {
+    const keyword = this.previous()
+    this.consume('LBRACE', "Expect '{' after 'try'.")
+    const tryBlock: Stmt = { kind: 'Block', statements: this.block() }
+
+    let catchName: Token | null = null
+    let catchBlock: Stmt | null = null
+    if (this.match('CATCH')) {
+      this.consume('LPAREN', "Expect '(' after 'catch'.")
+      catchName = this.consume('IDENTIFIER', 'Expect variable name in catch.')
+      this.consume('RPAREN', "Expect ')' after catch variable.")
+      this.consume('LBRACE', "Expect '{' after catch.")
+      catchBlock = { kind: 'Block', statements: this.block() }
+    }
+
+    let finallyBlock: Stmt | null = null
+    if (this.match('FINALLY')) {
+      this.consume('LBRACE', "Expect '{' after 'finally'.")
+      finallyBlock = { kind: 'Block', statements: this.block() }
+    }
+
+    if (catchBlock === null && finallyBlock === null) {
+      throw this.error(keyword, "Expect 'catch' or 'finally' after 'try' block.")
+    }
+
+    return { kind: 'Try', tryBlock, catchName, catchBlock, finallyBlock }
+  }
+
+  private throwStatement(): Stmt {
+    const keyword = this.previous()
+    const value = this.expression()
+    this.consumeStatementEnd()
+    return { kind: 'Throw', keyword, value }
   }
 
   private block(): Stmt[] {
@@ -495,7 +642,10 @@ class Parser {
   private primary(): Expr {
     if (this.match('TRUE')) return { kind: 'Literal', value: true }
     if (this.match('FALSE')) return { kind: 'Literal', value: false }
+    if (this.match('NULL')) return { kind: 'Literal', value: null }
     if (this.match('NUMBER', 'STRING')) return { kind: 'Literal', value: this.previous().literal }
+    if (this.match('TEMPLATE')) return this.interpolation(this.previous())
+    if (this.match('FUNC')) return this.functionExpression()
     if (this.match('IDENTIFIER')) return { kind: 'Variable', name: this.previous() }
     if (this.match('LPAREN')) {
       const expr = this.expression()
@@ -514,7 +664,12 @@ class Parser {
       const pairs: [Expr, Expr][] = []
       if (!this.check('RBRACE')) {
         do {
-          const key = this.expression()
+          // A bareword key is shorthand for the *string* of that name:
+          // `{name: "Ada"}` means `{"name": "Ada"}`. To use a variable's
+          // value as the key instead, parenthesise it: `{(k): v}`.
+          const key: Expr = this.check('IDENTIFIER') && this.checkNext('COLON')
+            ? { kind: 'Literal', value: this.advance().lexeme }
+            : this.expression()
           this.consume('COLON', "Expect ':' after dictionary key.")
           const value = this.expression()
           pairs.push([key, value])
@@ -524,6 +679,37 @@ class Parser {
       return { kind: 'DictLiteral', pairs }
     }
     throw this.error(this.peek(), 'Expect expression.')
+  }
+
+  /** Turn a TEMPLATE token's parts into an `Interpolation` node. Each
+   * `${ ... }` part arrives from the lexer as raw source text, which is
+   * lexed and parsed here as a self-contained expression; line numbers from
+   * that sub-lex are shifted onto the line the fragment appeared on. */
+  private interpolation(token: Token): Expr {
+    const parts: (string | Expr)[] = []
+    for (const part of token.literal as TemplatePart[]) {
+      if (part.kind === 'str') { parts.push(part.value); continue }
+
+      if (part.source.trim() === '') {
+        throw this.error(token, "Empty interpolation: expected an expression inside '${}'.")
+      }
+
+      let subTokens: Token[]
+      try {
+        subTokens = new Lexer(part.source).scanTokens()
+      } catch (e) {
+        throw new MRTError(e instanceof MRTError ? e.message.replace(/ \[line \d+\]$/, '') : String(e), part.line)
+      }
+      for (const t of subTokens) t.line += part.line - 1
+
+      const subParser = new Parser(subTokens)
+      const expr = subParser.expression()
+      if (!subParser.isAtEnd()) {
+        throw this.error(subParser.peek(), 'Unexpected trailing tokens in interpolation.')
+      }
+      parts.push(expr)
+    }
+    return { kind: 'Interpolation', parts }
   }
 
   private varDeclaration(): Stmt {
@@ -542,6 +728,12 @@ class Parser {
   }
 
   private check(type: TokenType): boolean { return !this.isAtEnd() && this.peek().type === type }
+  /** One token of lookahead past `peek()`, for constructs that can't be
+   * identified from their first token alone (`func name` vs `func(`,
+   * `for (x in` vs `for (x =`, a bareword object key vs an expression). */
+  private checkNext(type: TokenType): boolean {
+    return this.current + 1 < this.tokens.length && this.tokens[this.current + 1].type === type
+  }
   private advance(): Token { if (!this.isAtEnd()) this.current++; return this.previous() }
   private isAtEnd(): boolean { return this.peek().type === 'EOF' }
   private peek(): Token { return this.tokens[this.current] }
@@ -588,6 +780,12 @@ export function stringify(value: unknown): string {
     value.forEach((v, k) => parts.push(`${stringify(k)}: ${stringify(v)}`))
     return '{' + parts.join(', ') + '}'
   }
+  // A built-in (a host-language function, not an MRTFunction, whose
+  // toString below yields "<function name>"). Without this, String(fn)
+  // would dump the JavaScript source text, disagreeing with the reference
+  // interpreter -- which would otherwise print a Python repr complete with
+  // a memory address.
+  if (typeof value === 'function') return '<builtin>'
   return String(value)
 }
 
@@ -617,14 +815,22 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return a === b
 }
 
+/** A callable closure. Built from either a `func name(...)` declaration or
+ * an anonymous `func(...)` expression -- the two are the same thing at
+ * runtime, differing only in whether `name` is set. */
 class MRTFunction {
-  constructor(public declaration: Extract<Stmt, { kind: 'Function' }>, public closure: Environment) {}
+  constructor(
+    public params: Token[],
+    public body: Stmt[],
+    public closure: Environment,
+    public name: string | null = null,
+  ) {}
 
   call(interpreter: Interpreter, args: unknown[]): unknown {
     const environment = new Environment(this.closure)
-    this.declaration.params.forEach((param, i) => environment.define(param.lexeme, args[i]))
+    this.params.forEach((param, i) => environment.define(param.lexeme, args[i]))
     try {
-      interpreter.executeBlock(this.declaration.body, environment)
+      interpreter.executeBlock(this.body, environment)
       return null
     } catch (e) {
       if (e instanceof ReturnSignal) return e.value
@@ -632,7 +838,20 @@ class MRTFunction {
     }
   }
 
-  toString() { return `<function ${this.declaration.name.lexeme}>` }
+  toString() { return this.name ? `<function ${this.name}>` : '<function>' }
+}
+
+/** A value thrown by `throw`, unwinding until a `try`/`catch` catches it.
+ * Distinct from MRTError: this carries an arbitrary MRT *value*, whereas
+ * MRTError is the interpreter's own failure. Built-in runtime errors become
+ * catchable by being converted into the standard error object below. */
+class MRTThrow {
+  constructor(public value: unknown) {}
+}
+
+/** The object a `catch` block receives for an interpreter-raised error. */
+function makeErrorValue(message: string, line: number | null): Map<unknown, unknown> {
+  return new Map<unknown, unknown>([['message', message], ['line', line === null ? null : line]])
 }
 
 class ReturnSignal { constructor(public value: unknown) {} }
@@ -836,6 +1055,110 @@ const BUILTINS: Record<string, (...args: unknown[]) => unknown> = {
     }
     throw new MRTError('First argument to get() must be an array or object.')
   },
+  // -- Sequences --
+  reverse: (...a) => {
+    if (a.length !== 1) throw new MRTError('reverse() takes exactly one argument.')
+    if (typeof a[0] === 'string') return [...a[0]].reverse().join('')
+    if (Array.isArray(a[0])) return [...a[0]].reverse()
+    throw new MRTError('reverse() argument must be an array or string.')
+  },
+  unique: (...a) => {
+    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('unique() takes exactly one array argument.')
+    const result: unknown[] = []
+    for (const item of a[0]) if (!result.some((seen) => valuesEqual(item, seen))) result.push(item)
+    return result
+  },
+  flatten: (...a) => {
+    if (a.length < 1 || a.length > 2 || !Array.isArray(a[0])) {
+      throw new MRTError('flatten() takes an array and an optional depth.')
+    }
+    const depth = a.length === 1 ? 1 : Math.trunc(numArg(a[1], 'flatten'))
+    if (depth < 0) throw new MRTError('flatten() depth must not be negative.')
+    const go = (items: unknown[], d: number): unknown[] => {
+      const out: unknown[] = []
+      for (const item of items) {
+        if (Array.isArray(item) && d > 0) out.push(...go(item, d - 1))
+        else out.push(item)
+      }
+      return out
+    }
+    return go(a[0], depth)
+  },
+  zip: (...a) => {
+    if (a.length !== 2 || !Array.isArray(a[0]) || !Array.isArray(a[1])) {
+      throw new MRTError('zip() takes exactly two array arguments.')
+    }
+    const n = Math.min(a[0].length, a[1].length)
+    const out: unknown[] = []
+    for (let i = 0; i < n; i++) out.push([a[0][i], a[1][i]])
+    return out
+  },
+  enumerate: (...a) => {
+    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('enumerate() takes exactly one array argument.')
+    return a[0].map((v, i) => [i, v])
+  },
+  count: (...a) => {
+    if (a.length !== 2 || !Array.isArray(a[0])) throw new MRTError('count() takes an array and a value.')
+    return a[0].filter((item) => valuesEqual(item, a[1])).length
+  },
+  sum: (...a) => {
+    if (a.length !== 1 || !Array.isArray(a[0])) throw new MRTError('sum() takes exactly one array argument.')
+    let total = 0
+    for (const item of a[0]) total += numArg(item, 'sum')
+    return total
+  },
+  range: (...a) => {
+    if (a.length < 1 || a.length > 3) throw new MRTError('range() takes one to three number arguments.')
+    const nums = a.map((v) => numArg(v, 'range'))
+    let start = 0, end = 0, step = 1
+    if (nums.length === 1) { end = nums[0] }
+    else if (nums.length === 2) { start = nums[0]; end = nums[1] }
+    else { start = nums[0]; end = nums[1]; step = nums[2] }
+    if (step === 0) throw new MRTError('range() step must not be zero.')
+    const out: number[] = []
+    for (let c = start; step > 0 ? c < end : c > end; c += step) out.push(c)
+    return out
+  },
+  // -- More strings --
+  repeat: (...a) => {
+    if (a.length !== 2 || typeof a[0] !== 'string') throw new MRTError('repeat() takes a string and a count.')
+    const n = Math.trunc(numArg(a[1], 'repeat'))
+    if (n < 0) throw new MRTError('repeat() count must not be negative.')
+    return a[0].repeat(n)
+  },
+  padStart: (...a) => pad(a, 'padStart', true),
+  padEnd: (...a) => pad(a, 'padEnd', false),
+  // -- Deterministic, seeded randomness --
+  random: (...a) => {
+    if (a.length !== 1) throw new MRTError('random() takes exactly one seed argument.')
+    const seed = Math.trunc(numArg(a[0], 'random')) >>> 0
+    let state = seed !== 0 ? seed : 1
+    return (...callArgs: unknown[]) => {
+      if (callArgs.length) throw new MRTError('A random generator takes no arguments.')
+      // xorshift32 over uint32 state -- identical arithmetic to the Python
+      // reference implementation, so a seeded program prints the same
+      // numbers in the browser as it does on the command line.
+      state ^= (state << 13); state >>>= 0
+      state ^= (state >>> 17); state >>>= 0
+      state ^= (state << 5); state >>>= 0
+      return state / 4294967296
+    }
+  },
+}
+
+function pad(args: unknown[], who: string, atStart: boolean): string {
+  if (args.length < 2 || args.length > 3 || typeof args[0] !== 'string') {
+    throw new MRTError(`${who}() takes a string, a width, and an optional pad string.`)
+  }
+  const text = args[0]
+  const width = Math.trunc(numArg(args[1], who))
+  const filler = args.length === 3 ? args[2] : ' '
+  if (typeof filler !== 'string') throw new MRTError(`${who}() pad argument must be a string.`)
+  if (filler === '') throw new MRTError(`${who}() pad string must not be empty.`)
+  if (text.length >= width) return text
+  const needed = width - text.length
+  const padding = filler.repeat(Math.floor(needed / filler.length) + 1).slice(0, needed)
+  return atStart ? padding + text : text + padding
 }
 
 function numArg(value: unknown, who: string): number {
@@ -869,6 +1192,96 @@ class Interpreter {
 
   constructor() {
     for (const [name, fn] of Object.entries(BUILTINS)) this.globals.define(name, fn)
+    // Higher-order built-ins are defined here rather than in BUILTINS
+    // because they have to call back into user code (`this.callValue`),
+    // which a free-standing function has no handle on.
+    this.globals.define('map', (...a: unknown[]) => this.builtinMap(a))
+    this.globals.define('filter', (...a: unknown[]) => this.builtinFilter(a))
+    this.globals.define('reduce', (...a: unknown[]) => this.builtinReduce(a))
+    this.globals.define('find', (...a: unknown[]) => this.builtinFind(a))
+    this.globals.define('some', (...a: unknown[]) => this.builtinSome(a))
+    this.globals.define('every', (...a: unknown[]) => this.builtinEvery(a))
+    this.globals.define('sort', (...a: unknown[]) => this.builtinSort(a))
+  }
+
+  private arrayArg(value: unknown, who: string): unknown[] {
+    if (!Array.isArray(value)) throw new MRTError(`First argument to ${who}() must be an array.`)
+    return value
+  }
+
+  private builtinMap(a: unknown[]): unknown {
+    if (a.length !== 2) throw new MRTError('map() takes an array and a function.')
+    return this.arrayArg(a[0], 'map').map((item) => this.callValue(a[1], [item]))
+  }
+
+  private builtinFilter(a: unknown[]): unknown {
+    if (a.length !== 2) throw new MRTError('filter() takes an array and a function.')
+    return this.arrayArg(a[0], 'filter').filter((item) => this.isTruthy(this.callValue(a[1], [item])))
+  }
+
+  private builtinReduce(a: unknown[]): unknown {
+    if (a.length < 2 || a.length > 3) {
+      throw new MRTError('reduce() takes an array, a function, and an optional initial value.')
+    }
+    const items = this.arrayArg(a[0], 'reduce')
+    let accumulator: unknown
+    let rest: unknown[]
+    if (a.length === 3) {
+      accumulator = a[2]
+      rest = items
+    } else {
+      if (items.length === 0) throw new MRTError('reduce() of an empty array needs an initial value.')
+      accumulator = items[0]
+      rest = items.slice(1)
+    }
+    for (const item of rest) accumulator = this.callValue(a[1], [accumulator, item])
+    return accumulator
+  }
+
+  private builtinFind(a: unknown[]): unknown {
+    if (a.length !== 2) throw new MRTError('find() takes an array and a function.')
+    for (const item of this.arrayArg(a[0], 'find')) {
+      if (this.isTruthy(this.callValue(a[1], [item]))) return item
+    }
+    return null
+  }
+
+  private builtinSome(a: unknown[]): unknown {
+    if (a.length !== 2) throw new MRTError('some() takes an array and a function.')
+    return this.arrayArg(a[0], 'some').some((item) => this.isTruthy(this.callValue(a[1], [item])))
+  }
+
+  private builtinEvery(a: unknown[]): unknown {
+    if (a.length !== 2) throw new MRTError('every() takes an array and a function.')
+    return this.arrayArg(a[0], 'every').every((item) => this.isTruthy(this.callValue(a[1], [item])))
+  }
+
+  /** `sort(arr)` or `sort(arr, compare)`. Returns a new array; the input is
+   * left alone. Without a comparator the array must be all numbers or all
+   * strings -- there is no cross-type default order, and notably *not*
+   * JavaScript's default of coercing everything to a string. Array.prototype
+   * .sort is stable (ES2019+), matching Python's sorted(). */
+  private builtinSort(a: unknown[]): unknown {
+    if (a.length < 1 || a.length > 2) {
+      throw new MRTError('sort() takes an array and an optional compare function.')
+    }
+    const items = [...this.arrayArg(a[0], 'sort')]
+
+    if (a.length === 2) {
+      return items.sort((x, y) => {
+        const result = this.callValue(a[1], [x, y])
+        if (typeof result !== 'number') throw new MRTError('sort() compare function must return a number.')
+        return result < 0 ? -1 : result > 0 ? 1 : 0
+      })
+    }
+
+    if (items.every((i) => typeof i === 'number')) {
+      return items.sort((x, y) => (x as number) - (y as number))
+    }
+    if (items.every((i) => typeof i === 'string')) {
+      return items.sort((x, y) => ((x as string) < (y as string) ? -1 : (x as string) > (y as string) ? 1 : 0))
+    }
+    throw new MRTError('sort() without a compare function needs an array of all numbers or all strings.')
   }
 
   private printValues(values: unknown[]) {
@@ -892,6 +1305,13 @@ class Interpreter {
         for (const s of statements) if (s.kind !== 'Function') this.execute(s)
       }
     } catch (e) {
+      // Nothing caught it, so it halts the program like any other runtime
+      // failure -- but reports the thrown value, since that's what the
+      // program chose to say.
+      if (e instanceof MRTThrow) {
+        this.output.push(`Runtime Error: Uncaught ${stringify(e.value)}`)
+        return
+      }
       const message = e instanceof Error ? e.message : String(e)
       this.output.push(`Runtime Error: ${message}`)
     }
@@ -913,7 +1333,18 @@ class Interpreter {
         this.executeFor(stmt)
         return
       case 'Function':
-        this.environment.define(stmt.name.lexeme, new MRTFunction(stmt, this.environment))
+        this.environment.define(
+          stmt.name.lexeme,
+          new MRTFunction(stmt.params, stmt.body, this.environment, stmt.name.lexeme),
+        )
+        return
+      case 'ForIn':
+        this.executeForIn(stmt)
+        return
+      case 'Throw':
+        throw new MRTThrow(this.evaluate(stmt.value))
+      case 'Try':
+        this.executeTry(stmt)
         return
       case 'If':
         if (this.isTruthy(this.evaluate(stmt.condition))) this.execute(stmt.thenBranch)
@@ -963,6 +1394,92 @@ class Interpreter {
     }
   }
 
+  /** Invoke an MRT value with arguments. Shared by the `Call` expression and
+   * by the higher-order built-ins (map, filter, sort, ...), which need to
+   * call back into user code. */
+  callValue(callee: unknown, args: unknown[], line?: number): unknown {
+    if (callee instanceof MRTFunction) {
+      if (args.length !== callee.params.length) {
+        throw new MRTError(`Expected ${callee.params.length} arguments but got ${args.length}.`, line)
+      }
+      return callee.call(this, args)
+    }
+    if (typeof callee === 'function') {
+      try {
+        return (callee as (...a: unknown[]) => unknown)(...args)
+      } catch (e) {
+        // Only attach a line if the error doesn't already carry one --
+        // MRTError bakes the line into its message, so re-wrapping an
+        // already-located error would append a second "[line N]".
+        if (e instanceof MRTError && e.line === undefined && line !== undefined) {
+          throw new MRTError(e.message, line)
+        }
+        throw e
+      }
+    }
+    throw new MRTError('Can only call functions.', line)
+  }
+
+  private executeForIn(stmt: Extract<Stmt, { kind: 'ForIn' }>) {
+    const iterable = this.evaluate(stmt.iterable)
+
+    let items: unknown[]
+    if (Array.isArray(iterable)) items = [...iterable]
+    else if (typeof iterable === 'string') items = [...iterable]
+    else if (iterable instanceof Map) items = [...iterable.keys()]
+    else throw new MRTError('Can only iterate over an array, string, or object.', stmt.name.line)
+
+    const previous = this.environment
+    try {
+      for (const item of items) {
+        // A fresh scope per iteration, so a closure made in the body captures
+        // this item rather than sharing one slot with every other iteration.
+        this.environment = new Environment(previous)
+        this.environment.define(stmt.name.lexeme, item)
+        try {
+          this.execute(stmt.body)
+        } catch (e) {
+          if (e instanceof BreakSignal) break
+          if (e instanceof ContinueSignal) continue
+          throw e
+        }
+      }
+    } finally {
+      this.environment = previous
+    }
+  }
+
+  private executeTry(stmt: Extract<Stmt, { kind: 'Try' }>) {
+    try {
+      try {
+        this.execute(stmt.tryBlock)
+      } catch (e) {
+        if (e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal) throw e
+        if (stmt.catchBlock === null) throw e
+        if (e instanceof MRTThrow) {
+          this.runCatch(stmt, e.value)
+        } else if (e instanceof MRTError) {
+          // An interpreter-raised failure (bad index, division by zero, ...)
+          // is catchable too: it reaches the program as the standard
+          // {"message", "line"} error object.
+          this.runCatch(stmt, makeErrorValue(e.rawMessage, e.line === undefined ? null : e.line))
+        } else {
+          throw e
+        }
+      }
+    } finally {
+      // Runs on every path out of the try -- normal completion, a caught or
+      // uncaught throw, and a return/break/continue unwinding through it.
+      if (stmt.finallyBlock !== null) this.execute(stmt.finallyBlock)
+    }
+  }
+
+  private runCatch(stmt: Extract<Stmt, { kind: 'Try' }>, value: unknown) {
+    const environment = new Environment(this.environment)
+    environment.define(stmt.catchName!.lexeme, value)
+    this.executeBlock((stmt.catchBlock as Extract<Stmt, { kind: 'Block' }>).statements, environment)
+  }
+
   executeBlock(statements: Stmt[], environment: Environment) {
     const previous = this.environment
     try {
@@ -1000,25 +1517,15 @@ class Interpreter {
       case 'Call': {
         const callee = this.evaluate(expr.callee)
         const args = expr.arguments.map((a) => this.evaluate(a))
-        if (callee instanceof MRTFunction) {
-          if (args.length !== callee.declaration.params.length) {
-            throw new MRTError(
-              `Expected ${callee.declaration.params.length} arguments but got ${args.length}.`,
-              expr.paren.line,
-            )
-          }
-          return callee.call(this, args)
-        }
-        if (typeof callee === 'function') {
-          try {
-            return callee(...args)
-          } catch (e) {
-            if (e instanceof MRTError) throw new MRTError(e.message, expr.paren.line)
-            throw e
-          }
-        }
-        throw new MRTError('Can only call functions.', expr.paren.line)
+        return this.callValue(callee, args, expr.paren.line)
       }
+      case 'FunctionExpr':
+        return new MRTFunction(expr.params, expr.body, this.environment,
+          expr.name ? expr.name.lexeme : null)
+      case 'Interpolation':
+        return expr.parts
+          .map((part) => (typeof part === 'string' ? part : stringify(this.evaluate(part))))
+          .join('')
       case 'Grouping':
         return this.evaluate(expr.expression)
       case 'Literal':

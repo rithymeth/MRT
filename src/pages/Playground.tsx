@@ -131,6 +131,92 @@ func main() {
     print("Scores:", scores)
     print("Average:", (scores[0] + scores[1] + scores[2] + scores[3]) / 4)
 }`
+    },
+    {
+      name: 'Functions & Closures',
+      code: `func main() {
+    // Functions are values: store them, pass them, return them.
+    var double = func(x) { return x * 2; };
+    print("double(21) =", double(21));
+
+    // A closure keeps its own private state.
+    var makeCounter = func() {
+        var count = 0;
+        return func() { count += 1; return count; };
+    };
+    var next = makeCounter();
+    next(); next();
+    print("counter:", next());
+
+    // The collection pipeline.
+    var nums = [5, 3, 8, 1, 9];
+    print("squares:", map(nums, func(x) { return x * x; }));
+    print("big ones:", filter(nums, func(x) { return x > 4; }));
+    print("total:", reduce(nums, func(a, b) { return a + b; }));
+    print("sorted:", sort(nums));
+    print("descending:", sort(nums, func(a, b) { return b - a; }));
+}`
+    },
+    {
+      name: 'Error Handling',
+      code: `func main() {
+    // Throw any value you like.
+    try {
+        throw {field: "age", reason: "must not be negative"};
+    } catch (e) {
+        print("validation failed:", e.field, "-", e.reason);
+    }
+
+    // The interpreter's own errors are catchable too.
+    try {
+        var arr = [1, 2, 3];
+        print(arr[99]);
+    } catch (e) {
+        print("runtime error:", e.message);
+    }
+
+    // So you can recover instead of halting.
+    print("10 / 0 =", safeDivide(10, 0));
+
+    try {
+        print("working");
+    } finally {
+        print("finally always runs");
+    }
+}
+
+func safeDivide(a, b) {
+    try { return a / b; } catch (e) { return null; }
+}`
+    },
+    {
+      name: 'Modern Syntax',
+      code: `func main() {
+    // String interpolation and bareword object keys.
+    var person = {name: "Ada", age: 36};
+    print("Hi \${person.name}, you are \${person.age}!");
+
+    // null is a real literal now.
+    var missing = null;
+    print("missing:", missing, type(missing));
+
+    // for-in walks arrays, strings and object keys.
+    for (key in person) {
+        print("  \${key} = \${get(person, key)}");
+    }
+    for (ch in "hi") { print("char:", ch); }
+
+    // Each iteration gets a fresh binding, so closures capture correctly.
+    var fns = [];
+    for (n in [1, 2, 3]) { push(fns, func() { return n; }); }
+    print("captured:", map(fns, func(f) { return f(); }));
+
+    // Seeded randomness is deterministic and repeatable.
+    var rng = random(2026);
+    var rolls = [];
+    for (i in range(5)) { push(rolls, floor(rng() * 6) + 1); }
+    print("dice:", rolls);
+}`
     }
   ]
 

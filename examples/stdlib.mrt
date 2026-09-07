@@ -1,0 +1,49 @@
+// The expanded standard library: sequence helpers, string padding, and
+// deterministic seeded randomness.
+
+func main() {
+    var nums = [4, 1, 4, 2, 9];
+
+    print("-- sequences --");
+    print("reverse:", reverse(nums), "|", reverse("abc"));
+    print("unique:", unique(nums));
+    print("count of 4:", count(nums, 4));
+    print("sum:", sum(nums));
+    print("flatten (1 level):", flatten([[1], [2, [3]]]));
+    print("flatten (2 levels):", flatten([[1], [2, [3]]], 2));
+    print("zip:", zip(["a", "b", "c"], [1, 2]));
+    print("enumerate:", enumerate(["x", "y"]));
+    print("range(4):", range(4));
+    print("range(2, 6):", range(2, 6));
+    print("range(0, 10, 3):", range(0, 10, 3));
+    print("range(3, 0, -1):", range(3, 0, -1));
+
+    print("-- strings --");
+    print("repeat:", repeat("-=", 5));
+    print("padStart:", padStart("7", 3, "0"));
+    print("padEnd:", padEnd("7", 3, "."));
+
+    // A right-aligned table, using padStart to line up the columns.
+    var rows = [{label: "apples", n: 7}, {label: "pears", n: 128}, {label: "figs", n: 44}];
+    for (row in rows) {
+        print("  ${padEnd(row.label, 8)}${padStart(toString(row.n), 5)}");
+    }
+
+    print("-- seeded randomness --");
+    // random(seed) returns a generator function. The same seed always
+    // produces the same stream, in this interpreter and in the browser
+    // Playground alike -- there is no unseeded global random.
+    var rng = random(2026);
+    var rolls = [];
+    for (i in range(8)) {
+        push(rolls, floor(rng() * 6) + 1);
+    }
+    print("dice rolls:", rolls);
+
+    var again = random(2026);
+    var repeated = [];
+    for (i in range(8)) {
+        push(repeated, floor(again() * 6) + 1);
+    }
+    print("same seed, same rolls:", rolls == repeated);
+}

@@ -1,0 +1,76 @@
+// Recoverable errors: throw, try/catch/finally, and catching the
+// interpreter's own runtime failures.
+
+func main() {
+    // Throwing and catching a plain value.
+    try {
+        throw "something went wrong";
+    } catch (e) {
+        print("caught:", e);
+    }
+
+    // Any value can be thrown -- an object makes a useful structured error.
+    try {
+        validateAge(-5);
+    } catch (e) {
+        print("validation failed:", e.field, "-", e.reason);
+    }
+
+    // finally always runs: on success, on failure, and on return.
+    try {
+        print("working");
+    } finally {
+        print("cleanup after success");
+    }
+    print("withCleanup() =", withCleanup());
+
+    // The interpreter's own errors are catchable, and arrive as an object
+    // with "message" and "line" keys.
+    try {
+        var arr = [1, 2, 3];
+        print(arr[99]);
+    } catch (e) {
+        print("runtime error:", e.message);
+        print("error keys:", keys(e));
+    }
+
+    // Which makes it possible to write a safe wrapper around a partial
+    // operation instead of halting the whole program.
+    print("10 / 2 =", safeDivide(10, 2));
+    print("10 / 0 =", safeDivide(10, 0));
+
+    // Errors propagate up through calls until something catches them.
+    try {
+        outer();
+    } catch (e) {
+        print("bubbled up:", e);
+    }
+
+    print("still running");
+}
+
+func validateAge(age) {
+    if (age < 0) {
+        throw {field: "age", reason: "must not be negative"};
+    }
+    return age;
+}
+
+func withCleanup() {
+    try {
+        return "returned value";
+    } finally {
+        print("cleanup before return");
+    }
+}
+
+func safeDivide(a, b) {
+    try {
+        return a / b;
+    } catch (e) {
+        return null;
+    }
+}
+
+func outer() { inner(); }
+func inner() { throw "thrown three frames down"; }
