@@ -12,7 +12,7 @@
 // the same way. Run with `npm run check:parity`.
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -156,9 +156,153 @@ const REGRESSION_CASES = [
     name: 'function values stringify identically, built-ins included',
     src: 'func named() { return 1; } func main() { print(named); print(func(x) { return x; }); print(len); print(random(1)); print(toString(map)); print([named, len]); }',
   },
+  // --- Richer errors: kind, stack, guarded catch ---------------------------
+  {
+    name: 'error kind classification across the language',
+    src: 'func main() { var probes = [func(){ var a=[]; return a[5]; }, func(){ return 1/0; }, func(){ return undefinedThing; }, func(){ return -"x"; }, func(){ return len(); }, func(){ return sqrt(-1); }, func(){ var o={a:1}; return o.missing; }]; for (p in probes) { try { p(); } catch (e) { print(e.kind); } } }',
+  },
+  {
+    name: 'error stack trace is innermost-first across frames',
+    src: 'func c() { var a = [1]; return a[99]; } func b() { return c(); } func a() { return b(); } func main() { try { a(); } catch (e) { print(e.stack); print(len(e.stack)); } }',
+  },
+  {
+    name: 'catch guards select by kind, unguarded clause is the fallback',
+    src: 'func attempt(n) { try { if (n == 0) { var a=[]; print(a[9]); } if (n == 1) { print(1/0); } if (n == 2) { print(nope); } if (n == 3) { throw {code: "USER"}; } } catch (e) if (get(e, "kind", "") == "IndexError") { print("index"); } catch (e) if (get(e, "kind", "") == "ArithmeticError") { print("math"); } catch (e) if (get(e, "kind", "") == "NameError") { print("name"); } catch (e) { print("fallback", get(e, "code", "?")); } } func main() { for (n in range(4)) { attempt(n); } }',
+  },
+  {
+    // A guard is ordinary code: if it raises (here, reading `.kind` off a
+    // thrown value that has no such key), that error replaces the original
+    // rather than being swallowed. Hence the `get(e, "kind", "")` idiom in
+    // the case above.
+    name: 'an error raised inside a catch guard propagates',
+    src: 'func main() { try { try { throw "a plain string"; } catch (e) if (e.kind == "IndexError") { print("never"); } } catch (outer) { print(outer.kind, "|", outer.message); } }',
+  },
+  {
+    name: 'an unmatched guard lets the error keep propagating, finally still runs',
+    src: 'func main() { try { try { throw {code: "X"}; } catch (e) if (e.code == "Y") { print("never"); } finally { print("inner finally"); } } catch (e) { print("outer", e.code); } }',
+  },
+  {
+    name: 'caught error object shape and key order',
+    src: 'func main() { try { var a = [1]; print(a[7]); } catch (e) { print(keys(e)); print(type(e.line), type(e.kind), type(e.stack)); } }',
+  },
+  {
+    name: 'a rethrown error from a guard-matched clause reaches the outer try',
+    src: 'func inner() { var a = []; return a[0]; } func main() { try { try { inner(); } catch (e) if (e.kind == "IndexError") { throw "converted: ${e.kind}"; } } catch (e2) { print(e2); } }',
+  },
+  {
+    // get() is documented as the accessor that never raises, but it used to
+    // throw on anything that wasn't an array or object -- which made the
+    // natural catch guard `get(e, "kind", "")` blow up on a thrown string.
+    name: 'get() is total: any non-container yields the default',
+    src: 'func main() { print(get("abc", 1, "?"), get("abc", "k", "?"), get(5, "k", "?"), get(null, "k", "?"), get(true, "k", "?"), get(len, "k", "?")); print(get([1,2], 0, "?"), get([1,2], 9, "?"), get({a:1}, "a", "?"), get({a:1}, "z", "?")); print(get(5, "k")); }',
+  },
+  // --- Default, rest and spread parameters ---------------------------------
+  {
+    name: 'default parameter values, filled left to right',
+    src: 'func greet(name, greeting = "Hello", punct = "!") { return "${greeting}, ${name}${punct}"; } func main() { print(greet("Ada")); print(greet("Ada", "Hi")); print(greet("Ada", "Hi", "?")); }',
+  },
+  {
+    name: 'a default may refer to an earlier parameter, evaluated per call',
+    src: 'func chained(a, b = a * 2, c = a + b) { return [a, b, c]; } func counterDefault(n, tag = "n=${n}") { return tag; } func main() { print(chained(1)); print(chained(1, 10)); print(chained(2, 3, 4)); print(counterDefault(7)); }',
+  },
+  {
+    name: 'rest parameters collect the remainder, empty when there is none',
+    src: 'func total(label, ...nums) { return "${label}: ${sum(nums)} (${len(nums)})"; } func onlyRest(...xs) { return xs; } func main() { print(total("empty")); print(total("three", 1, 2, 3)); print(onlyRest()); print(onlyRest(1, "a", [2])); }',
+  },
+  {
+    name: 'spread in calls, array literals and print',
+    src: 'func total(label, ...nums) { return sum(nums); } func main() { var a = [1,2]; var b = [3,4]; print(total("x", ...a)); print(total("x", 10, ...a, 20)); print([...a, ...b]); print([0, ...a, 99]); print([...[]]); print(...a); print("v:", ...b, "end"); }',
+  },
+  {
+    name: 'defaults and rest on anonymous functions and closures',
+    src: 'func main() { var f = func(x, y = 10, ...rest) { return [x, y, rest]; }; print(f(1)); print(f(1, 2, 3, 4)); var make = func(prefix = ">") { return func(...parts) { return prefix + join(parts, ","); }; }; var g = make(); print(g("a", "b")); var h = make("* "); print(h("c")); }',
+  },
+  {
+    name: 'arity errors describe the accepted range',
+    src: 'func exact(a, b) { return 0; } func defaulted(a, b = 1, c = 2) { return 0; } func variadic(a, ...r) { return 0; } func main() { var probes = [func(){ return exact(1); }, func(){ return exact(1,2,3); }, func(){ return defaulted(); }, func(){ return defaulted(1,2,3,4); }, func(){ return variadic(); }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } }',
+  },
+  {
+    name: 'spreading a non-array is a type error',
+    src: 'func f(...xs) { return len(xs); } func main() { var probes = [func(){ return f(...5); }, func(){ return f(..."ab"); }, func(){ return f(...{a:1}); }, func(){ return f(...null); }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } }',
+  },
   {
     name: 'pipeline combining closures, for-in, interpolation and stdlib',
     src: 'func main() { var people = [{name: "Ada", age: 36}, {name: "Bob", age: 17}, {name: "Cy", age: 44}]; var adults = filter(people, func(p) { return p.age >= 18; }); var names = sort(map(adults, func(p) { return p.name; })); for (n in names) { print("adult: ${n}"); } print("total age ${ reduce(map(people, func(p){ return p.age; }), func(a,b){ return a+b; }) }"); }',
+  },
+]
+
+// -- Module cases ------------------------------------------------------------
+// Each case is a small file tree; `main.mrt` is the entry point. These verify
+// that module resolution, caching, cycle detection and export binding behave
+// identically in the reference interpreter and in the Playground's.
+const MODULE_CASES = [
+  {
+    name: 'named imports, aliasing, and nested module paths',
+    files: {
+      'main.mrt': 'import { PI, square, cube as cubed } from "./lib/math.mrt";\nimport { shout, VERSION } from "./lib/strings.mrt";\nfunc main() { print(PI, square(4), cubed(3)); print(shout("hi"), VERSION); }\n',
+      'lib/math.mrt': 'export var PI = 3.14159;\nexport func square(n) { return n * n; }\nexport func cube(n) { return n * square(n); }\nfunc secret() { return "hidden"; }\n',
+      'lib/strings.mrt': 'export func shout(s) { return toUpper(s) + "!"; }\nexport var VERSION = "1.0";\n',
+    },
+  },
+  {
+    name: 'a module is evaluated once no matter how many importers',
+    files: {
+      'main.mrt': 'import { a } from "./a.mrt";\nimport { b } from "./b.mrt";\nfunc main() { print(a(), b()); }\n',
+      'a.mrt': 'import { tick } from "./shared.mrt";\nexport func a() { return tick(); }\n',
+      'b.mrt': 'import { tick } from "./shared.mrt";\nexport func b() { return tick(); }\n',
+      'shared.mrt': 'print("shared evaluated");\nvar n = 0;\nexport func tick() { n += 1; return n; }\n',
+    },
+  },
+  {
+    name: 'module top-level code runs before the entry main()',
+    files: {
+      'main.mrt': 'import { VALUE } from "./side.mrt";\nprint("entry top level");\nfunc main() { print("main", VALUE); }\n',
+      'side.mrt': 'print("side effect");\nexport var VALUE = 42;\n',
+    },
+  },
+  {
+    name: 'private names are not importable',
+    files: {
+      'main.mrt': 'import { shown } from "./m.mrt";\nfunc main() { print(shown()); try { print(hidden()); } catch (e) { print(e.kind, "|", e.message); } }\n',
+      'm.mrt': 'func hidden() { return "no"; }\nexport func shown() { return "yes"; }\n',
+    },
+  },
+  {
+    name: 'importing a name a module does not export',
+    files: {
+      'main.mrt': 'import { nothere } from "./m.mrt";\nfunc main() { }\n',
+      'm.mrt': 'export var here = 1;\n',
+    },
+  },
+  {
+    name: 'a missing module reports the specifier',
+    files: { 'main.mrt': 'import { x } from "./nope.mrt";\nfunc main() { }\n' },
+  },
+  {
+    name: 'a bare specifier is rejected',
+    files: { 'main.mrt': 'import { x } from "math";\nfunc main() { }\n' },
+  },
+  {
+    name: 'circular imports are detected and named',
+    files: {
+      'main.mrt': 'import { a } from "./a.mrt";\nfunc main() { print(a()); }\n',
+      'a.mrt': 'import { b } from "./b.mrt";\nexport func a() { return "a" + b(); }\n',
+      'b.mrt': 'import { a } from "./a.mrt";\nexport func b() { return "b"; }\n',
+    },
+  },
+  {
+    name: 'imported closures keep sharing their module state',
+    files: {
+      'main.mrt': 'import { next, reset } from "./counter.mrt";\nfunc main() { print(next(), next()); reset(); print(next()); }\n',
+      'counter.mrt': 'var n = 0;\nexport func next() { n += 1; return n; }\nexport func reset() { n = 0; }\n',
+    },
+  },
+  {
+    name: 'modules combine with defaults, rest, errors and interpolation',
+    files: {
+      'main.mrt': 'import { describe, tally } from "./util.mrt";\nfunc main() { print(describe("x")); print(describe("x", "!")); print(tally(1, 2, 3)); try { tally(); } catch (e) { print(e.kind); } }\n',
+      'util.mrt': 'export func describe(name, suffix = "?") { return "${name}${suffix}"; }\nexport func tally(first, ...rest) { return first + sum(rest); }\n',
+    },
   },
 ]
 
@@ -194,11 +338,8 @@ async function main() {
   let failures = 0
   let checked = 0
 
-  function check(name, src) {
+  function report(name, pyOut, tsOut) {
     checked++
-    const pyOut = runPythonFile(writeTemp(bundleDir, name, src))
-    const { output, errors } = runMRT(src)
-    const tsOut = (errors.length ? errors : output).join('\n')
     if (pyOut !== tsOut) {
       failures++
       console.error(`\n✗ MISMATCH: ${name}`)
@@ -207,6 +348,46 @@ async function main() {
     } else {
       console.log(`✓ ${name}`)
     }
+  }
+
+  // Resolves imports off the real filesystem, mirroring what the Python
+  // interpreter does. The browser Playground plugs its own virtual-file
+  // resolver into this same seam.
+  const diskResolver = (specifier, fromPath) => {
+    const resolved = path.resolve(path.dirname(fromPath), specifier)
+    try {
+      return { path: resolved, source: readFileSync(resolved, 'utf8') }
+    } catch {
+      return null
+    }
+  }
+
+  function check(name, src, filePath = null) {
+    const entry = filePath ?? writeTemp(bundleDir, name, src)
+    const pyOut = runPythonFile(entry)
+    const { output, errors } = runMRT(src, { path: entry, resolveModule: diskResolver })
+    report(name, pyOut, (errors.length ? errors : output).join('\n'))
+  }
+
+  // A multi-file case: every entry in `files` is written into its own temp
+  // directory and `main.mrt` is the entry point. Python resolves imports off
+  // the real filesystem; the TypeScript interpreter is handed a resolver
+  // that does the same, which is exactly the seam the browser Playground
+  // fills with virtual files instead.
+  function checkFiles(name, files) {
+    const safe = name.replace(/[^a-z0-9]+/gi, '_').slice(0, 60)
+    const root = path.join(bundleDir, `mod_${safe}`)
+    for (const [relative, contents] of Object.entries(files)) {
+      const full = path.join(root, relative)
+      mkdirSync(path.dirname(full), { recursive: true })
+      writeFileSync(full, contents)
+    }
+
+    const entry = path.join(root, 'main.mrt')
+    const pyOut = runPythonFile(entry)
+
+    const { output, errors } = runMRT(files['main.mrt'], { path: entry, resolveModule: diskResolver })
+    report(name, pyOut, (errors.length ? errors : output).join('\n'))
   }
 
   function writeTemp(dir, name, src) {
@@ -219,12 +400,18 @@ async function main() {
   const examplesDir = path.join(repoRoot, 'examples')
   for (const file of readdirSync(examplesDir).sort()) {
     if (!file.endsWith('.mrt')) continue
-    const src = readFileSync(path.join(examplesDir, file), 'utf8')
-    check(`example: ${file}`, src)
+    const full = path.join(examplesDir, file)
+    // Pass the real path so an example that imports a sibling module
+    // resolves the same way in both interpreters.
+    check(`example: ${file}`, readFileSync(full, 'utf8'), full)
   }
 
   for (const { name, src } of REGRESSION_CASES) {
     check(`regression: ${name}`, src)
+  }
+
+  for (const { name, files } of MODULE_CASES) {
+    checkFiles(`modules: ${name}`, files)
   }
 
   console.log(`\n${checked - failures}/${checked} checks matched.`)

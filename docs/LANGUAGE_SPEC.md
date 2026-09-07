@@ -22,15 +22,15 @@ happens?*
 7. [Scoping and closures](#scoping-and-closures)
 8. [Error model](#error-model)
 9. [Built-in functions](#built-in-functions)
-10. [Known ambiguities (by design)](#known-ambiguities-by-design)
-11. [Future work / explicitly out of scope](#future-work--explicitly-out-of-scope)
+10. [Modules](#modules)
+11. [Known ambiguities (by design)](#known-ambiguities-by-design)
+12. [Future work / explicitly out of scope](#future-work--explicitly-out-of-scope)
 
 ## Design goals and non-goals
 
 MRT is a small, dynamically-typed, tree-walked scripting language meant to
 be easy to read and easy to implement in an afternoon of study. It is not
-meant to be fast, to have a module system, or to interoperate with other
-languages. Concretely:
+meant to be fast or to interoperate with other languages. Concretely:
 
 - **Goals:** readable C/JS-family syntax; a handful of clean, orthogonal
   data types (number, string, boolean, array, object, null, function);
@@ -39,9 +39,8 @@ languages. Concretely:
   rather than silently producing `null` or `NaN`) that a program may
   nonetheless catch and recover from; a reference implementation short
   enough to read start to finish.
-- **Non-goals (for now):** a module/import system, a static type system,
-  integers distinct from floats, user-defined types or classes, or
-  multi-file programs. See
+- **Non-goals (for now):** a static type system, integers distinct from
+  floats, or user-defined types and classes. See
   [Future work](#future-work--explicitly-out-of-scope).
 
 ## Lexical grammar
@@ -103,11 +102,13 @@ Reserved keywords (cannot be used as identifiers):
 func return if else while for print var
 true false break continue
 null try catch finally throw in
+import export from as
 ```
 
-The second row was added in the current revision. In particular `in` is now
-reserved: a program that used `in` as a variable or function name no longer
-parses.
+The last row is new in the current revision: `import`, `export`, `from` and
+`as` are now reserved, so a program that used any of them as a variable or
+function name no longer parses. (The row before it added `null`, `try`,
+`catch`, `finally`, `throw` and `in` in the previous revision.)
 
 ### Operators and punctuation
 
@@ -118,6 +119,7 @@ parses.
 == !=  <  >  <=  >=            comparison
 &&  ||  !                      logical AND / OR / NOT
 ( ) { } [ ]  , ; . :           grouping / delimiters
+...                            rest parameter / spread
 ```
 
 ## Types and values
@@ -156,10 +158,10 @@ error (arrays never silently extend).
 
 **Objects** (`object`) are unordered-by-contract (the reference
 implementation preserves insertion order, but don't depend on it) string/
-number/boolean-keyed maps. Keys are values, not identifiers: object
-literals require keys to be expressions, typically quoted strings —
-`{"name": "Ada"}`, not `{name: "Ada"}`. `obj.name` is sugar for
-`obj["name"]` and works for both reading and writing.
+number/boolean-keyed maps. A bareword key is shorthand for the string of
+that name, so `{name: "Ada"}` and `{"name": "Ada"}` mean the same thing;
+parenthesise to key by a variable's *value* (`{(k): 1}`). `obj.name` is
+sugar for `obj["name"]` and works for both reading and writing.
 
 ## Grammar (EBNF)
 
@@ -169,12 +171,26 @@ Terminals are quoted or `ALL_CAPS` (matching the lexer's token names).
 ```ebnf
 program        = declaration* EOF ;
 
-declaration    = funcDecl
+declaration    = importDecl
+               | exportDecl
+               | funcDecl
                | varDecl
                | statement ;
 
+importDecl     = "import" "{" importNames? "}" "from" STRING ";"? ;
+importNames    = importName ( "," importName )* ;
+importName     = IDENTIFIER ( "as" IDENTIFIER )? ;
+               (* only valid at the top level of a file *)
+
+exportDecl     = "export" ( funcDecl | varDecl ) ;
+               (* only valid at the top level of a file *)
+
 funcDecl       = "func" IDENTIFIER "(" parameters? ")" block ;
-parameters     = IDENTIFIER ( "," IDENTIFIER )* ;
+parameters     = parameter ( "," parameter )* ;
+parameter      = IDENTIFIER ( "=" expression )?
+               | "..." IDENTIFIER ;
+               (* a rest parameter must come last; a required parameter may
+                  not follow one with a default *)
 
 varDecl        = "var" IDENTIFIER ( "=" expression )? ";"? ;
 
@@ -212,10 +228,10 @@ whileStmt      = "while" "(" expression ")" statement ;
 breakStmt      = "break" ";"? ;
 continueStmt   = "continue" ";"? ;
 
-tryStmt        = "try" block
-                 ( "catch" "(" IDENTIFIER ")" block )?
-                 ( "finally" block )? ;
-               (* at least one of catch/finally must be present *)
+tryStmt        = "try" block catchClause* ( "finally" block )? ;
+catchClause    = "catch" "(" IDENTIFIER ")" ( "if" "(" expression ")" )? block ;
+               (* at least one catch clause or a finally must be present;
+                  clauses are tried in order, first match wins *)
 
 throwStmt      = "throw" expression ";"? ;
 
@@ -235,16 +251,20 @@ factor         = unary ( ( "*" | "/" | "%" ) unary )* ;
 unary          = ( "-" | "!" ) unary | call ;
 
 call           = primary ( "(" arguments? ")" | "[" expression "]" | "." IDENTIFIER )* ;
-arguments      = expression ( "," expression )* ;
+arguments      = argument ( "," argument )* ;
+argument       = "..." expression | expression ;
+               (* `...` is also allowed in array literals and print, and
+                  nowhere else *)
 
 primary        = NUMBER | STRING | TEMPLATE | "true" | "false" | "null"
                | IDENTIFIER
                | funcExpr
                | "(" expression ")"
-               | "[" ( expression ( "," expression )* )? "]"
+               | "[" ( argument ( "," argument )* )? "]"
                | "{" ( objectEntry ( "," objectEntry )* )? "}" ;
 
 funcExpr       = "func" IDENTIFIER? "(" parameters? ")" block ;
+               (* takes the same parameter forms as funcDecl *)
 
 objectEntry    = ( IDENTIFIER | expression ) ":" expression ;
                (* a bareword IDENTIFIER key is the *string* of that name;
@@ -273,6 +293,10 @@ recursive-descent parser in `src/parser.py`):
   expression-source fragments; the parser lexes and parses each fragment
   into a normal expression, so an interpolation is an ordinary AST node
   by the time the interpreter sees it.
+- The parser tracks block depth so that `import` and `export` can be
+  rejected anywhere but the top level of a file.
+- `...` is a single token. `a..b` is therefore still a syntax error, and
+  `...` outside an argument list, array literal or `print` is rejected.
 
 ## Expressions and operator precedence
 
@@ -336,10 +360,17 @@ Otherwise both operands must be numbers.
 - **`print(a, b, ...)`**: evaluates each argument left to right, joins
   their `stringify`d forms with a single space, and writes one line.
   `print()` with no arguments prints an empty line.
-- **Program entry point**: after all top-level `func` declarations are
-  registered, the interpreter looks for a function named `main` and calls
-  it with no arguments. If there is no `main`, every top-level
-  *non-function* statement runs instead, in source order.
+- **Program entry point**: top-level `func` declarations are registered
+  first (so they may refer to each other in any order), then every other
+  top-level statement runs in source order, and finally — if a function
+  named `main` exists — it is called with no arguments.
+
+  **This changed in the current revision.** Previously, a program that
+  defined `main` had its other top-level statements *skipped* entirely; a
+  top-level `var` sitting next to a `main` silently never ran. They now
+  always run, before `main` is called. Imports made the old behaviour
+  untenable (a top-level `import` cannot be skipped), and the old behaviour
+  was surprising in its own right.
 
 ## Scoping and closures
 
@@ -387,6 +418,48 @@ differ only in that a declaration also binds a name (and that the value
 prints as `<function name>` rather than `<function>`). An anonymous
 function may optionally carry a name purely for that printed form:
 `func fact(n) { ... }` in expression position.
+
+### Parameters: defaults, rest, and spread
+
+```mrt
+func greet(name, greeting = "Hello", punct = "!") {
+    return "${greeting}, ${name}${punct}";
+}
+func total(label, ...nums) { return label + ": " + toString(sum(nums)); }
+
+print(greet("Ada"));              // Hello, Ada!
+print(total("all", 1, 2, 3));     // all: 6
+```
+
+- **Defaults** are evaluated *at call time*, in the callee's own scope, and
+  only for arguments that were not supplied. Two consequences worth
+  knowing: a default may refer to a parameter to its left
+  (`func f(a, b = a * 2)`), and a mutable default such as `items = []`
+  produces a **fresh** value on every call rather than one shared object.
+  Passing `null` explicitly is a supplied argument, so it does *not*
+  trigger the default.
+- **A rest parameter** `...name` collects the remaining arguments into an
+  array — empty, never `null`, when there are none. It must be the last
+  parameter and cannot have a default.
+- **A required parameter may not follow a defaulted one**; that is a syntax
+  error rather than a runtime surprise, because such a parameter could
+  never be filled positionally.
+- **Spread** `...expr` expands an array in place. It is allowed in a call's
+  arguments, in an array literal, and in `print` — and nowhere else.
+  Spreading anything but an array is a runtime error; there is no implicit
+  iteration of strings or objects, so `f(...x)` cannot quietly mean two
+  different things depending on what `x` holds.
+
+```mrt
+var xs = [1, 2];
+print(total("spread", ...xs, 3));   // spread: 6
+print([0, ...xs, 9]);               // [0, 1, 2, 9]
+print(...xs);                       // 1 2
+```
+
+Arity errors name the accepted range: `Expected 2 arguments but got 1.`,
+`Expected between 1 and 3 arguments but got 4.`, or
+`Expected at least 1 arguments but got 0.`
 
 Recursion through a `var` works because the initializer is evaluated
 before the name is bound *in the same environment* the closure captured —
@@ -453,16 +526,79 @@ try {
   block; an outer variable of the same name is untouched.
 - **What `e` holds** depends on where the error came from:
   - `throw expr` delivers `expr` itself, whatever its type — a string, an
-    object, `null`, anything.
+    object, `null`, anything. Nothing is added to it.
   - An interpreter-raised runtime error is converted to an *object* with
-    exactly two keys: `message` (the text without the `[line N]` suffix)
-    and `line` (a number, or `null` if unknown). So
-    `catch (e) { print(e.message); }` works uniformly for built-in
-    failures.
+    exactly four keys, in this order:
+
+    | Key | Type | Meaning |
+    |---|---|---|
+    | `message` | string | the text, without the `[line N]` suffix |
+    | `line` | number \| null | where it happened |
+    | `kind` | string | a coarse category — see below |
+    | `stack` | array of strings | the MRT call stack, innermost first |
+
+### Error kinds
+
+`e.kind` is one of a small, closed set, so that catching "any bad index"
+doesn't mean enumerating every built-in that can produce one:
+
+| Kind | Raised by |
+|---|---|
+| `TypeError` | a value of the wrong type — indexing a number, `-"x"`, calling a non-function, spreading a non-array |
+| `ArityError` | wrong number of arguments, and built-ins whose whole signature is checked at once |
+| `IndexError` | an index outside an array or string, or a non-numeric one |
+| `KeyError` | an object key that isn't present |
+| `NameError` | an undefined variable, or importing a name a module doesn't export |
+| `ValueError` | right type, unusable value — `sqrt(-1)`, a zero `range` step, a missing module |
+| `ArithmeticError` | division or modulo by zero |
+| `RuntimeError` | anything not covered above |
+
+The set is defined once in `src/errors.py` as `ERROR_KINDS` and mirrored by
+`ErrorKind` in the Playground interpreter.
+
+### Stack traces
+
+`e.stack` lists the function names the error passed through on its way out,
+innermost first, with `<anonymous>` for an unnamed function. It is empty
+when the error was raised in the same frame that caught it, and it does not
+include the catching frame itself.
+
+```mrt
+func c() { var a = [1]; return a[99]; }
+func b() { return c(); }
+func main() {
+    try { b(); } catch (e) { print(e.stack); }   // [c, b]
+}
+```
+
+### Guarded catch clauses
+
+A `catch` may carry an `if` guard, and several may be chained. They are
+tried in order and the first whose guard passes handles the error; a clause
+without a guard always matches, so it acts as the final `else`.
+
+```mrt
+try {
+    risky();
+}
+catch (e) if (get(e, "kind", "") == "IndexError") { print("bad index"); }
+catch (e) if (get(e, "kind", "") == "ArithmeticError") { print("bad maths"); }
+catch (e) { print("something else"); }
+```
+
+Two things to know about guards:
+
+- If **no** clause matches, the error keeps propagating to the next
+  enclosing `try` (and any `finally` here still runs). It is not silently
+  swallowed.
+- A guard is ordinary code, so **a guard that itself raises replaces the
+  original error**. Since a thrown value need not be an object at all,
+  prefer `get(e, "kind", "")` over `e.kind` in a guard: `get` never raises,
+  whereas `e.kind` on a thrown string or number will.
 - **`finally`** runs on every path out of the `try`: normal completion, a
   caught throw, an uncaught throw still unwinding, and a `return`,
   `break` or `continue` passing through it.
-- Either `catch` or `finally` may be omitted, but not both — `try { }`
+- At least one `catch` clause or a `finally` must be present — `try { }`
   alone is a syntax error. A `try`/`finally` with no `catch` runs the
   cleanup and lets the error keep propagating.
 - Re-throwing from inside a `catch` block is allowed and propagates to the
@@ -585,6 +721,80 @@ Raw generator output is a fraction with a 2^32 denominator; prefer
 because it avoids relying on float-formatting agreement between the two
 runtimes.
 
+## Modules
+
+A program may span several files. A file that uses `export` or `import` is
+a *module*; every file is loadable as one.
+
+```mrt
+// lib/math.mrt
+export var PI = 3.14159;
+export func square(n) { return n * n; }
+func helper() { return "private"; }   // not exported
+
+// main.mrt
+import { PI, square as sq } from "./lib/math.mrt";
+func main() { print(PI, sq(4)); }
+```
+
+### Rules
+
+- **`export` prefixes a `func` or `var` declaration.** The name still binds
+  normally inside its own module; `export` additionally records it in the
+  module's export table. There is no `export { a, b }` list and no default
+  export.
+- **`import { a, b as c } from "path";`** binds each named export into the
+  importing file's top-level scope, optionally under a new name.
+- **Both are only legal at the top level of a file.** Inside any block —
+  a function body included — they are a syntax error. Imports are therefore
+  always statically visible at the head of a file.
+- **Specifiers are explicitly relative and name a file**: they must start
+  with `./` or `../`, and the `.mrt` extension is written out. There is no
+  search path, no implicit extension, and no package directory, so an
+  import names exactly one file and reading it tells you which.
+- **A module is evaluated once**, the first time it is imported, and cached
+  by resolved path. Its top-level code — including any `print` — runs then,
+  not once per importer.
+- **Circular imports are an error**, reported with the cycle
+  (`Circular import: a.mrt -> b.mrt -> a.mrt.`) rather than deadlocking or
+  handing back a half-built module.
+- **Importing a name a module doesn't export is a `NameError`**, naming
+  both the module and the name.
+
+### Evaluation order
+
+Within any file, function declarations are registered first (so they may
+refer to each other in any order), then the remaining top-level statements
+run in source order. In the *entry* file, `main()` — if one is defined — is
+called after all of that. A module's `main`, if it has one, is never called
+by the import.
+
+### What an import binds
+
+An import binds the exported *value* as it stood when the module finished
+evaluating. Reassigning an imported name is a local change and is not seen
+by the exporting module or by other importers. Shared *state*, though, is
+genuinely shared: functions from a module close over that module's
+variables, so a counter exported as a pair of functions behaves as one
+counter for everybody.
+
+```mrt
+// counter.mrt
+var n = 0;
+export func next() { n += 1; return n; }
+export func reset() { n = 0; }
+```
+
+### Modules outside a filesystem
+
+Resolution is injected rather than assumed, because the browser Playground
+has no filesystem. The reference interpreter resolves against real paths
+relative to the importing file; the Playground supplies its own resolver
+over a set of built-in virtual modules, and a host that supplies none has
+no imports at all (attempting one reports
+`Imports need a file to resolve against; run this program from a file.`).
+The parity checker exercises multi-file programs through both.
+
 ## Known ambiguities (by design)
 
 - **Optional semicolons, no significant newlines.** A statement's `;` is
@@ -652,6 +862,18 @@ runtimes.
   program's own `throw` will also swallow a typo'd variable name inside
   the `try` block. Keep `try` blocks narrow, and check `type(e)` or
   `has(e, "message")` if the distinction matters.
+- **A built-in that validates its whole signature in one check reports
+  `ArityError`, even when what was actually wrong was a type.** For
+  example `keys(5)` raises `ArityError`, not `TypeError`, because
+  `keys() takes exactly one object argument.` covers both mistakes. Where a
+  built-in checks count and type separately, the kinds are exact.
+- **`e.kind` in a `catch` guard is a trap for thrown values.** A `throw`
+  delivers its value untouched, so `e` may be a string or a number with no
+  `kind` at all; `e.kind` then raises inside the guard and replaces the
+  original error. Use `get(e, "kind", "")`.
+- **A rest parameter is always an array, never `null`.** `f()` on
+  `func f(...xs)` binds `xs` to `[]`. This differs from a defaulted
+  parameter, which can be `null` if that is its default.
 - **`sort()` without a comparator refuses mixed types.** JavaScript's
   default of coercing every element to a string and comparing
   lexicographically (so `[10, 9]` sorts to `[10, 9]`) is a well-known
@@ -664,13 +886,12 @@ Deliberately not implemented in this revision (candidates for a future
 one, listed so a contributor doesn't have to guess whether an omission
 was an oversight):
 
-- A module or `import` system (every program is a single file).
 - User-defined types, classes, or structs.
 - Integer vs. float distinction (everything numeric is a 64-bit float).
-- Typed or filtered `catch` clauses (`catch (e: SomeType)`), and a stack
-  trace on the error object — today `e` carries only `message` and `line`.
 - Iterator protocol / generators; `for`-`in` works on the three built-in
   container types and nothing else.
-- Variadic user functions and default parameter values (arity is exact).
+- Namespace imports (`import * as m from "..."`), default exports, and
+  re-exports. Only named imports of named exports exist.
+- Destructuring assignment (`var [a, b] = pair;`).
 - File I/O and date/time. `random` is seeded and deterministic by design,
   so there is deliberately no entropy source either.

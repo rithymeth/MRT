@@ -1,0 +1,17 @@
+// Small collection helpers built on the language's own built-ins.
+
+export func groupBy(items, keyOf) {
+    var groups = {};
+    for (item in items) {
+        var key = keyOf(item);
+        if (!has(groups, key)) { groups[key] = []; }
+        push(groups[key], item);
+    }
+    return groups;
+}
+
+export func sumBy(items, valueOf) {
+    return reduce(map(items, valueOf), func(a, b) { return a + b; }, 0);
+}
+
+export func take(items, n = 1) { return slice(items, 0, n); }

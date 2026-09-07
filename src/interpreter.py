@@ -1,4 +1,6 @@
+import json
 import math
+import os
 from functools import cmp_to_key
 from typing import Any, Dict, List, Optional
 from .ast import *
@@ -70,16 +72,69 @@ class MRTFunction:
         self.closure = closure
         self.name = name
 
-    def call(self, interpreter: 'Interpreter', arguments: List[Any]) -> Any:
-        environment = Environment(self.closure)
-        for param, arg in zip(self.params, arguments):
-            environment.define(param.lexeme, arg)
+    def arity_description(self) -> str:
+        """How this function's accepted argument count reads in an error."""
+        positional = [p for p in self.params if not p.rest]
+        required = sum(1 for p in positional if p.default is None)
+        if any(p.rest for p in self.params):
+            return f"at least {required}"
+        if required == len(positional):
+            return str(required)
+        return f"between {required} and {len(positional)}"
 
+    def accepts(self, count: int) -> bool:
+        positional = [p for p in self.params if not p.rest]
+        required = sum(1 for p in positional if p.default is None)
+        if count < required:
+            return False
+        return any(p.rest for p in self.params) or count <= len(positional)
+
+    def bind(self, interpreter: 'Interpreter', arguments: List[Any]) -> 'Environment':
+        """Bind arguments to parameters in a fresh scope.
+
+        Defaults are evaluated here, at call time and in the callee's own
+        scope, so a default may refer to a parameter to its left
+        (`func f(a, b = a * 2)`). A rest parameter always binds -- to an
+        empty array when nothing is left over."""
+        environment = Environment(self.closure)
+        positional = [p for p in self.params if not p.rest]
+
+        previous = interpreter.environment
+        try:
+            interpreter.environment = environment
+            for i, param in enumerate(positional):
+                if i < len(arguments):
+                    value = arguments[i]
+                else:
+                    value = interpreter.evaluate(param.default)
+                environment.define(param.name.lexeme, value)
+        finally:
+            interpreter.environment = previous
+
+        for param in self.params:
+            if param.rest:
+                environment.define(param.name.lexeme, list(arguments[len(positional):]))
+
+        return environment
+
+    def call(self, interpreter: 'Interpreter', arguments: List[Any]) -> Any:
+        environment = self.bind(interpreter, arguments)
+
+        frame = self.name if self.name else "<anonymous>"
         try:
             interpreter.execute_block(self.body, environment)
             return None
         except ReturnSignal as return_value:
             return return_value.value
+        except MRTRuntimeError as e:
+            # Build the trace on the way out: a raise site knows nothing
+            # about who called it, but every frame the error passes through
+            # knows its own name. Innermost first.
+            e.mrt_stack.append(frame)
+            raise
+        except MRTThrow as thrown:
+            thrown.stack.append(frame)
+            raise
 
     def __str__(self):
         return f"<function {self.name}>" if self.name else "<function>"
@@ -99,14 +154,22 @@ class MRTThrow(Exception):
 
     def __init__(self, value: Any):
         self.value = value
+        self.stack: List[str] = []
         super().__init__()
 
 
-def make_error_value(message: str, line: Optional[int]) -> Dict[str, Any]:
-    """The object a `catch` block receives for an interpreter-raised error:
-    `{"message": ..., "line": ...}`. Programs can throw any value they like,
-    but built-in failures always arrive in this shape."""
-    return {"message": message, "line": float(line) if line is not None else None}
+def make_error_value(error: MRTRuntimeError) -> Dict[str, Any]:
+    """The object a `catch` block receives for an interpreter-raised error.
+
+    Programs can throw any value they like, but built-in failures always
+    arrive in this shape: a message, the line it happened on, a coarse
+    `kind` to branch on, and the MRT call stack innermost-first."""
+    return {
+        "message": error.message,
+        "line": float(error.line) if error.line is not None else None,
+        "kind": error.kind,
+        "stack": list(error.mrt_stack),
+    }
 
 class BreakSignal(Exception):
     pass
@@ -129,7 +192,7 @@ class Environment:
         if self.enclosing:
             return self.enclosing.get(name)
 
-        raise MRTRuntimeError(f"Undefined variable '{name.lexeme}'.", name.line)
+        raise MRTRuntimeError(f"Undefined variable '{name.lexeme}'.", name.line, kind="NameError")
 
     def assign(self, name: Token, value: Any):
         if name.lexeme in self.values:
@@ -140,42 +203,42 @@ class Environment:
             self.enclosing.assign(name, value)
             return
 
-        raise MRTRuntimeError(f"Undefined variable '{name.lexeme}'.", name.line)
+        raise MRTRuntimeError(f"Undefined variable '{name.lexeme}'.", name.line, kind="NameError")
 
 class MRTBuiltin:
     @staticmethod
     def len(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("len() takes exactly one argument.")
+            raise MRTRuntimeError("len() takes exactly one argument.", kind="ArityError")
         if isinstance(args[0], (str, list, dict)):
             return float(len(args[0]))
-        raise MRTRuntimeError("len() argument must be an array, object, or string.")
+        raise MRTRuntimeError("len() argument must be an array, object, or string.", kind="TypeError")
 
     @staticmethod
     def push(*args):
         if len(args) != 2:
-            raise MRTRuntimeError("push() takes exactly two arguments.")
+            raise MRTRuntimeError("push() takes exactly two arguments.", kind="ArityError")
         if not isinstance(args[0], list):
-            raise MRTRuntimeError("First argument to push() must be an array.")
+            raise MRTRuntimeError("First argument to push() must be an array.", kind="TypeError")
         args[0].append(args[1])
         return args[1]
 
     @staticmethod
     def pop(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("pop() takes exactly one argument.")
+            raise MRTRuntimeError("pop() takes exactly one argument.", kind="ArityError")
         if not isinstance(args[0], list):
-            raise MRTRuntimeError("pop() argument must be an array.")
+            raise MRTRuntimeError("pop() argument must be an array.", kind="TypeError")
         if not args[0]:
-            raise MRTRuntimeError("Cannot pop from empty array.")
+            raise MRTRuntimeError("Cannot pop from empty array.", kind="ValueError")
         return args[0].pop()
 
     @staticmethod
     def slice(*args):
         if len(args) not in [2, 3]:
-            raise MRTRuntimeError("slice() takes 2 or 3 arguments.")
+            raise MRTRuntimeError("slice() takes 2 or 3 arguments.", kind="ArityError")
         if not isinstance(args[0], list):
-            raise MRTRuntimeError("First argument to slice() must be an array.")
+            raise MRTRuntimeError("First argument to slice() must be an array.", kind="TypeError")
 
         arr = args[0]
         start = int(args[1]) if isinstance(args[1], (int, float)) else 0
@@ -191,9 +254,9 @@ class MRTBuiltin:
     @staticmethod
     def join(*args):
         if len(args) not in [1, 2]:
-            raise MRTRuntimeError("join() takes 1 or 2 arguments.")
+            raise MRTRuntimeError("join() takes 1 or 2 arguments.", kind="ArityError")
         if not isinstance(args[0], list):
-            raise MRTRuntimeError("First argument to join() must be an array.")
+            raise MRTRuntimeError("First argument to join() must be an array.", kind="TypeError")
 
         separator = str(args[1]) if len(args) > 1 else ""
         return separator.join(stringify(x) for x in args[0])
@@ -201,9 +264,9 @@ class MRTBuiltin:
     @staticmethod
     def indexOf(*args):
         if len(args) != 2:
-            raise MRTRuntimeError("indexOf() takes exactly 2 arguments.")
+            raise MRTRuntimeError("indexOf() takes exactly 2 arguments.", kind="ArityError")
         if not isinstance(args[0], list):
-            raise MRTRuntimeError("First argument to indexOf() must be an array.")
+            raise MRTRuntimeError("First argument to indexOf() must be an array.", kind="TypeError")
 
         for i, item in enumerate(args[0]):
             if values_equal(item, args[1]):
@@ -213,9 +276,9 @@ class MRTBuiltin:
     @staticmethod
     def split(*args):
         if len(args) not in [1, 2]:
-            raise MRTRuntimeError("split() takes 1 or 2 arguments.")
+            raise MRTRuntimeError("split() takes 1 or 2 arguments.", kind="ArityError")
         if not isinstance(args[0], str):
-            raise MRTRuntimeError("First argument to split() must be a string.")
+            raise MRTRuntimeError("First argument to split() must be a string.", kind="TypeError")
 
         separator = str(args[1]) if len(args) > 1 else " "
         return args[0].split(separator)
@@ -223,9 +286,9 @@ class MRTBuiltin:
     @staticmethod
     def substring(*args):
         if len(args) not in [2, 3]:
-            raise MRTRuntimeError("substring() takes 2 or 3 arguments.")
+            raise MRTRuntimeError("substring() takes 2 or 3 arguments.", kind="ArityError")
         if not isinstance(args[0], str):
-            raise MRTRuntimeError("First argument to substring() must be a string.")
+            raise MRTRuntimeError("First argument to substring() must be a string.", kind="TypeError")
 
         text = args[0]
         start = int(args[1]) if isinstance(args[1], (int, float)) else 0
@@ -241,57 +304,57 @@ class MRTBuiltin:
     @staticmethod
     def toUpper(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("toUpper() takes exactly one argument.")
+            raise MRTRuntimeError("toUpper() takes exactly one argument.", kind="ArityError")
         if not isinstance(args[0], str):
-            raise MRTRuntimeError("toUpper() argument must be a string.")
+            raise MRTRuntimeError("toUpper() argument must be a string.", kind="TypeError")
         return args[0].upper()
 
     @staticmethod
     def toLower(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("toLower() takes exactly one argument.")
+            raise MRTRuntimeError("toLower() takes exactly one argument.", kind="ArityError")
         if not isinstance(args[0], str):
-            raise MRTRuntimeError("toLower() argument must be a string.")
+            raise MRTRuntimeError("toLower() argument must be a string.", kind="TypeError")
         return args[0].lower()
 
     @staticmethod
     def trim(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("trim() takes exactly one argument.")
+            raise MRTRuntimeError("trim() takes exactly one argument.", kind="ArityError")
         if not isinstance(args[0], str):
-            raise MRTRuntimeError("trim() argument must be a string.")
+            raise MRTRuntimeError("trim() argument must be a string.", kind="TypeError")
         return args[0].strip()
 
     @staticmethod
     def replace(*args):
         if len(args) != 3:
-            raise MRTRuntimeError("replace() takes exactly 3 arguments.")
+            raise MRTRuntimeError("replace() takes exactly 3 arguments.", kind="ArityError")
         if not isinstance(args[0], str):
-            raise MRTRuntimeError("First argument to replace() must be a string.")
+            raise MRTRuntimeError("First argument to replace() must be a string.", kind="TypeError")
         return str(args[0]).replace(str(args[1]), str(args[2]))
 
     @staticmethod
     def startsWith(*args):
         if len(args) != 2:
-            raise MRTRuntimeError("startsWith() takes exactly 2 arguments.")
+            raise MRTRuntimeError("startsWith() takes exactly 2 arguments.", kind="ArityError")
         if not isinstance(args[0], str):
-            raise MRTRuntimeError("First argument to startsWith() must be a string.")
+            raise MRTRuntimeError("First argument to startsWith() must be a string.", kind="TypeError")
         return args[0].startswith(str(args[1]))
 
     @staticmethod
     def endsWith(*args):
         if len(args) != 2:
-            raise MRTRuntimeError("endsWith() takes exactly 2 arguments.")
+            raise MRTRuntimeError("endsWith() takes exactly 2 arguments.", kind="ArityError")
         if not isinstance(args[0], str):
-            raise MRTRuntimeError("First argument to endsWith() must be a string.")
+            raise MRTRuntimeError("First argument to endsWith() must be a string.", kind="TypeError")
         return args[0].endswith(str(args[1]))
 
     @staticmethod
     def contains(*args):
         if len(args) != 2:
-            raise MRTRuntimeError("contains() takes exactly 2 arguments.")
+            raise MRTRuntimeError("contains() takes exactly 2 arguments.", kind="ArityError")
         if not isinstance(args[0], str):
-            raise MRTRuntimeError("First argument to contains() must be a string.")
+            raise MRTRuntimeError("First argument to contains() must be a string.", kind="TypeError")
         return str(args[1]) in args[0]
 
     # -- Type / conversion -------------------------------------------------
@@ -299,7 +362,7 @@ class MRTBuiltin:
     @staticmethod
     def type_(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("type() takes exactly one argument.")
+            raise MRTRuntimeError("type() takes exactly one argument.", kind="ArityError")
         value = args[0]
         if value is None:
             return "null"
@@ -320,7 +383,7 @@ class MRTBuiltin:
     @staticmethod
     def toNumber(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("toNumber() takes exactly one argument.")
+            raise MRTRuntimeError("toNumber() takes exactly one argument.", kind="ArityError")
         value = args[0]
         if isinstance(value, bool):
             return 1.0 if value else 0.0
@@ -330,13 +393,13 @@ class MRTBuiltin:
             try:
                 return float(value.strip())
             except ValueError:
-                raise MRTRuntimeError(f"Cannot convert '{value}' to a number.")
-        raise MRTRuntimeError("toNumber() argument must be a string, number, or boolean.")
+                raise MRTRuntimeError(f"Cannot convert '{value}' to a number.", kind="ValueError")
+        raise MRTRuntimeError("toNumber() argument must be a string, number, or boolean.", kind="TypeError")
 
     @staticmethod
     def toString(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("toString() takes exactly one argument.")
+            raise MRTRuntimeError("toString() takes exactly one argument.", kind="ArityError")
         return stringify(args[0])
 
     # -- Math ----------------------------------------------------------------
@@ -344,33 +407,33 @@ class MRTBuiltin:
     @staticmethod
     def _num(value, who: str) -> float:
         if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise MRTRuntimeError(f"{who}() argument must be a number.")
+            raise MRTRuntimeError(f"{who}() argument must be a number.", kind="TypeError")
         return float(value)
 
     @staticmethod
     def abs_(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("abs() takes exactly one argument.")
+            raise MRTRuntimeError("abs() takes exactly one argument.", kind="ArityError")
         return abs(MRTBuiltin._num(args[0], "abs"))
 
     @staticmethod
     def min_(*args):
         values = args[0] if len(args) == 1 and isinstance(args[0], list) else list(args)
         if not values:
-            raise MRTRuntimeError("min() requires at least one argument.")
+            raise MRTRuntimeError("min() requires at least one argument.", kind="ArityError")
         return min(MRTBuiltin._num(v, "min") for v in values)
 
     @staticmethod
     def max_(*args):
         values = args[0] if len(args) == 1 and isinstance(args[0], list) else list(args)
         if not values:
-            raise MRTRuntimeError("max() requires at least one argument.")
+            raise MRTRuntimeError("max() requires at least one argument.", kind="ArityError")
         return max(MRTBuiltin._num(v, "max") for v in values)
 
     @staticmethod
     def round_(*args):
         if len(args) not in (1, 2):
-            raise MRTRuntimeError("round() takes 1 or 2 arguments.")
+            raise MRTRuntimeError("round() takes 1 or 2 arguments.", kind="ArityError")
         value = MRTBuiltin._num(args[0], "round")
         digits = int(MRTBuiltin._num(args[1], "round")) if len(args) == 2 else 0
         return float(round(value, digits))
@@ -378,28 +441,28 @@ class MRTBuiltin:
     @staticmethod
     def floor(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("floor() takes exactly one argument.")
+            raise MRTRuntimeError("floor() takes exactly one argument.", kind="ArityError")
         return float(math.floor(MRTBuiltin._num(args[0], "floor")))
 
     @staticmethod
     def ceil(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("ceil() takes exactly one argument.")
+            raise MRTRuntimeError("ceil() takes exactly one argument.", kind="ArityError")
         return float(math.ceil(MRTBuiltin._num(args[0], "ceil")))
 
     @staticmethod
     def sqrt(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("sqrt() takes exactly one argument.")
+            raise MRTRuntimeError("sqrt() takes exactly one argument.", kind="ArityError")
         value = MRTBuiltin._num(args[0], "sqrt")
         if value < 0:
-            raise MRTRuntimeError("sqrt() argument must not be negative.")
+            raise MRTRuntimeError("sqrt() argument must not be negative.", kind="ValueError")
         return math.sqrt(value)
 
     @staticmethod
     def pow_(*args):
         if len(args) != 2:
-            raise MRTRuntimeError("pow() takes exactly 2 arguments.")
+            raise MRTRuntimeError("pow() takes exactly 2 arguments.", kind="ArityError")
         return MRTBuiltin._num(args[0], "pow") ** MRTBuiltin._num(args[1], "pow")
 
     # -- Objects (dicts) -----------------------------------------------------
@@ -407,30 +470,30 @@ class MRTBuiltin:
     @staticmethod
     def keys(*args):
         if len(args) != 1 or not isinstance(args[0], dict):
-            raise MRTRuntimeError("keys() takes exactly one object argument.")
+            raise MRTRuntimeError("keys() takes exactly one object argument.", kind="ArityError")
         return list(args[0].keys())
 
     @staticmethod
     def values(*args):
         if len(args) != 1 or not isinstance(args[0], dict):
-            raise MRTRuntimeError("values() takes exactly one object argument.")
+            raise MRTRuntimeError("values() takes exactly one object argument.", kind="ArityError")
         return list(args[0].values())
 
     @staticmethod
     def has(*args):
         if len(args) != 2:
-            raise MRTRuntimeError("has() takes exactly 2 arguments.")
+            raise MRTRuntimeError("has() takes exactly 2 arguments.", kind="ArityError")
         container, key = args
         if isinstance(container, dict):
             return key in container
         if isinstance(container, list):
             return any(values_equal(item, key) for item in container)
-        raise MRTRuntimeError("First argument to has() must be an array or object.")
+        raise MRTRuntimeError("First argument to has() must be an array or object.", kind="TypeError")
 
     @staticmethod
     def get(*args):
         if len(args) not in (2, 3):
-            raise MRTRuntimeError("get() takes 2 or 3 arguments.")
+            raise MRTRuntimeError("get() takes 2 or 3 arguments.", kind="ArityError")
         container, key = args[0], args[1]
         default = args[2] if len(args) == 3 else None
         if isinstance(container, dict):
@@ -441,24 +504,34 @@ class MRTBuiltin:
                 if 0 <= i < len(container):
                     return container[i]
             return default
-        raise MRTRuntimeError("First argument to get() must be an array or object.")
+        if isinstance(container, str):
+            if isinstance(key, (int, float)) and not isinstance(key, bool):
+                i = int(key)
+                if 0 <= i < len(container):
+                    return container[i]
+            return default
+        # Anything else has no keys at all, so the default is the answer.
+        # get() is the total, never-raising accessor -- raising here would
+        # break its whole contract, and would make the natural `catch`
+        # guard `get(e, "kind", "")` blow up on a thrown string or number.
+        return default
 
     # -- Sequences ---------------------------------------------------------
 
     @staticmethod
     def reverse(*args):
         if len(args) != 1:
-            raise MRTRuntimeError("reverse() takes exactly one argument.")
+            raise MRTRuntimeError("reverse() takes exactly one argument.", kind="ArityError")
         if isinstance(args[0], str):
             return args[0][::-1]
         if isinstance(args[0], list):
             return list(reversed(args[0]))
-        raise MRTRuntimeError("reverse() argument must be an array or string.")
+        raise MRTRuntimeError("reverse() argument must be an array or string.", kind="TypeError")
 
     @staticmethod
     def unique(*args):
         if len(args) != 1 or not isinstance(args[0], list):
-            raise MRTRuntimeError("unique() takes exactly one array argument.")
+            raise MRTRuntimeError("unique() takes exactly one array argument.", kind="ArityError")
         result = []
         for item in args[0]:
             if not any(values_equal(item, seen) for seen in result):
@@ -468,10 +541,10 @@ class MRTBuiltin:
     @staticmethod
     def flatten(*args):
         if not 1 <= len(args) <= 2 or not isinstance(args[0], list):
-            raise MRTRuntimeError("flatten() takes an array and an optional depth.")
+            raise MRTRuntimeError("flatten() takes an array and an optional depth.", kind="ArityError")
         depth = 1 if len(args) == 1 else int(_number_arg(args[1], "flatten"))
         if depth < 0:
-            raise MRTRuntimeError("flatten() depth must not be negative.")
+            raise MRTRuntimeError("flatten() depth must not be negative.", kind="ValueError")
 
         def go(items, d):
             out = []
@@ -487,25 +560,25 @@ class MRTBuiltin:
     @staticmethod
     def zip_(*args):
         if len(args) != 2 or not isinstance(args[0], list) or not isinstance(args[1], list):
-            raise MRTRuntimeError("zip() takes exactly two array arguments.")
+            raise MRTRuntimeError("zip() takes exactly two array arguments.", kind="ArityError")
         return [[a, b] for a, b in zip(args[0], args[1])]
 
     @staticmethod
     def enumerate_(*args):
         if len(args) != 1 or not isinstance(args[0], list):
-            raise MRTRuntimeError("enumerate() takes exactly one array argument.")
+            raise MRTRuntimeError("enumerate() takes exactly one array argument.", kind="ArityError")
         return [[float(i), v] for i, v in enumerate(args[0])]
 
     @staticmethod
     def count(*args):
         if len(args) != 2 or not isinstance(args[0], list):
-            raise MRTRuntimeError("count() takes an array and a value.")
+            raise MRTRuntimeError("count() takes an array and a value.", kind="ArityError")
         return float(sum(1 for item in args[0] if values_equal(item, args[1])))
 
     @staticmethod
     def sum_(*args):
         if len(args) != 1 or not isinstance(args[0], list):
-            raise MRTRuntimeError("sum() takes exactly one array argument.")
+            raise MRTRuntimeError("sum() takes exactly one array argument.", kind="ArityError")
         total = 0.0
         for item in args[0]:
             total += _number_arg(item, "sum")
@@ -514,7 +587,7 @@ class MRTBuiltin:
     @staticmethod
     def range_(*args):
         if not 1 <= len(args) <= 3:
-            raise MRTRuntimeError("range() takes one to three number arguments.")
+            raise MRTRuntimeError("range() takes one to three number arguments.", kind="ArityError")
         nums = [_number_arg(a, "range") for a in args]
         if len(nums) == 1:
             start, end, step = 0.0, nums[0], 1.0
@@ -523,7 +596,7 @@ class MRTBuiltin:
         else:
             start, end, step = nums
         if step == 0:
-            raise MRTRuntimeError("range() step must not be zero.")
+            raise MRTRuntimeError("range() step must not be zero.", kind="ValueError")
 
         out = []
         current = start
@@ -537,23 +610,23 @@ class MRTBuiltin:
     @staticmethod
     def repeat(*args):
         if len(args) != 2 or not isinstance(args[0], str):
-            raise MRTRuntimeError("repeat() takes a string and a count.")
+            raise MRTRuntimeError("repeat() takes a string and a count.", kind="ArityError")
         n = int(_number_arg(args[1], "repeat"))
         if n < 0:
-            raise MRTRuntimeError("repeat() count must not be negative.")
+            raise MRTRuntimeError("repeat() count must not be negative.", kind="ValueError")
         return args[0] * n
 
     @staticmethod
     def _pad(args, who, at_start):
         if not 2 <= len(args) <= 3 or not isinstance(args[0], str):
-            raise MRTRuntimeError(f"{who}() takes a string, a width, and an optional pad string.")
+            raise MRTRuntimeError(f"{who}() takes a string, a width, and an optional pad string.", kind="ArityError")
         text = args[0]
         width = int(_number_arg(args[1], who))
         filler = args[2] if len(args) == 3 else " "
         if not isinstance(filler, str):
-            raise MRTRuntimeError(f"{who}() pad argument must be a string.")
+            raise MRTRuntimeError(f"{who}() pad argument must be a string.", kind="TypeError")
         if filler == "":
-            raise MRTRuntimeError(f"{who}() pad string must not be empty.")
+            raise MRTRuntimeError(f"{who}() pad string must not be empty.", kind="ValueError")
         if len(text) >= width:
             return text
         needed = width - len(text)
@@ -584,13 +657,13 @@ class MRTBuiltin:
         Note that the raw values are fractions with a 2^32 denominator; for
         whole numbers use `floor(rng() * n)`."""
         if len(args) != 1:
-            raise MRTRuntimeError("random() takes exactly one seed argument.")
+            raise MRTRuntimeError("random() takes exactly one seed argument.", kind="ArityError")
         seed = int(_number_arg(args[0], "random")) & 0xFFFFFFFF
         state = [seed if seed != 0 else 1]
 
         def next_value(*call_args):
             if call_args:
-                raise MRTRuntimeError("A random generator takes no arguments.")
+                raise MRTRuntimeError("A random generator takes no arguments.", kind="ArityError")
             x = state[0]
             x ^= (x << 13) & 0xFFFFFFFF
             x ^= x >> 17
@@ -607,15 +680,27 @@ def _number_arg(value: Any, who: str) -> float:
     the Playground interpreter's `numArg` exactly -- a caught error's
     `.message` is program-visible, so the two must agree verbatim."""
     if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise MRTRuntimeError(f"{who}() argument must be a number.")
+        raise MRTRuntimeError(f"{who}() argument must be a number.", kind="TypeError")
     return float(value)
 
 
 class Interpreter:
-    def __init__(self):
+    def __init__(self, module_path: Optional[str] = None,
+                 module_loader: Optional[Any] = None):
         self.globals = Environment()
         self.environment = self.globals
         self.output = []  # Capture output for web playground
+
+        # -- Modules --
+        # `module_path` is the absolute path of the file being run; imports
+        # resolve relative to it. `module_loader(path) -> source` is
+        # injectable so tests (and the Playground, which has no filesystem)
+        # can supply modules without touching disk.
+        self.module_path = os.path.abspath(module_path) if module_path else None
+        self.module_loader = module_loader
+        self.module_exports: Dict[str, Dict[str, Any]] = {}
+        self.module_loading: List[str] = []
+        self.current_exports: Dict[str, Any] = {}
 
         # Add built-in functions
         self.globals.define("print", self.print_function)
@@ -685,24 +770,24 @@ class Interpreter:
 
     def _array_arg(self, value: Any, who: str) -> List[Any]:
         if not isinstance(value, list):
-            raise MRTRuntimeError(f"First argument to {who}() must be an array.")
+            raise MRTRuntimeError(f"First argument to {who}() must be an array.", kind="TypeError")
         return value
 
     def builtin_map(self, *args):
         if len(args) != 2:
-            raise MRTRuntimeError("map() takes an array and a function.")
+            raise MRTRuntimeError("map() takes an array and a function.", kind="ArityError")
         items = self._array_arg(args[0], "map")
         return [self.call_value(args[1], [item]) for item in items]
 
     def builtin_filter(self, *args):
         if len(args) != 2:
-            raise MRTRuntimeError("filter() takes an array and a function.")
+            raise MRTRuntimeError("filter() takes an array and a function.", kind="ArityError")
         items = self._array_arg(args[0], "filter")
         return [item for item in items if self.is_truthy(self.call_value(args[1], [item]))]
 
     def builtin_reduce(self, *args):
         if not 2 <= len(args) <= 3:
-            raise MRTRuntimeError("reduce() takes an array, a function, and an optional initial value.")
+            raise MRTRuntimeError("reduce() takes an array, a function, and an optional initial value.", kind="ArityError")
         items = self._array_arg(args[0], "reduce")
         function = args[1]
 
@@ -711,7 +796,7 @@ class Interpreter:
             rest = items
         else:
             if not items:
-                raise MRTRuntimeError("reduce() of an empty array needs an initial value.")
+                raise MRTRuntimeError("reduce() of an empty array needs an initial value.", kind="ValueError")
             accumulator = items[0]
             rest = items[1:]
 
@@ -721,7 +806,7 @@ class Interpreter:
 
     def builtin_find(self, *args):
         if len(args) != 2:
-            raise MRTRuntimeError("find() takes an array and a function.")
+            raise MRTRuntimeError("find() takes an array and a function.", kind="ArityError")
         items = self._array_arg(args[0], "find")
         for item in items:
             if self.is_truthy(self.call_value(args[1], [item])):
@@ -730,13 +815,13 @@ class Interpreter:
 
     def builtin_some(self, *args):
         if len(args) != 2:
-            raise MRTRuntimeError("some() takes an array and a function.")
+            raise MRTRuntimeError("some() takes an array and a function.", kind="ArityError")
         items = self._array_arg(args[0], "some")
         return any(self.is_truthy(self.call_value(args[1], [item])) for item in items)
 
     def builtin_every(self, *args):
         if len(args) != 2:
-            raise MRTRuntimeError("every() takes an array and a function.")
+            raise MRTRuntimeError("every() takes an array and a function.", kind="ArityError")
         items = self._array_arg(args[0], "every")
         return all(self.is_truthy(self.call_value(args[1], [item])) for item in items)
 
@@ -749,7 +834,7 @@ class Interpreter:
         first, positive if `b` does, zero for a tie. Sorting is stable in
         both interpreters, so equal elements keep their original order."""
         if not 1 <= len(args) <= 2:
-            raise MRTRuntimeError("sort() takes an array and an optional compare function.")
+            raise MRTRuntimeError("sort() takes an array and an optional compare function.", kind="ArityError")
         items = list(self._array_arg(args[0], "sort"))
 
         if len(args) == 2:
@@ -758,7 +843,7 @@ class Interpreter:
             def compare(a, b):
                 result = self.call_value(comparator, [a, b])
                 if not isinstance(result, (int, float)) or isinstance(result, bool):
-                    raise MRTRuntimeError("sort() compare function must return a number.")
+                    raise MRTRuntimeError("sort() compare function must return a number.", kind="TypeError")
                 return -1 if result < 0 else (1 if result > 0 else 0)
 
             return sorted(items, key=cmp_to_key(compare))
@@ -768,7 +853,7 @@ class Interpreter:
         if all(isinstance(i, str) for i in items):
             return sorted(items)
         raise MRTRuntimeError(
-            "sort() without a compare function needs an array of all numbers or all strings.")
+            "sort() without a compare function needs an array of all numbers or all strings.", kind="ValueError")
 
     def print_function(self, *args):
         """Custom print function that captures output"""
@@ -787,12 +872,12 @@ class Interpreter:
     def interpret(self, statements: List[Stmt]):
         try:
             self.clear_output()
-            # First pass: define all functions
-            for statement in statements:
-                if isinstance(statement, Function):
-                    self.execute(statement)
+            # Function declarations are registered first (so they can refer
+            # to each other in any order), then the remaining top-level
+            # statements run in source order -- imports among them, which is
+            # why they can no longer be skipped when a main() exists.
+            self.run_top_level(statements)
 
-            # Second pass: look for and execute main function
             main_func = None
             try:
                 main_token = Token(TokenType.IDENTIFIER, "main", None, 1)
@@ -800,13 +885,8 @@ class Interpreter:
             except MRTRuntimeError:
                 pass
 
-            if main_func and isinstance(main_func, MRTFunction):
+            if isinstance(main_func, MRTFunction):
                 main_func.call(self, [])
-            else:
-                # If no main function, execute all non-function statements
-                for statement in statements:
-                    if not isinstance(statement, Function):
-                        self.execute(statement)
 
         except MRTThrow as thrown:
             # Nothing caught it, so it halts the program like any other
@@ -842,6 +922,11 @@ class Interpreter:
                 self.environment.define(stmt.name.lexeme, function)
             case ForIn():
                 self.execute_for_in(stmt)
+            case Import():
+                self.execute_import(stmt)
+            case Export():
+                self.execute(stmt.declaration)
+                self.current_exports[stmt.name.lexeme] = self.environment.get(stmt.name)
             case Throw():
                 raise MRTThrow(self.evaluate(stmt.value))
             case Try():
@@ -852,8 +937,7 @@ class Interpreter:
                 elif stmt.else_branch:
                     self.execute(stmt.else_branch)
             case Print():
-                values = [self.evaluate(e) for e in stmt.expressions]
-                self.print_function(*values)
+                self.print_function(*self.evaluate_spread_list(stmt.expressions))
             case Return():
                 value = None
                 if stmt.value:
@@ -895,6 +979,115 @@ class Interpreter:
         finally:
             self.environment = previous
 
+    # -- Modules -----------------------------------------------------------
+
+    def resolve_module(self, specifier: str, line: Optional[int]) -> str:
+        """Turn an import specifier into an absolute path.
+
+        Only explicitly relative specifiers are supported: there is no search
+        path, no implicit extension, and no package directory, so a given
+        `import` always names exactly one file and reading the source tells
+        you which."""
+        if not (specifier.startswith("./") or specifier.startswith("../")):
+            raise MRTRuntimeError(
+                f"Module path {json.dumps(specifier)} must start with './' or '../'.",
+                line, kind="ValueError")
+        if self.module_path is None:
+            raise MRTRuntimeError(
+                "Imports need a file to resolve against; run this program from a file.",
+                line, kind="RuntimeError")
+        base = os.path.dirname(self.module_path)
+        return os.path.normpath(os.path.join(base, specifier))
+
+    def read_module(self, path: str, specifier: str, line: Optional[int]) -> str:
+        if self.module_loader is not None:
+            source = self.module_loader(path)
+            if source is None:
+                raise MRTRuntimeError(
+                    f"Cannot find module {json.dumps(specifier)}.", line, kind="ValueError")
+            return source
+        try:
+            with open(path, "r") as handle:
+                return handle.read()
+        except OSError:
+            raise MRTRuntimeError(
+                f"Cannot find module {json.dumps(specifier)}.", line, kind="ValueError") from None
+
+    def load_module(self, specifier: str, line: Optional[int]) -> Dict[str, Any]:
+        """Evaluate a module once and return its export table.
+
+        Modules are cached by resolved path, so importing the same file from
+        two places runs it once and shares the result -- which matters, since
+        a module's top-level code can have side effects."""
+        path = self.resolve_module(specifier, line)
+        if path in self.module_exports:
+            return self.module_exports[path]
+
+        if path in self.module_loading:
+            cycle = " -> ".join(
+                os.path.basename(p) for p in self.module_loading + [path])
+            raise MRTRuntimeError(
+                f"Circular import: {cycle}.", line, kind="RuntimeError")
+
+        source = self.read_module(path, specifier, line)
+
+        from .lexer import Lexer as _Lexer
+        from .parser import Parser as _Parser
+        tokens = _Lexer(source).scan_tokens()
+        parser = _Parser(tokens)
+        statements = parser.parse()
+        if parser.errors:
+            raise MRTRuntimeError(
+                f"Module {json.dumps(specifier)} has syntax errors: "
+                f"{parser.errors[0].message}", line, kind="RuntimeError")
+
+        previous_env = self.environment
+        previous_path = self.module_path
+        previous_exports = self.current_exports
+
+        self.module_loading.append(path)
+        self.environment = Environment(self.globals)
+        self.module_path = path
+        self.current_exports = {}
+        try:
+            self.run_top_level(statements)
+            exports = self.current_exports
+        finally:
+            self.module_loading.pop()
+            self.environment = previous_env
+            self.module_path = previous_path
+            self.current_exports = previous_exports
+
+        self.module_exports[path] = exports
+        return exports
+
+    def execute_import(self, stmt: Import):
+        exports = self.load_module(stmt.specifier.literal, stmt.keyword.line)
+        for exported, local in stmt.names:
+            if exported.lexeme not in exports:
+                raise MRTRuntimeError(
+                    f"Module {json.dumps(stmt.specifier.literal)} has no export named "
+                    f"'{exported.lexeme}'.",
+                    exported.line, kind="NameError")
+            self.environment.define(local.lexeme, exports[exported.lexeme])
+
+    def run_top_level(self, statements: List[Stmt]):
+        """Run a file's top-level statements: function declarations first, so
+        they can refer to each other regardless of order, then everything
+        else in source order."""
+        for statement in statements:
+            if isinstance(statement, Function):
+                self.execute(statement)
+            elif isinstance(statement, Export) and isinstance(statement.declaration, Function):
+                self.execute(statement)
+
+        for statement in statements:
+            if isinstance(statement, Function):
+                continue
+            if isinstance(statement, Export) and isinstance(statement.declaration, Function):
+                continue
+            self.execute(statement)
+
     def execute_for_in(self, stmt: ForIn):
         iterable = self.evaluate(stmt.iterable)
 
@@ -906,7 +1099,7 @@ class Interpreter:
             items = list(iterable.keys())
         else:
             raise MRTRuntimeError(
-                "Can only iterate over an array, string, or object.", stmt.name.line)
+                "Can only iterate over an array, string, or object.", stmt.name.line, kind="TypeError")
 
         previous = self.environment
         try:
@@ -930,16 +1123,15 @@ class Interpreter:
             try:
                 self.execute(stmt.try_block)
             except MRTThrow as thrown:
-                if stmt.catch_block is None:
+                if not self.run_catch(stmt, thrown.value):
                     raise
-                self.run_catch(stmt, thrown.value)
             except MRTRuntimeError as e:
-                # An interpreter-raised failure (bad index, division by zero,
-                # ...) is catchable too: it reaches the program as the
-                # standard {"message", "line"} error object.
-                if stmt.catch_block is None:
+                # An interpreter-raised failure (bad index, division by
+                # zero, ...) is catchable too: it reaches the program as the
+                # standard error object, carrying `kind` for guards to
+                # branch on.
+                if not self.run_catch(stmt, make_error_value(e)):
                     raise
-                self.run_catch(stmt, make_error_value(e.message, e.line))
         finally:
             # Runs on every path out of the try -- normal completion, a
             # caught or uncaught throw, and a return/break/continue
@@ -947,10 +1139,27 @@ class Interpreter:
             if stmt.finally_block is not None:
                 self.execute(stmt.finally_block)
 
-    def run_catch(self, stmt: Try, value: Any):
-        environment = Environment(self.environment)
-        environment.define(stmt.catch_name.lexeme, value)
-        self.execute_block(stmt.catch_block.statements, environment)
+    def run_catch(self, stmt: Try, value: Any) -> bool:
+        """Run the first `catch` clause that matches, returning whether one
+        did. A clause with no guard always matches; a guarded one is tried
+        with the error already bound, so the guard can inspect it. If none
+        match, the error keeps propagating (and `finally` still runs)."""
+        for clause in stmt.catches:
+            environment = Environment(self.environment)
+            environment.define(clause.name.lexeme, value)
+
+            if clause.guard is not None:
+                previous = self.environment
+                try:
+                    self.environment = environment
+                    if not self.is_truthy(self.evaluate(clause.guard)):
+                        continue
+                finally:
+                    self.environment = previous
+
+            self.execute_block(clause.block.statements, environment)
+            return True
+        return False
 
     def execute_block(self, statements: List[Stmt], environment: Environment):
         previous = self.environment
@@ -964,7 +1173,7 @@ class Interpreter:
     def evaluate(self, expr: Expr) -> Any:
         match expr:
             case Array():
-                return [self.evaluate(element) for element in expr.elements]
+                return self.evaluate_spread_list(expr.elements)
             case ArrayAccess():
                 return self.evaluate_index_get(expr)
             case ArrayAssign():
@@ -984,8 +1193,12 @@ class Interpreter:
                 return result
             case Call():
                 callee = self.evaluate(expr.callee)
-                arguments = [self.evaluate(arg) for arg in expr.arguments]
+                arguments = self.evaluate_spread_list(expr.arguments)
                 return self.call_value(callee, arguments, expr.paren.line)
+            case Spread():
+                raise MRTRuntimeError(
+                    "'...' is only allowed in a call's arguments or an array literal.",
+                    expr.token.line, kind="TypeError")
             case FunctionExpr():
                 return MRTFunction(expr.params, expr.body, self.environment,
                                    expr.name.lexeme if expr.name else None)
@@ -1013,33 +1226,59 @@ class Interpreter:
 
                 if expr.operator.type == TokenType.MINUS:
                     if not isinstance(right, (int, float)) or isinstance(right, bool):
-                        raise MRTRuntimeError("Operand of '-' must be a number.", expr.operator.line)
+                        raise MRTRuntimeError("Operand of '-' must be a number.", expr.operator.line, kind="TypeError")
                     return -float(right)
                 if expr.operator.type == TokenType.NOT:
                     return not self.is_truthy(right)
             case Variable():
                 return self.environment.get(expr.name)
 
+    def evaluate_spread_list(self, items: List[Expr]) -> List[Any]:
+        """Evaluate an argument list or array literal, splicing `...expr`
+        elements in place. Spreading anything but an array is an error --
+        there is no implicit iteration of strings or objects here, which
+        keeps `f(...x)` from silently meaning something different depending
+        on what `x` happens to hold."""
+        values: List[Any] = []
+        for item in items:
+            if isinstance(item, Spread):
+                spread = self.evaluate(item.value)
+                if not isinstance(spread, list):
+                    raise MRTRuntimeError(
+                        "Can only spread an array with '...'.",
+                        item.token.line, kind="TypeError")
+                values.extend(spread)
+            else:
+                values.append(self.evaluate(item))
+        return values
+
     def call_value(self, callee: Any, arguments: List[Any], line: Optional[int] = None) -> Any:
         """Invoke an MRT value with arguments. Shared by the `Call`
         expression and by the higher-order built-ins (map, filter, sort,
         ...), which need to call back into user code."""
         if isinstance(callee, MRTFunction):
-            if len(arguments) != len(callee.params):
+            if not callee.accepts(len(arguments)):
                 raise MRTRuntimeError(
-                    f"Expected {len(callee.params)} arguments but got {len(arguments)}.",
-                    line)
+                    f"Expected {callee.arity_description()} arguments "
+                    f"but got {len(arguments)}.",
+                    line, kind="ArityError")
             return callee.call(self, arguments)
 
         if callable(callee):
             try:
                 return callee(*arguments)
             except MRTRuntimeError as e:
-                raise MRTRuntimeError(e.message, e.line if e.line is not None else line) from None
+                # Re-raised only to attach a call-site line; the original
+                # classification and any stack collected so far are the
+                # error's own and must survive.
+                located = MRTRuntimeError(
+                    e.message, e.line if e.line is not None else line, kind=e.kind)
+                located.mrt_stack = e.mrt_stack
+                raise located from None
             except TypeError as e:
-                raise MRTRuntimeError(f"Invalid arguments in call: {e}", line) from None
+                raise MRTRuntimeError(f"Invalid arguments in call: {e}", line, kind="ArityError") from None
 
-        raise MRTRuntimeError("Can only call functions.", line)
+        raise MRTRuntimeError("Can only call functions.", line, kind="TypeError")
 
     def evaluate_index_get(self, expr: ArrayAccess) -> Any:
         target = self.evaluate(expr.array)
@@ -1048,7 +1287,12 @@ class Interpreter:
         if isinstance(target, dict):
             self._check_hashable_key(index)
             if index not in target:
-                raise MRTRuntimeError(f"Key {stringify(index)!r} not found in object.")
+                # json.dumps, not !r: the Playground formats this message with
+                # JSON.stringify, and Python's repr would quote with
+                # apostrophes (and escape differently), so a program that
+                # prints a caught e.message would see two different texts.
+                raise MRTRuntimeError(
+                    f"Key {json.dumps(stringify(index))} not found in object.", kind="KeyError")
             return target[index]
 
         if isinstance(target, list):
@@ -1059,7 +1303,7 @@ class Interpreter:
             i = self._require_array_index(index, len(target))
             return target[i]
 
-        raise MRTRuntimeError("Can only index into arrays, objects, or strings.")
+        raise MRTRuntimeError("Can only index into arrays, objects, or strings.", kind="TypeError")
 
     def evaluate_index_set(self, expr: ArrayAssign) -> Any:
         target = self.evaluate(expr.array)
@@ -1077,21 +1321,21 @@ class Interpreter:
             return value
 
         if isinstance(target, str):
-            raise MRTRuntimeError("Strings are immutable; cannot assign to a character index.")
+            raise MRTRuntimeError("Strings are immutable; cannot assign to a character index.", kind="TypeError")
 
-        raise MRTRuntimeError("Can only assign into arrays or objects.")
+        raise MRTRuntimeError("Can only assign into arrays or objects.", kind="TypeError")
 
     def _require_array_index(self, index: Any, length: int) -> int:
         if not isinstance(index, (int, float)) or isinstance(index, bool):
-            raise MRTRuntimeError("Array index must be a number.")
+            raise MRTRuntimeError("Array index must be a number.", kind="IndexError")
         i = int(index)
         if i < 0 or i >= length:
-            raise MRTRuntimeError(f"Array index {i} out of bounds for array of length {length}.")
+            raise MRTRuntimeError(f"Array index {i} out of bounds for array of length {length}.", kind="IndexError")
         return i
 
     def _check_hashable_key(self, key: Any):
         if isinstance(key, (list, dict)):
-            raise MRTRuntimeError("Object keys must be numbers, strings, or booleans (not arrays or objects).")
+            raise MRTRuntimeError("Object keys must be numbers, strings, or booleans (not arrays or objects).", kind="TypeError")
 
     def evaluate_binary(self, expr: Binary) -> Any:
         left = self.evaluate(expr.left)
@@ -1114,12 +1358,12 @@ class Interpreter:
         if op == TokenType.DIVIDE:
             self._check_numbers(left, right, '/', line)
             if float(right) == 0:
-                raise MRTRuntimeError("Division by zero.", line)
+                raise MRTRuntimeError("Division by zero.", line, kind="ArithmeticError")
             return float(left) / float(right)
         if op == TokenType.MODULO:
             self._check_numbers(left, right, '%', line)
             if float(right) == 0:
-                raise MRTRuntimeError("Modulo by zero.", line)
+                raise MRTRuntimeError("Modulo by zero.", line, kind="ArithmeticError")
             return float(left) % float(right)
         if op == TokenType.EQUALS:
             return self.is_equal(left, right)
@@ -1134,13 +1378,13 @@ class Interpreter:
         if op == TokenType.LESS_EQUAL:
             return self._compare(left, right, line) <= 0
 
-        raise MRTRuntimeError(f"Unknown binary operator '{expr.operator.lexeme}'.", line)
+        raise MRTRuntimeError(f"Unknown binary operator '{expr.operator.lexeme}'.", line, kind="RuntimeError")
 
     def _check_numbers(self, left: Any, right: Any, op: str, line: int):
         def is_number(v):
             return isinstance(v, (int, float)) and not isinstance(v, bool)
         if not is_number(left) or not is_number(right):
-            raise MRTRuntimeError(f"Operands of '{op}' must be numbers.", line)
+            raise MRTRuntimeError(f"Operands of '{op}' must be numbers.", line, kind="TypeError")
 
     def _compare(self, left: Any, right: Any, line: int) -> int:
         """Return a negative/zero/positive int comparing left to right.
@@ -1152,7 +1396,7 @@ class Interpreter:
             fl, fr = float(left), float(right)
             return -1 if fl < fr else (1 if fl > fr else 0)
         raise MRTRuntimeError(
-            "Comparison operators require two numbers or two strings.", line)
+            "Comparison operators require two numbers or two strings.", line, kind="TypeError")
 
     def is_equal(self, a: Any, b: Any) -> bool:
         return values_equal(a, b)

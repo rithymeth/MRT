@@ -1,0 +1,39 @@
+// Multi-file programs: `import` names that another file `export`s.
+//
+// Paths are always explicitly relative ("./" or "../") and always name a
+// file, so reading the import tells you exactly what it loads. Each module
+// is evaluated once, no matter how many files import it.
+
+import { PI, circleArea, rectArea, describeCircle } from "./lib/geometry.mrt";
+import { groupBy, sumBy, take } from "./lib/collections.mrt";
+
+func main() {
+    print("-- geometry --");
+    print("PI:", PI);
+    print("circleArea(2):", round(circleArea(2), 4));
+    print("rectArea(3, 4):", rectArea(3, 4));
+    print("rectArea(5) squares:", rectArea(5));
+    print(describeCircle(1.5));
+
+    print("-- collections --");
+    var people = [
+        {name: "Ada", team: "eng", hours: 30},
+        {name: "Bob", team: "ops", hours: 12},
+        {name: "Cy",  team: "eng", hours: 18}
+    ];
+
+    var byTeam = groupBy(people, func(p) { return p.team; });
+    for (team in byTeam) {
+        var members = get(byTeam, team);
+        print("${team}: ${len(members)} people, ${sumBy(members, func(p) { return p.hours; })}h");
+    }
+
+    print("first person:", take(people)[0].name);
+
+    print("-- a private name stays private --");
+    try {
+        print(roundTo(1.234, 1));
+    } catch (e) {
+        print(e.kind, "|", e.message);
+    }
+}

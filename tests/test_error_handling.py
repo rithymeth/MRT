@@ -84,7 +84,7 @@ def test_builtin_runtime_errors_are_catchable():
     ''')
     assert errors == []
     assert output[0] == "object"
-    assert output[1] == "[message, line]"
+    assert output[1] == "[message, line, kind, stack]"
     assert "out of bounds" in output[2]
 
 

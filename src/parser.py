@@ -18,6 +18,9 @@ class Parser:
         self.tokens = tokens
         self.current = 0
         self.errors: List["ParseError"] = []
+        # `import`/`export` are only meaningful at the top level of a file,
+        # so the parser tracks how deep into blocks it currently is.
+        self.block_depth = 0
 
     def parse(self) -> List[Stmt]:
         statements = []
@@ -29,6 +32,10 @@ class Parser:
 
     def declaration(self) -> Optional[Stmt]:
         try:
+            if self.match(TokenType.IMPORT):
+                return self.import_statement()
+            if self.match(TokenType.EXPORT):
+                return self.export_declaration()
             # `func name(...)` is a declaration; a bare `func(...)` in
             # statement position is an anonymous function *expression* and
             # falls through to expression_statement below.
@@ -43,6 +50,43 @@ class Parser:
             self.synchronize()
             return None
 
+    def import_statement(self) -> Import:
+        keyword = self.previous()
+        if self.block_depth > 0:
+            raise self.error(keyword, "'import' is only allowed at the top level of a file.")
+
+        self.consume(TokenType.LBRACE, "Expect '{' after 'import'.")
+        names: List[tuple] = []
+        if not self.check(TokenType.RBRACE):
+            while True:
+                exported = self.consume(TokenType.IDENTIFIER, "Expect an imported name.")
+                local = exported
+                if self.match(TokenType.AS):
+                    local = self.consume(TokenType.IDENTIFIER, "Expect a local name after 'as'.")
+                names.append((exported, local))
+                if not self.match(TokenType.COMMA):
+                    break
+        self.consume(TokenType.RBRACE, "Expect '}' after imported names.")
+
+        self.consume(TokenType.FROM, "Expect 'from' after imported names.")
+        specifier = self.consume(TokenType.STRING, "Expect a module path string after 'from'.")
+        self.consume_statement_end("Expect ';' after import.")
+        return Import(names, specifier, keyword)
+
+    def export_declaration(self) -> Export:
+        keyword = self.previous()
+        if self.block_depth > 0:
+            raise self.error(keyword, "'export' is only allowed at the top level of a file.")
+
+        if self.check(TokenType.FUNC) and self.check_next(TokenType.IDENTIFIER):
+            self.advance()
+            declaration = self.function("function")
+            return Export(declaration, declaration.name)
+        if self.match(TokenType.VAR):
+            declaration = self.var_declaration()
+            return Export(declaration, declaration.name)
+        raise self.error(self.peek(), "Expect a 'func' or 'var' declaration after 'export'.")
+
     def function(self, kind: str) -> Function:
         name = self.consume(TokenType.IDENTIFIER, f"Expect {kind} name.")
         parameters = self.parameter_list(f"Expect '(' after {kind} name.")
@@ -50,17 +94,47 @@ class Parser:
         body = self.block()
         return Function(name, parameters, body)
 
-    def parameter_list(self, lparen_message: str) -> List[Token]:
+    def parameter_list(self, lparen_message: str) -> List[Param]:
+        """Parse `(a, b = expr, ...rest)`.
+
+        Two shape rules are enforced here rather than at run time, because
+        they are always mistakes: a rest parameter must be last, and a
+        required parameter may not follow a defaulted one (which would make
+        it unreachable by position)."""
         self.consume(TokenType.LPAREN, lparen_message)
-        parameters = []
+        parameters: List[Param] = []
+        seen_default = False
+        seen_rest = False
+
         if not self.check(TokenType.RPAREN):
             while True:
                 if len(parameters) >= 255:
                     self.error(self.peek(), "Can't have more than 255 parameters.")
-                parameters.append(
-                    self.consume(TokenType.IDENTIFIER, "Expect parameter name."))
+
+                if seen_rest:
+                    raise self.error(self.peek(),
+                                     "A rest parameter must be the last parameter.")
+
+                is_rest = self.match(TokenType.ELLIPSIS)
+                name = self.consume(TokenType.IDENTIFIER, "Expect parameter name.")
+
+                default = None
+                if is_rest:
+                    seen_rest = True
+                    if self.check(TokenType.ASSIGN):
+                        raise self.error(self.peek(),
+                                         "A rest parameter can't have a default value.")
+                elif self.match(TokenType.ASSIGN):
+                    default = self.expression()
+                    seen_default = True
+                elif seen_default:
+                    raise self.error(name,
+                                     "A required parameter can't follow one with a default value.")
+
+                parameters.append(Param(name, default, is_rest))
                 if not self.match(TokenType.COMMA):
                     break
+
         self.consume(TokenType.RPAREN, "Expect ')' after parameters.")
         return parameters
 
@@ -198,24 +272,31 @@ class Parser:
         self.consume(TokenType.LBRACE, "Expect '{' after 'try'.")
         try_block = Block(self.block())
 
-        catch_name = None
-        catch_block = None
-        if self.match(TokenType.CATCH):
+        catches: List[Catch] = []
+        while self.match(TokenType.CATCH):
             self.consume(TokenType.LPAREN, "Expect '(' after 'catch'.")
-            catch_name = self.consume(TokenType.IDENTIFIER, "Expect variable name in catch.")
+            name = self.consume(TokenType.IDENTIFIER, "Expect variable name in catch.")
             self.consume(TokenType.RPAREN, "Expect ')' after catch variable.")
+
+            # An optional guard: `catch (e) if (cond) { ... }`.
+            guard = None
+            if self.match(TokenType.IF):
+                self.consume(TokenType.LPAREN, "Expect '(' after 'if' in catch guard.")
+                guard = self.expression()
+                self.consume(TokenType.RPAREN, "Expect ')' after catch guard.")
+
             self.consume(TokenType.LBRACE, "Expect '{' after catch.")
-            catch_block = Block(self.block())
+            catches.append(Catch(name, guard, Block(self.block())))
 
         finally_block = None
         if self.match(TokenType.FINALLY):
             self.consume(TokenType.LBRACE, "Expect '{' after 'finally'.")
             finally_block = Block(self.block())
 
-        if catch_block is None and finally_block is None:
+        if not catches and finally_block is None:
             raise self.error(keyword, "Expect 'catch' or 'finally' after 'try' block.")
 
-        return Try(try_block, catch_name, catch_block, finally_block)
+        return Try(try_block, catches, finally_block)
 
     def throw_statement(self) -> Throw:
         keyword = self.previous()
@@ -225,10 +306,14 @@ class Parser:
 
     def block(self) -> List[Stmt]:
         statements = []
-        while not self.check(TokenType.RBRACE) and not self.is_at_end():
-            stmt = self.declaration()
-            if stmt:
-                statements.append(stmt)
+        self.block_depth += 1
+        try:
+            while not self.check(TokenType.RBRACE) and not self.is_at_end():
+                stmt = self.declaration()
+                if stmt:
+                    statements.append(stmt)
+        finally:
+            self.block_depth -= 1
 
         self.consume(TokenType.RBRACE, "Expect '}' after block.")
         return statements
@@ -246,9 +331,9 @@ class Parser:
         self.consume(TokenType.LPAREN, "Expect '(' after 'print'.")
         values = []
         if not self.check(TokenType.RPAREN):
-            values.append(self.expression())
+            values.append(self.spread_or_expression())
             while self.match(TokenType.COMMA):
-                values.append(self.expression())
+                values.append(self.spread_or_expression())
         self.consume(TokenType.RPAREN, "Expect ')' after print arguments.")
         self.consume_statement_end("Expect ';' after value.")
         return Print(values)
@@ -378,12 +463,19 @@ class Parser:
             while True:
                 if len(arguments) >= 255:
                     self.error(self.peek(), "Can't have more than 255 arguments.")
-                arguments.append(self.expression())
+                arguments.append(self.spread_or_expression())
                 if not self.match(TokenType.COMMA):
                     break
 
         paren = self.consume(TokenType.RPAREN, "Expect ')' after arguments.")
         return Call(callee, paren, arguments)
+
+    def spread_or_expression(self) -> Expr:
+        """An argument or array element, which may be `...expr`."""
+        if self.match(TokenType.ELLIPSIS):
+            token = self.previous()
+            return Spread(self.expression(), token)
+        return self.expression()
 
     def array_access(self, expr: Expr) -> Expr:
         index = self.expression()
@@ -413,7 +505,7 @@ class Parser:
             elements = []
             if not self.check(TokenType.RBRACKET):
                 while True:
-                    elements.append(self.expression())
+                    elements.append(self.spread_or_expression())
                     if not self.match(TokenType.COMMA):
                         break
             self.consume(TokenType.RBRACKET, "Expect ']' after array elements.")
@@ -547,7 +639,8 @@ class Parser:
 
             match self.peek().type:
                 case (TokenType.FUNC | TokenType.IF | TokenType.RETURN | TokenType.WHILE
-                      | TokenType.VAR | TokenType.FOR | TokenType.TRY | TokenType.THROW):
+                      | TokenType.VAR | TokenType.FOR | TokenType.TRY | TokenType.THROW
+                      | TokenType.IMPORT | TokenType.EXPORT):
                     return
 
             self.advance()

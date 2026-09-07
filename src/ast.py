@@ -69,6 +69,28 @@ class ArrayAssign(Expr):
     value: Expr
 
 @dataclass
+class Param:
+    """One declared parameter.
+
+    `default` is an expression evaluated *at call time* in the callee's own
+    scope, so a later default may refer to an earlier parameter
+    (`func f(a, b = a * 2)`). `rest` marks a `...name` parameter, which
+    collects any remaining arguments into an array and must come last."""
+    name: 'Token'
+    default: Optional[Expr] = None
+    rest: bool = False
+
+
+@dataclass
+class Spread(Expr):
+    """`...expr` in a call's argument list or an array literal, expanding an
+    array in place. It is not a general-purpose expression: evaluating one
+    anywhere else is a runtime error."""
+    value: Expr
+    token: 'Token'
+
+
+@dataclass
 class FunctionExpr(Expr):
     """An anonymous function used as a value: `func(a, b) { ... }`.
 
@@ -76,7 +98,7 @@ class FunctionExpr(Expr):
     `Function` statement below. The two share `MRTFunction` at runtime, so a
     closure made here is indistinguishable from a declared one apart from
     how it prints."""
-    params: List['Token']
+    params: List[Param]
     body: List[Stmt]
     name: Optional['Token'] = None
 
@@ -111,7 +133,7 @@ class Expression(Stmt):
 @dataclass
 class Function(Stmt):
     name: 'Token'
-    params: List['Token']
+    params: List[Param]
     body: List[Stmt]
 
 @dataclass
@@ -165,13 +187,48 @@ class Throw(Stmt):
 
 
 @dataclass
+class Catch:
+    """One `catch (e) { }` clause, optionally guarded by `if (cond)`.
+
+    The guard is evaluated with `name` already bound to the error, so it can
+    inspect it: `catch (e) if (e.kind == "IndexError") { ... }`."""
+    name: 'Token'
+    guard: Optional[Expr]
+    block: Stmt
+
+
+@dataclass
 class Try(Stmt):
-    """`try { } catch (e) { } finally { }` -- `catch` and `finally` are each
-    optional, but at least one must be present."""
+    """`try { } catch (e) { } finally { }`.
+
+    Several `catch` clauses may be given; they are tried in source order and
+    the first whose guard passes handles the error. An unguarded clause
+    always matches, so it acts as the final `else`. At least one of
+    `catches`/`finally_block` must be present."""
     try_block: Stmt
-    catch_name: Optional['Token']
-    catch_block: Optional[Stmt]
+    catches: List[Catch]
     finally_block: Optional[Stmt]
+
+
+@dataclass
+class Import(Stmt):
+    """`import { a, b as c } from "./mod.mrt";`
+
+    `names` pairs each exported name with the local name it binds to (the
+    same token twice when there is no `as`). Only valid at the top level of
+    a file."""
+    names: List[Tuple['Token', 'Token']]
+    specifier: 'Token'
+    keyword: 'Token'
+
+
+@dataclass
+class Export(Stmt):
+    """`export` in front of a `func` or `var` declaration. The declaration
+    still binds normally inside its own module; `export` additionally records
+    the name in the module's export table."""
+    declaration: Stmt
+    name: 'Token'
 
 
 @dataclass

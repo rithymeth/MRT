@@ -383,3 +383,136 @@ func main() {
 ```
 
 Full programs: `examples/modern_syntax.mrt`, `examples/stdlib.mrt`.
+
+## Flexible Function Signatures
+
+### Defaults and rest parameters
+```mrt
+func log(message, level = "info", ...tags) {
+    var suffix = "";
+    if (len(tags) > 0) { suffix = " [" + join(tags, ",") + "]"; }
+    return "${toUpper(level)}: ${message}${suffix}";
+}
+
+func main() {
+    print(log("started"));
+    print(log("disk almost full", "warn"));
+    print(log("crashed", "error", "db", "urgent"));
+}
+```
+
+### Spread
+```mrt
+func main() {
+    var base = ["read", "write"];
+    var extra = ["admin"];
+
+    // Build arrays from other arrays.
+    var all = [...base, ...extra];
+    print(all);
+
+    // Or pass one as arguments.
+    print(max(...[3, 9, 4]));
+}
+```
+
+### A default that depends on an earlier parameter
+```mrt
+func rect(width, height = width) { return width * height; }
+
+func main() {
+    print(rect(3, 4));   // 12
+    print(rect(5));      // 25 -- a square
+}
+```
+
+## Selective Error Handling
+
+### Branching on the kind of failure
+```mrt
+func classify(action) {
+    try {
+        action();
+        return "ok";
+    }
+    catch (e) if (get(e, "kind", "") == "IndexError")      { return "out of range"; }
+    catch (e) if (get(e, "kind", "") == "ArithmeticError") { return "bad maths"; }
+    catch (e) if (get(e, "kind", "") == "NameError")       { return "typo"; }
+    catch (e)                                              { return "other"; }
+}
+
+func main() {
+    print(classify(func() { var a = []; return a[3]; }));
+    print(classify(func() { return 1 / 0; }));
+    print(classify(func() { return notDefined; }));
+    print(classify(func() { return -"x"; }));
+    print(classify(func() { return 1 + 1; }));
+}
+```
+
+### Using the stack trace
+```mrt
+func parse(text) { return toNumber(text); }
+func load(text) { return parse(text); }
+
+func main() {
+    try {
+        load("not a number");
+    } catch (e) {
+        print("failed in: ${join(e.stack, " <- ")}");
+        print("because: ${e.message}");
+    }
+}
+```
+
+## Multi-File Programs
+
+Given a library file:
+
+```mrt
+// lib/text.mrt
+export func titleCase(s) {
+    var out = [];
+    for (word in split(s, " ")) {
+        if (len(word) == 0) { continue; }
+        push(out, toUpper(substring(word, 0, 1)) + toLower(substring(word, 1, len(word))));
+    }
+    return join(out, " ");
+}
+
+export func initials(name) {
+    return join(map(split(name, " "), func(w) { return toUpper(substring(w, 0, 1)); }), ".");
+}
+```
+
+...a program imports what it needs:
+
+```mrt
+// main.mrt
+import { titleCase, initials } from "./lib/text.mrt";
+
+func main() {
+    print(titleCase("ada lovelace"));   // Ada Lovelace
+    print(initials("ada lovelace"));    // A.L
+}
+```
+
+### Shared state across importers
+```mrt
+// lib/ids.mrt
+var nextId = 0;
+export func freshId() { nextId += 1; return nextId; }
+```
+
+Every file that imports `freshId` draws from the same counter, because the
+function closes over the module's own `nextId`:
+
+```mrt
+import { freshId } from "./lib/ids.mrt";
+
+func main() {
+    print(freshId(), freshId(), freshId());   // 1 2 3
+}
+```
+
+Full programs: `examples/modules.mrt` and `examples/lib/`.
