@@ -10,6 +10,8 @@
 7. [Arrays](#arrays)
 8. [Objects](#objects)
 9. [String Operations](#string-operations)
+10. [Error Handling](#error-handling)
+11. [Sequence and Utility Functions](#sequence-and-utility-functions)
 
 See also the [Operators](#operators) reference, [Break and Continue](#break-and-continue),
 and the [full language specification](LANGUAGE_SPEC.md) for precise grammar and semantics.
@@ -70,6 +72,14 @@ MRT supports the following basic data types:
    var message = "Hello, World!"
    ```
 
+   Strings support interpolation with `${ ... }`, which renders any value
+   the way `print` does:
+   ```mrt
+   var name = "Ada"
+   print("Hi ${name}, ${1 + 2} times!")   // Hi Ada, 3 times!
+   print("Escape it with a backslash: \${name}")
+   ```
+
 3. **Booleans**: `true` or `false`
    ```mrt
    var isValid = true
@@ -82,17 +92,26 @@ MRT supports the following basic data types:
    var names = ["Alice", "Bob", "Charlie"]
    ```
 
-5. **Objects**: Key/value maps, written like JSON (keys must be
-   expressions -- typically quoted strings, not bare identifiers)
+5. **Objects**: Key/value maps, written like JSON. A bareword key is
+   shorthand for the string of that name; quote it or parenthesise an
+   expression when you need something else
    ```mrt
-   var person = {"name": "Ada", "age": 36}
+   var person = {name: "Ada", age: 36}      // same as {"name": ..., "age": ...}
+   var key = "dyn"
+   var computed = {(key): 1}                // {dyn: 1}
    ```
 
-6. **Null**: the absence of a value (there's no `null` literal -- a `var`
-   with no initializer, or a function that falls off its end without
-   `return`, produces it)
+6. **Null**: the absence of a value
    ```mrt
-   var nothing;  // nothing == null
+   var nothing = null
+   var alsoNothing;                         // no initializer -> null
+   ```
+   `null` and `false` are the only falsy values: `0`, `""`, `[]` and `{}`
+   are all truthy.
+
+7. **Functions**: values like any other -- see [Functions](#functions)
+   ```mrt
+   var double = func(x) { return x * 2; }
    ```
 
 ## Variables
@@ -132,6 +151,27 @@ for (var i = 0; i < 10; i = i + 1) {
 }
 ```
 
+### For-In Loops
+
+`for (x in ...)` walks an array's elements, a string's characters, or an
+object's keys:
+
+```mrt
+for (n in [10, 20]) { print(n) }
+for (ch in "hi") { print(ch) }
+for (key in {a: 1, b: 2}) { print(key) }
+```
+
+Unlike the C-style loop, the loop variable is a **fresh binding each
+iteration**, so functions created in the body capture that iteration's
+value:
+
+```mrt
+var fns = []
+for (x in [1, 2, 3]) { push(fns, func() { return x; }) }
+print(map(fns, func(f) { return f(); }))   // [1, 2, 3]
+```
+
 ### Break and Continue
 ```mrt
 for (var i = 0; i < 10; i = i + 1) {
@@ -140,6 +180,8 @@ for (var i = 0; i < 10; i = i + 1) {
     print(i)
 }
 ```
+
+Both work in `for`-`in` loops too.
 
 ## Functions
 
@@ -154,6 +196,68 @@ func greet(name) {
     print("Hello, " + name + "!")
 }
 ```
+
+### Functions as values
+
+`func(...) { ... }` without a name is an *expression*, so a function can be
+stored in a variable, passed as an argument, or returned:
+
+```mrt
+var double = func(x) { return x * 2; };
+print(double(21));            // 42
+
+var apply = func(f, v) { return f(v); };
+print(apply(double, 5));      // 10
+```
+
+A declared function's name is an ordinary variable holding the same kind of
+value, so `map([1, 2, 3], add)` works just as well as an inline `func`.
+
+### Closures
+
+A function remembers the scope it was *defined* in, which makes private
+state easy:
+
+```mrt
+func makeCounter() {
+    var count = 0;
+    return func() { count += 1; return count; };
+}
+
+var next = makeCounter();
+next(); next();
+print(next());                // 3
+```
+
+Each call to `makeCounter()` produces an independent counter.
+
+### Higher-order built-ins
+
+```mrt
+var nums = [5, 3, 8, 1];
+
+print(map(nums, func(x) { return x * x; }));           // [25, 9, 64, 1]
+print(filter(nums, func(x) { return x > 3; }));        // [5, 8]
+print(reduce(nums, func(a, b) { return a + b; }));     // 17
+print(find(nums, func(x) { return x > 4; }));          // 5
+print(some(nums, func(x) { return x > 7; }));          // true
+print(every(nums, func(x) { return x > 0; }));         // true
+```
+
+`sort(arr)` returns a **new** sorted array and leaves the original alone.
+Without a comparator the array must be all numbers or all strings; with one,
+return a negative number, zero, or a positive number:
+
+```mrt
+print(sort([3, 1, 2]));                                    // [1, 2, 3]
+print(sort([3, 1, 2], func(a, b) { return b - a; }));      // [3, 2, 1]
+
+var people = [{name: "Cy", age: 44}, {name: "Ada", age: 36}];
+var byAge = sort(people, func(a, b) { return a.age - b.age; });
+print(map(byAge, func(p) { return p.name; }));             // [Ada, Cy]
+```
+
+See `examples/functions.mrt` for a longer tour.
 
 ## Arrays
 
@@ -316,3 +420,108 @@ MRT offers powerful string manipulation functions:
    ```mrt
    var has = contains("hello world", "world")  // true
    ```
+
+
+## Error Handling
+
+Use `throw` to raise an error and `try`/`catch`/`finally` to handle it.
+
+```mrt
+try {
+    throw "something went wrong";
+} catch (e) {
+    print("caught:", e);
+} finally {
+    print("always runs");
+}
+```
+
+Any value can be thrown, so an object makes a useful structured error:
+
+```mrt
+func validateAge(age) {
+    if (age < 0) {
+        throw {field: "age", reason: "must not be negative"};
+    }
+    return age;
+}
+
+try {
+    validateAge(-5);
+} catch (e) {
+    print(e.field, "-", e.reason);      // age - must not be negative
+}
+```
+
+The interpreter's own runtime errors are catchable too. They arrive as an
+object with `message` and `line` keys:
+
+```mrt
+try {
+    var arr = [1, 2, 3];
+    print(arr[99]);
+} catch (e) {
+    print(e.message);   // Array index 99 out of bounds for array of length 3.
+}
+```
+
+That makes it possible to recover from a failure instead of halting:
+
+```mrt
+func safeDivide(a, b) {
+    try { return a / b; } catch (e) { return null; }
+}
+
+print(safeDivide(10, 2));   // 5
+print(safeDivide(10, 0));   // null
+```
+
+Notes:
+
+- `finally` runs on every exit path — normal completion, a caught error, an
+  error still propagating, and a `return` passing through it.
+- `catch` and `finally` are each optional, but you need at least one.
+- A `catch` block catches *everything*, including typos inside the `try`, so
+  keep `try` blocks narrow.
+
+See `examples/errors.mrt`.
+
+## Sequence and Utility Functions
+
+```mrt
+print(reverse([1, 2, 3]));            // [3, 2, 1]   (also works on strings)
+print(unique([3, 1, 3, 2]));          // [3, 1, 2]
+print(flatten([[1], [2, [3]]]));      // [1, 2, [3]]
+print(flatten([[1], [2, [3]]], 2));   // [1, 2, 3]
+print(zip([1, 2, 3], ["a", "b"]));    // [[1, a], [2, b]]
+print(enumerate(["x", "y"]));         // [[0, x], [1, y]]
+print(count([1, 1, 2], 1));           // 2
+print(sum([1, 2, 3]));                // 6
+print(range(4));                      // [0, 1, 2, 3]
+print(range(2, 6));                   // [2, 3, 4, 5]
+print(range(0, 10, 3));               // [0, 3, 6, 9]
+print(range(3, 0, -1));               // [3, 2, 1]
+```
+
+String helpers:
+
+```mrt
+print(repeat("-=", 3));               // -=-=-=
+print(padStart("7", 3, "0"));         // 007
+print(padEnd("7", 3, "."));           // 7..
+```
+
+### Seeded randomness
+
+`random(seed)` returns a generator function. The same seed always produces
+the same sequence — in this interpreter and in the browser Playground alike.
+There is no unseeded global random.
+
+```mrt
+var rng = random(2026);
+for (i in range(3)) {
+    print(floor(rng() * 6) + 1);      // a repeatable dice roll
+}
+```
+
+See `examples/stdlib.mrt`.

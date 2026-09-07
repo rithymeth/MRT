@@ -1,0 +1,44 @@
+// The null literal, string interpolation, bareword object keys, and
+// for-in iteration.
+
+func main() {
+    // `null` is now spellable directly.
+    var missing = null;
+    print("value:", missing, "type:", type(missing));
+    print("null is the only falsy value besides false:");
+    if (null) { print("  null is truthy"); } else { print("  null is falsy"); }
+    if (0) { print("  0 is truthy"); }
+    if ("") { print("  empty string is truthy"); }
+
+    // String interpolation renders any value the way print does.
+    var name = "Ada";
+    var scores = [90, 85];
+    print("Hello ${name}, you have ${len(scores)} scores: ${scores}");
+    print("Arithmetic works too: ${2 * 21}");
+    print("So do calls: ${toUpper(name)}");
+    print("Escape a literal dollar-brace with a backslash: \${name}");
+
+    // Bareword object keys: {name: ...} means {"name": ...}.
+    var person = {name: "Ada", age: 36, languages: ["MRT", "Analytical Engine"]};
+    print("person:", person);
+    print("name via dot:", person.name);
+    print("name via index:", person["name"]);
+
+    // for-in walks arrays, strings, and object keys.
+    print("array:");
+    for (score in scores) { print("  score ${score}"); }
+
+    print("string:");
+    for (ch in "hi") { print("  char ${ch}"); }
+
+    print("object keys:");
+    for (key in person) { print("  ${key} = ${get(person, key)}"); }
+
+    // The loop variable is a fresh binding each time, so closures made in
+    // the body capture that iteration's value rather than sharing one slot.
+    var fns = [];
+    for (n in [1, 2, 3]) {
+        push(fns, func() { return n; });
+    }
+    print("captured per iteration:", map(fns, func(f) { return f(); }));
+}

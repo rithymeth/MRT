@@ -1,0 +1,58 @@
+// First-class functions: anonymous `func(...)` values, closures, and the
+// higher-order built-ins that consume them.
+
+func main() {
+    // A function stored in a variable, like any other value.
+    var double = func(x) { return x * 2; };
+    print("double(21) =", double(21));
+    print("type:", type(double));
+
+    // Functions taking and returning functions.
+    var twice = func(f, v) { return f(f(v)); };
+    print("twice(double, 5) =", twice(double, 5));
+
+    var adder = func(n) { return func(x) { return x + n; }; };
+    var add10 = adder(10);
+    print("add10(5) =", add10(5));
+
+    // A closure with private mutable state: each counter has its own `n`.
+    var makeCounter = func() {
+        var n = 0;
+        return func() { n += 1; return n; };
+    };
+    var count1 = makeCounter();
+    var count2 = makeCounter();
+    count1(); count1();
+    print("independent counters:", count1(), count2());
+
+    // The collection pipeline.
+    var nums = [5, 3, 8, 1, 9, 2];
+    print("squares:", map(nums, func(x) { return x * x; }));
+    print("evens:", filter(nums, func(x) { return x % 2 == 0; }));
+    print("sum:", reduce(nums, func(a, b) { return a + b; }));
+    print("first over 4:", find(nums, func(x) { return x > 4; }));
+    print("any over 8:", some(nums, func(x) { return x > 8; }));
+    print("all positive:", every(nums, func(x) { return x > 0; }));
+
+    // sort() returns a new array and never touches the original.
+    print("ascending:", sort(nums));
+    print("descending:", sort(nums, func(a, b) { return b - a; }));
+    print("original untouched:", nums);
+
+    // Sorting records by a field.
+    var people = [
+        {name: "Cy", age: 44},
+        {name: "Ada", age: 36},
+        {name: "Bob", age: 17}
+    ];
+    var byAge = sort(people, func(a, b) { return a.age - b.age; });
+    print("youngest first:", map(byAge, func(p) { return p.name; }));
+
+    // A named declaration is a value too.
+    print("factorials:", map([1, 2, 3, 4, 5], factorial));
+}
+
+func factorial(n) {
+    if (n <= 1) { return 1; }
+    return n * factorial(n - 1);
+}

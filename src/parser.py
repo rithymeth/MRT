@@ -29,7 +29,11 @@ class Parser:
 
     def declaration(self) -> Optional[Stmt]:
         try:
-            if self.match(TokenType.FUNC):
+            # `func name(...)` is a declaration; a bare `func(...)` in
+            # statement position is an anonymous function *expression* and
+            # falls through to expression_statement below.
+            if self.check(TokenType.FUNC) and self.check_next(TokenType.IDENTIFIER):
+                self.advance()
                 return self.function("function")
             if self.match(TokenType.VAR):
                 return self.var_declaration()
@@ -41,8 +45,13 @@ class Parser:
 
     def function(self, kind: str) -> Function:
         name = self.consume(TokenType.IDENTIFIER, f"Expect {kind} name.")
+        parameters = self.parameter_list(f"Expect '(' after {kind} name.")
+        self.consume(TokenType.LBRACE, f"Expect '{{' before {kind} body.")
+        body = self.block()
+        return Function(name, parameters, body)
 
-        self.consume(TokenType.LPAREN, f"Expect '(' after {kind} name.")
+    def parameter_list(self, lparen_message: str) -> List[Token]:
+        self.consume(TokenType.LPAREN, lparen_message)
         parameters = []
         if not self.check(TokenType.RPAREN):
             while True:
@@ -53,10 +62,19 @@ class Parser:
                 if not self.match(TokenType.COMMA):
                     break
         self.consume(TokenType.RPAREN, "Expect ')' after parameters.")
+        return parameters
 
-        self.consume(TokenType.LBRACE, f"Expect '{{' before {kind} body.")
+    def function_expression(self) -> FunctionExpr:
+        """An anonymous `func(a, b) { ... }` in expression position. An
+        optional name is accepted (`func fact(n) { ... }` as a value) purely
+        so the function has something to print as."""
+        name = None
+        if self.check(TokenType.IDENTIFIER):
+            name = self.advance()
+        parameters = self.parameter_list("Expect '(' after 'func'.")
+        self.consume(TokenType.LBRACE, "Expect '{' before function body.")
         body = self.block()
-        return Function(name, parameters, body)
+        return FunctionExpr(parameters, body, name)
 
     def statement(self) -> Stmt:
         if self.match(TokenType.FOR):
@@ -71,6 +89,10 @@ class Parser:
             return self.break_statement()
         if self.match(TokenType.CONTINUE):
             return self.continue_statement()
+        if self.match(TokenType.TRY):
+            return self.try_statement()
+        if self.match(TokenType.THROW):
+            return self.throw_statement()
         if self.match(TokenType.LBRACE):
             return Block(self.block())
         if self.match(TokenType.PRINT):
@@ -79,6 +101,23 @@ class Parser:
 
     def for_statement(self) -> Stmt:
         self.consume(TokenType.LPAREN, "Expect '(' after 'for'.")
+
+        # `for (x in xs)` / `for (var x in xs)` -- decided by lookahead so the
+        # C-style three-clause form below is untouched. Both spellings mean
+        # the same thing; `var` is allowed because it reads naturally and
+        # because the loop variable really is a fresh binding each time.
+        if (self.check(TokenType.IDENTIFIER) and self.check_next(TokenType.IN)) or \
+           (self.check(TokenType.VAR) and self.check_next(TokenType.IDENTIFIER)):
+            saved = self.current
+            self.match(TokenType.VAR)
+            if self.check(TokenType.IDENTIFIER) and self.check_next(TokenType.IN):
+                name = self.advance()
+                self.advance()  # consume 'in'
+                iterable = self.expression()
+                self.consume(TokenType.RPAREN, "Expect ')' after for-in iterable.")
+                body = self.statement()
+                return ForIn(name, iterable, body)
+            self.current = saved
 
         # Initializer
         initializer = None
@@ -153,6 +192,36 @@ class Parser:
         keyword = self.previous()
         self.consume_statement_end("Expect ';' after 'continue'.")
         return Continue(keyword)
+
+    def try_statement(self) -> Try:
+        keyword = self.previous()
+        self.consume(TokenType.LBRACE, "Expect '{' after 'try'.")
+        try_block = Block(self.block())
+
+        catch_name = None
+        catch_block = None
+        if self.match(TokenType.CATCH):
+            self.consume(TokenType.LPAREN, "Expect '(' after 'catch'.")
+            catch_name = self.consume(TokenType.IDENTIFIER, "Expect variable name in catch.")
+            self.consume(TokenType.RPAREN, "Expect ')' after catch variable.")
+            self.consume(TokenType.LBRACE, "Expect '{' after catch.")
+            catch_block = Block(self.block())
+
+        finally_block = None
+        if self.match(TokenType.FINALLY):
+            self.consume(TokenType.LBRACE, "Expect '{' after 'finally'.")
+            finally_block = Block(self.block())
+
+        if catch_block is None and finally_block is None:
+            raise self.error(keyword, "Expect 'catch' or 'finally' after 'try' block.")
+
+        return Try(try_block, catch_name, catch_block, finally_block)
+
+    def throw_statement(self) -> Throw:
+        keyword = self.previous()
+        value = self.expression()
+        self.consume_statement_end("Expect ';' after thrown value.")
+        return Throw(keyword, value)
 
     def block(self) -> List[Stmt]:
         statements = []
@@ -326,8 +395,14 @@ class Parser:
             return Literal(True)
         if self.match(TokenType.FALSE):
             return Literal(False)
+        if self.match(TokenType.NULL):
+            return Literal(None)
         if self.match(TokenType.NUMBER, TokenType.STRING):
             return Literal(self.previous().literal)
+        if self.match(TokenType.TEMPLATE):
+            return self.interpolation(self.previous())
+        if self.match(TokenType.FUNC):
+            return self.function_expression()
         if self.match(TokenType.IDENTIFIER):
             return Variable(self.previous())
         if self.match(TokenType.LPAREN):
@@ -347,7 +422,14 @@ class Parser:
             pairs: List[tuple] = []
             if not self.check(TokenType.RBRACE):
                 while True:
-                    key = self.expression()
+                    # A bareword key is shorthand for the *string* of that
+                    # name: `{name: "Ada"}` means `{"name": "Ada"}`. To use a
+                    # variable's value as the key instead, parenthesise it:
+                    # `{(k): v}`.
+                    if self.check(TokenType.IDENTIFIER) and self.check_next(TokenType.COLON):
+                        key = Literal(self.advance().lexeme)
+                    else:
+                        key = self.expression()
                     self.consume(TokenType.COLON, "Expect ':' after dictionary key.")
                     value = self.expression()
                     pairs.append((key, value))
@@ -357,6 +439,43 @@ class Parser:
             return DictLiteral(pairs)
 
         raise self.error(self.peek(), "Expect expression.")
+
+    def interpolation(self, token: Token) -> Expr:
+        """Turn a TEMPLATE token's parts into an `Interpolation` node.
+
+        Each `${ ... }` part arrives from the lexer as raw source text, which
+        is lexed and parsed here as a self-contained expression. Line numbers
+        from that sub-lex are relative to the start of the fragment, so they
+        are shifted onto the line the fragment actually appeared on and any
+        error is re-raised against the outer program."""
+        from .lexer import Lexer
+
+        parts: List[Any] = []
+        for part in token.literal:
+            if part[0] == 'str':
+                parts.append(part[1])
+                continue
+
+            _, source, line = part
+            if not source.strip():
+                raise self.error(token, "Empty interpolation: expected an expression inside '${}'.")
+
+            try:
+                sub_tokens = Lexer(source).scan_tokens()
+            except MRTSyntaxError as e:
+                raise MRTSyntaxError(e.message, line) from None
+
+            for t in sub_tokens:
+                t.line += line - 1
+
+            sub_parser = Parser(sub_tokens)
+            expr = sub_parser.expression()
+            if not sub_parser.is_at_end():
+                raise self.error(sub_parser.peek(),
+                                 "Unexpected trailing tokens in interpolation.")
+            parts.append(expr)
+
+        return Interpolation(parts)
 
     def var_declaration(self) -> Var:
         name = self.consume(TokenType.IDENTIFIER, "Expect variable name.")
@@ -379,6 +498,14 @@ class Parser:
         if self.is_at_end():
             return False
         return self.peek().type == type
+
+    def check_next(self, type: TokenType) -> bool:
+        """One token of lookahead past `peek()`, used where a construct can't
+        be identified from its first token alone (`func name` vs `func(`,
+        `for (x in` vs `for (x =`, a bareword object key vs an expression)."""
+        if self.current + 1 >= len(self.tokens):
+            return False
+        return self.tokens[self.current + 1].type == type
 
     def advance(self) -> Token:
         if not self.is_at_end():
@@ -419,7 +546,8 @@ class Parser:
                 return
 
             match self.peek().type:
-                case TokenType.FUNC | TokenType.IF | TokenType.RETURN | TokenType.WHILE | TokenType.VAR | TokenType.FOR:
+                case (TokenType.FUNC | TokenType.IF | TokenType.RETURN | TokenType.WHILE
+                      | TokenType.VAR | TokenType.FOR | TokenType.TRY | TokenType.THROW):
                     return
 
             self.advance()
