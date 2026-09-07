@@ -1,0 +1,40 @@
+// Demonstrates objects (dicts), dot access, compound assignment, and the
+// new type/math/object built-ins.
+
+func describe(person) {
+    return person.name + " is " + person.age + " years old.";
+}
+
+func main() {
+    print("=== Objects ===");
+    var person = {"name": "Ada Lovelace", "age": 36, "field": "mathematics"};
+    print(person);
+    print(describe(person));
+
+    person.age += 1;
+    print("After a birthday:", describe(person));
+
+    person["job"] = "Analyst";
+    print("Keys:", keys(person));
+    print("Values:", values(person));
+    print("Has 'job'?", has(person, "job"));
+    print("Has 'salary'?", has(person, "salary"));
+    print("get salary (default):", get(person, "salary", "unknown"));
+
+    print("=== Compound assignment ===");
+    var total = 0;
+    var prices = [19.99, 5.50, 12.25];
+    for (var i = 0; i < len(prices); i += 1) {
+        total += prices[i];
+    }
+    print("Total:", round(total, 2));
+
+    print("=== Type and math ===");
+    var values_ = [42, "hi", true, [1, 2], {"a": 1}];
+    for (var i = 0; i < len(values_); i += 1) {
+        print(toString(values_[i]), "->", type(values_[i]));
+    }
+    print("min/max:", min(4, 9, 2), max(4, 9, 2));
+    print("sqrt(144):", sqrt(144));
+    print("toNumber('3.5') + 1 =", toNumber("3.5") + 1);
+}

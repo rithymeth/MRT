@@ -19,8 +19,8 @@ mrt your_program.mrt
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd mrt
+git clone https://github.com/rithymeth/MRT.git
+cd MRT
 ```
 
 2. Install in development mode:
@@ -113,7 +113,7 @@ MRT supports these basic data types:
 ## Common Issues and Solutions
 
 ### Program Not Running
-- Ensure Python 3.6+ is installed
+- Ensure Python 3.10+ is installed (the interpreter uses `match` statements)
 - Check that all files are in the correct directory
 - Verify syntax in your MRT file
 

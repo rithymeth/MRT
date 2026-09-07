@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mrt-lang"
+version = "0.2.0"
+description = "MRT Programming Language - A modern, expressive programming language"
+readme = "README.md"
+requires-python = ">=3.10"  # uses `match` statements, which require Python 3.10+
+license = { text = "MIT" }
+authors = [{ name = "MRT Team" }]
+keywords = ["programming language", "interpreter", "compiler"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Interpreters",
+]
+
+[project.urls]
+Source = "https://github.com/rithymeth/MRT"
+Issues = "https://github.com/rithymeth/MRT/issues"
+
+[project.scripts]
+mrt = "src.__main__:main"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

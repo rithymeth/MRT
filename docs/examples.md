@@ -75,6 +75,29 @@ func array_demo() {
 }
 ```
 
+## Objects
+
+### Object Manipulation
+```mrt
+func object_demo() {
+    var person = {"name": "Ada Lovelace", "age": 36};
+
+    print("Name:", person.name);
+    print("Age:", person.age);
+
+    person.age += 1;
+    print("After a birthday:", person.age);
+
+    person["job"] = "Mathematician";
+    print("Keys:", keys(person));
+    print("Has 'job'?", has(person, "job"));
+    print("Get 'salary' (default):", get(person, "salary", "unknown"));
+}
+```
+
+See `examples/objects.mrt` for the full runnable version, which also
+covers `type()`, the math built-ins, and compound assignment together.
+
 ## String Operations
 
 ### String Manipulation
@@ -107,6 +130,44 @@ func string_demo() {
     print("After replace:", new_text)
 }
 ```
+
+## Operators
+
+### Comparison, Logical and Modulo
+```mrt
+func classify(n) {
+    if (n % 2 == 0) {
+        return "even";
+    }
+    return "odd";
+}
+
+func operators_demo() {
+    print("3 != 4:", 3 != 4);
+    print("2 >= 2:", 2 >= 2);
+    print("age >= 18 && hasId:", 25 >= 18 && true);
+    print("10 is", classify(10));
+}
+```
+
+### Break and Continue
+```mrt
+func sum_even_up_to_ten() {
+    var total = 0;
+    for (var i = 1; i <= 20; i = i + 1) {
+        if (i % 2 != 0) {
+            continue;
+        }
+        if (i > 10) {
+            break;
+        }
+        total = total + i;
+    }
+    return total;  // 30
+}
+```
+
+See `examples/operators.mrt` for the full runnable version.
 
 ## Advanced Examples
 

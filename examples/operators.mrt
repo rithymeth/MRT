@@ -1,0 +1,41 @@
+// Demonstrates comparison, logical and modulo operators, plus break/continue.
+
+func classify(n) {
+    if (n % 2 == 0) {
+        return "even";
+    }
+    return "odd";
+}
+
+func main() {
+    print("=== Comparisons ===");
+    print("3 != 4:", 3 != 4);
+    print("2 >= 2:", 2 >= 2);
+    print("5 <= 4:", 5 <= 4);
+    print("'apple' < 'banana':", "apple" < "banana");
+
+    print("=== Logical operators ===");
+    var age = 25;
+    var hasId = true;
+    print("Can enter:", age >= 18 && hasId);
+    print("Weekend or holiday:", false || true);
+    print("Not done:", !false);
+
+    print("=== Modulo ===");
+    for (var i = 1; i <= 10; i = i + 1) {
+        print(i, "is", classify(i));
+    }
+
+    print("=== break / continue ===");
+    var sumOfEvens = 0;
+    for (var i = 1; i <= 20; i = i + 1) {
+        if (i % 2 != 0) {
+            continue;
+        }
+        if (i > 10) {
+            break;
+        }
+        sumOfEvens = sumOfEvens + i;
+    }
+    print("Sum of even numbers from 1 to 10:", sumOfEvens);
+}
