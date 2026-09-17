@@ -384,6 +384,127 @@ const REGRESSION_CASES = [
     src: 'yield 1;',
   },
 
+
+  // --- Two-way generators, delegation and lazy pipelines -------------------
+  {
+    name: 'next/send drive a generator by hand and report done',
+    src: 'func echo() { var got = yield "ready"; while (got != "stop") { got = yield "saw ${got}"; } yield "bye"; } func main() { var g = echo(); print(next(g)); print(send(g, "a")); print(send(g, "b")); print(send(g, "stop")); print(next(g), next(g)); }',
+  },
+  {
+    name: 'the value sent on the first step is discarded',
+    src: 'func g() { var first = yield 1; print("got", first); yield 2; } func main() { var it = g(); print(send(it, "ignored")); print(send(it, "kept")); }',
+  },
+  {
+    name: 'a yield with no sender sees null, and assigns through any target',
+    src: 'func g() { var a = yield 1; print("a", a); var o = {k: 0}; o.k = yield 2; print("k", o.k); var p = 0; p = yield 3; print("p", p); } func pair() { var a = 0; var b = 0; [a, b] = yield "give me two"; print("pair", a, b); } func main() { print(toArray(g())); var h = g(); print(send(h, 10), send(h, 20), send(h, 30), next(h)); var q = pair(); print(next(q)); print(send(q, [7, 8])); var r = pair(); try { toArray(r); } catch (e) { print(e.kind, "|", e.message); } }',
+  },
+  {
+    name: 'next/send reject non-generators and tolerate exhaustion',
+    src: 'func g() { yield 1; } func main() { var probes = [func(){ return next(5); }, func(){ return send([1], 2); }, func(){ return next(); }, func(){ return send(g()); }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } var it = g(); print(next(it), next(it), next(it)); }',
+  },
+  {
+    name: 'yield* delegates to generators, arrays, strings and objects',
+    src: 'func inner() { yield 1; yield 2; } func outer() { yield 0; yield* inner(); yield* [8, 9]; yield* "ab"; yield* {k: 1}; yield 3; } func main() { print(toArray(outer())); }',
+  },
+  {
+    name: 'yield* forwards sent values into the delegate',
+    src: 'func inner() { var a = yield "i1"; var b = yield "i2:${a}"; print("inner saw", a, b); } func outer() { yield "o"; yield* inner(); } func main() { var g = outer(); print(next(g)); print(send(g, "x")); print(send(g, "y")); print(send(g, "z")); }',
+  },
+  {
+    name: 'yield* as an expression is a syntax error',
+    src: 'func f() { var x = yield* [1]; } func main() { f(); }',
+  },
+  {
+    name: 'yield in a nested expression is a syntax error',
+    src: 'func f() { print(1 + yield 2); } func main() { f(); }',
+  },
+  {
+    name: 'a generator resumes where an earlier consumer stopped',
+    src: 'func naturals() { var n = 0; while (true) { yield n; n += 1; } } func main() { var g = naturals(); print(take(g, 3)); print(take(g, 2)); for (v in g) { if (v > 6) { break; } } print(next(g)); }',
+  },
+  {
+    name: 'an exhausted generator is an error to iterate but not to step',
+    src: 'func two() { yield 1; yield 2; } func main() { var g = two(); print(toArray(g)); try { toArray(g); } catch (e) { print(e.kind, "|", e.message); } print(next(g)); try { for (v in g) { print(v); } } catch (e) { print(e.kind, "|", e.message); } }',
+  },
+  {
+    name: 'resuming a generator from inside itself is an error',
+    src: 'var shared = null; func f() { yield 1; var again = next(shared); yield 2; } func main() { shared = f(); try { print(toArray(shared)); } catch (e) { print(e.kind, "|", e.message); } }',
+  },
+  {
+    name: 'lazy map and filter over an endless generator',
+    src: 'func naturals() { var n = 0; while (true) { yield n; n += 1; } } func main() { print(type(map(naturals(), func(n){ return n; }))); print(toString(map(naturals(), func(n){ return n; })), toString(filter(naturals(), func(n){ return true; }))); print(take(map(naturals(), func(n){ return n * n; }), 5)); print(take(filter(naturals(), func(n){ return n % 2 == 0; }), 4)); print(take(map(filter(naturals(), func(n){ return n % 3 == 0; }), func(n){ return "n${n}"; }), 3)); }',
+  },
+  {
+    name: 'map and filter stay eager on arrays, and still reject other types',
+    src: 'func main() { print(map([1,2], func(x){ return x + 1; }), filter([1,2,3], func(x){ return x > 1; })); var probes = [func(){ return map(5, func(x){ return x; }); }, func(){ return filter("ab", func(x){ return x; }); }, func(){ return map([1]); }, func(){ return filter([1]); }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } }',
+  },
+  {
+    name: 'lazy map is only as lazy as it is asked to be',
+    src: 'func three() { yield 1; yield 2; yield 3; } func main() { var calls = 0; var counted = map(three(), func(x) { calls += 1; return x * 2; }); print(calls); print(take(counted, 2)); print(calls); print(toArray(counted)); print(calls); }',
+  },
+  {
+    name: 'take pulls exactly as many items as asked',
+    src: 'func three() { yield 1; yield 2; yield 3; } func main() { var g = three(); print(take(g, 0)); print(next(g)); print(take(g, 10)); }',
+  },
+
+  // --- Destructuring assignment -------------------------------------------
+  {
+    name: 'array and object destructuring assignment, including swap',
+    src: 'func main() { var a = 1; var b = 2; [a, b] = [b, a]; print(a, b); var x = 0; var y = 0; {x, y} = {x: 5, y: 6}; print(x, y); var head = 0; var rest = []; [head, ...rest] = [1,2,3]; print(head, rest); }',
+  },
+  {
+    name: 'destructuring assignment nests, renames, defaults and rests',
+    src: 'func main() { var a = 0; var b = 0; var c = 0; var others = {}; [a, [b, c]] = [1, [2, 3]]; print(a, b, c); {name: a, ...others} = {name: "Ada", x: 1, y: 2}; print(a, others); [b, c = 9] = [7]; print(b, c); }',
+  },
+  {
+    name: 'destructuring assignment needs existing variables and the right shape',
+    src: 'func main() { var a = 0; var probes = [func(){ [nope] = [1]; }, func(){ [a, a, a] = [1]; }, func(){ {k} = {}; }, func(){ [a] = 5; }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } }',
+  },
+  {
+    name: 'a leading brace is still a block, and a leading bracket still an array',
+    src: 'func main() { var x = 1; { x = 2; } print(x); { print("block"); } var arr = [1, 2]; [1, 2][0]; print(arr[0]); if (true) { x = 3; } print(x); }',
+  },
+  {
+    name: 'destructuring assignment reaches outer scopes, not new ones',
+    src: 'func main() { var a = 1; var b = 2; func inner() { [a, b] = [10, 20]; } inner(); print(a, b); for (i in [0]) { [a] = [99]; } print(a); }',
+  },
+
+  // --- match as an expression ---------------------------------------------
+  {
+    name: 'match expressions bind, guard and default',
+    src: 'func classify(v) { return match (v) { case 0: "zero", case [a, b]: "pair ${a+b}", case {kind: "dog", name: n}: "dog ${n}", case n if (type(n) == "number" && n < 0): "neg ${n}", default: "other" }; } func main() { for (v in [0, -3, 5]) { print(classify(v)); } print(classify([1,2])); print(classify({kind: "dog", name: "Rex"})); print(classify("x")); }',
+  },
+  {
+    name: 'match expressions nest and compose with calls and interpolation',
+    src: 'struct Point { x, y } func main() { var p = Point(1, 2); print("at ${ match (p) { case Point(a, b): "${a},${b}", default: "?" } }"); var v = match (3) { case n if (n > 2): match (n) { case 3: "three", default: "big" }, default: "small" }; print(v); print(len(match (true) { case true: [1,2,3], default: [] })); }',
+  },
+  {
+    name: 'an unmatched match expression is an error, and match is still a statement',
+    src: 'func main() { try { print(match (99) { case 1: "one" }); } catch (e) { print(e.kind, "|", e.message); } match (2) { case 2: print("statement form"); default: print("no"); } var t = match (1) { case 1: "trailing comma ok", }; print(t); }',
+  },
+
+  // --- Iterator protocol ---------------------------------------------------
+  {
+    name: 'a struct with iter() is iterable everywhere an iterable is',
+    src: 'struct Span { lo, hi; func iter() { var n = this.lo; while (n < this.hi) { yield n; n += 1; } } } func main() { var r = Span(1, 5); for (v in r) { print(v); } print(toArray(Span(0, 3)), take(Span(0, 9), 2)); print(map(Span(0, 3), func(n){ return n * 2; })); print(toArray(map(Span(0, 3), func(n){ return n; })) == [0, 1, 2]); }',
+  },
+  {
+    name: 'iter() may return any iterable, and a struct without it iterates fields',
+    src: 'struct Deck { cards; func iter() { return this.cards; } } struct Plain { a, b } func main() { print(toArray(Deck(["A","K"]))); for (k in Plain(1, 2)) { print(k); } }',
+  },
+  {
+    name: 'an iter() that returns the struct itself is reported, not looped',
+    src: 'struct Loop { n; func iter() { return this; } } struct Bad { n; func iter() { return this.n; } } func main() { try { for (x in Loop(1)) { print(x); } } catch (e) { print(e.kind, "|", e.message); } try { print(toArray(Bad(5))); } catch (e) { print(e.kind, "|", e.message); } }',
+  },
+  {
+    name: 'the higher-order builtins accept anything iterable',
+    src: 'struct Span { lo, hi; func iter() { var n = this.lo; while (n < this.hi) { yield n; n += 1; } } } func main() { var s = Span(0, 4); print(map(s, func(n){ return n * 2; })); print(filter(s, func(n){ return n % 2 == 0; })); print(reduce(Span(1, 5), func(a, b){ return a + b; })); print(find(s, func(n){ return n > 2; }), some(s, func(n){ return n > 9; }), every(s, func(n){ return n < 9; })); print(map("abc", func(c){ return toUpper(c); })); print(map({a: 1, b: 2}, func(k){ return k + "!"; })); var probes = [func(){ return map(5, func(x){ return x; }); }, func(){ return reduce(7, func(a,b){ return a; }); }, func(){ return sort(s); }, func(){ return reduce([], func(a,b){ return a; }); }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } }',
+  },
+  {
+    name: 'from and as are contextual keywords, usable as ordinary names',
+    src: 'struct Trip { from, to } func main() { var from = "here"; var as = "now"; print(from, as); var o = {from: 1, as: 2, to: 3}; print(o, o.from, o.as); var t = Trip("A", "B"); print(t, t.from); var {from: f} = o; print(f); for (from in [1, 2]) { print(from); } func as2(from, as) { return from + as; } print(as2(1, 2)); }',
+  },
+
   {
     name: 'pipeline combining closures, for-in, interpolation and stdlib',
     src: 'func main() { var people = [{name: "Ada", age: 36}, {name: "Bob", age: 17}, {name: "Cy", age: 44}]; var adults = filter(people, func(p) { return p.age >= 18; }); var names = sort(map(adults, func(p) { return p.name; })); for (n in names) { print("adult: ${n}"); } print("total age ${ reduce(map(people, func(p){ return p.age; }), func(a,b){ return a+b; }) }"); }',

@@ -12,9 +12,9 @@ func fibonacci() {
     var b = 1;
     while (true) {
         yield a;
-        var next = a + b;
+        var following = a + b;
         a = b;
-        b = next;
+        b = following;
     }
 }
 

@@ -1,0 +1,63 @@
+// Lazy pipelines. `map` and `filter` hand back a generator when they are
+// given one, so a chain over an endless sequence computes only what is
+// actually pulled out of the end of it.
+
+func naturals() {
+    var n = 0;
+    while (true) { yield n; n += 1; }
+}
+
+func isPrime(n) {
+    if (n < 2) { return false; }
+    var d = 2;
+    while (d * d <= n) {
+        if (n % d == 0) { return false; }
+        d += 1;
+    }
+    return true;
+}
+
+// A struct becomes iterable by declaring `iter()`. Anything that walks a
+// sequence -- `for`-`in`, `toArray`, `take`, `map`, `reduce` -- then accepts
+// it, without the struct having to expose how it stores its items.
+struct Span {
+    lo, hi;
+    func iter() {
+        var n = this.lo;
+        while (n < this.hi) { yield n; n += 1; }
+    }
+}
+
+struct Deck {
+    cards;
+    // `iter()` may return any iterable, not only a generator.
+    func iter() { return this.cards; }
+}
+
+func main() {
+    print("-- lazy over an endless sequence --");
+    var squares = map(naturals(), func(n) { return n * n; });
+    print(take(squares, 6));
+    // The generator is resumable: what a consumer didn't take is still there.
+    print(take(squares, 3));
+
+    print(take(filter(naturals(), isPrime), 8));
+    print(take(map(filter(naturals(), isPrime), func(p) { return "p${p}"; }), 4));
+
+    print("-- counting the work --");
+    var calls = 0;
+    var watched = map(naturals(), func(n) { calls += 1; return n; });
+    take(watched, 4);
+    print("pulled 4, called ${calls} times");
+
+    print("-- eager on everything else --");
+    print(map([1, 2, 3], func(n) { return n * 10; }));
+    print(map("abc", toUpper));
+    print(filter({a: 1, bb: 2, ccc: 3}, func(k) { return len(k) > 1; }));
+
+    print("-- structs that iterate themselves --");
+    for (n in Span(1, 5)) { print(n); }
+    print(reduce(Span(1, 101), func(a, b) { return a + b; }));
+    print(toArray(Deck(["A", "K", "Q"])));
+    print(take(Span(0, 1000000), 3));
+}

@@ -24,6 +24,11 @@ class Parser:
         # One flag per function body being parsed, set when a `yield` is
         # seen, so a function knows at parse time whether it is a generator.
         self.function_yields: List[bool] = []
+        # True only while parsing the outermost expression of a statement,
+        # which is the one place a `yield` may produce a value (see
+        # `yield_expression`). Cleared on the way into any nested expression,
+        # so `f(yield v)` is rejected while `x = yield v;` is not.
+        self.statement_rhs = False
 
     def parse(self) -> List[Stmt]:
         statements = []
@@ -62,9 +67,9 @@ class Parser:
 
         # `import * as name from "..."` -- one object holding every export.
         if self.match(TokenType.MULTIPLY):
-            self.consume(TokenType.AS, "Expect 'as' after '*' in an import.")
+            self.consume_word("as", "Expect 'as' after '*' in an import.")
             alias = self.consume(TokenType.IDENTIFIER, "Expect a name after 'as'.")
-            self.consume(TokenType.FROM, "Expect 'from' after the import name.")
+            self.consume_word("from", "Expect 'from' after the import name.")
             specifier = self.consume(TokenType.STRING,
                                      "Expect a module path string after 'from'.")
             self.consume_statement_end("Expect ';' after import.")
@@ -76,14 +81,14 @@ class Parser:
             while True:
                 exported = self.consume(TokenType.IDENTIFIER, "Expect an imported name.")
                 local = exported
-                if self.match(TokenType.AS):
+                if self.match_word("as"):
                     local = self.consume(TokenType.IDENTIFIER, "Expect a local name after 'as'.")
                 names.append((exported, local))
                 if not self.match(TokenType.COMMA):
                     break
         self.consume(TokenType.RBRACE, "Expect '}' after imported names.")
 
-        self.consume(TokenType.FROM, "Expect 'from' after imported names.")
+        self.consume_word("from", "Expect 'from' after imported names.")
         specifier = self.consume(TokenType.STRING, "Expect a module path string after 'from'.")
         self.consume_statement_end("Expect ';' after import.")
         return Import(names, specifier, keyword)
@@ -101,7 +106,7 @@ class Parser:
                 while True:
                     local = self.consume(TokenType.IDENTIFIER, "Expect an exported name.")
                     exported = local
-                    if self.match(TokenType.AS):
+                    if self.match_word("as"):
                         exported = self.consume(TokenType.IDENTIFIER,
                                                 "Expect a name after 'as'.")
                     names.append((local, exported))
@@ -110,7 +115,7 @@ class Parser:
             self.consume(TokenType.RBRACE, "Expect '}' after exported names.")
 
             specifier = None
-            if self.match(TokenType.FROM):
+            if self.match_word("from"):
                 specifier = self.consume(TokenType.STRING,
                                          "Expect a module path string after 'from'.")
             self.consume_statement_end("Expect ';' after export.")
@@ -204,18 +209,23 @@ class Parser:
 
     # -- Binding patterns --------------------------------------------------
 
-    def binding_pattern(self, what: str) -> Pattern:
+    def binding_pattern(self, what: str, allow_yield: bool = False) -> Pattern:
         """Parse the left-hand side of a binding: a name, `[...]` or `{...}`.
 
         `what` names the construct for error messages ("variable name",
         "parameter name", ...) so a malformed pattern still reads like the
-        error the simple case would have produced."""
+        error the simple case would have produced.
+
+        `allow_yield` permits `yield` as the pattern's own trailing default,
+        which is how `var x = yield 1;` is parsed -- a `var` declaration's
+        initializer arrives through that same slot. It is never passed down
+        to nested patterns, so `var [a = yield 1] = xs;` stays an error."""
         if self.starts_pattern():
             if self.check(TokenType.LBRACKET):
-                return self.array_pattern()
-            return self.object_pattern()
+                return self.array_pattern(allow_yield)
+            return self.object_pattern(allow_yield)
         name = self.consume(TokenType.IDENTIFIER, f"Expect {what}.")
-        return NamePattern(name, self.pattern_default())
+        return NamePattern(name, self.pattern_default(allow_yield))
 
     def starts_pattern(self) -> bool:
         """Whether the next tokens really open a destructuring pattern.
@@ -236,12 +246,14 @@ class Parser:
                     or self.check_next(TokenType.ELLIPSIS))
         return False
 
-    def pattern_default(self) -> Optional[Expr]:
+    def pattern_default(self, allow_yield: bool = False) -> Optional[Expr]:
         if self.match(TokenType.ASSIGN):
+            if allow_yield and self.check(TokenType.YIELD):
+                return self.yield_expression()
             return self.expression()
         return None
 
-    def array_pattern(self) -> ArrayPattern:
+    def array_pattern(self, allow_yield: bool = False) -> ArrayPattern:
         token = self.consume(TokenType.LBRACKET, "Expect '[' to start a pattern.")
         elements: List[Pattern] = []
         rest = None
@@ -255,9 +267,9 @@ class Parser:
                 if not self.match(TokenType.COMMA):
                     break
         self.consume(TokenType.RBRACKET, "Expect ']' after array pattern.")
-        return ArrayPattern(elements, rest, self.pattern_default(), token)
+        return ArrayPattern(elements, rest, self.pattern_default(allow_yield), token)
 
-    def object_pattern(self) -> ObjectPattern:
+    def object_pattern(self, allow_yield: bool = False) -> ObjectPattern:
         token = self.consume(TokenType.LBRACE, "Expect '{' to start a pattern.")
         entries: List[tuple] = []
         rest = None
@@ -277,7 +289,7 @@ class Parser:
                 if not self.match(TokenType.COMMA):
                     break
         self.consume(TokenType.RBRACE, "Expect '}' after object pattern.")
-        return ObjectPattern(entries, rest, self.pattern_default(), token)
+        return ObjectPattern(entries, rest, self.pattern_default(allow_yield), token)
 
     def parameter_list(self, lparen_message: str) -> List[Param]:
         """Parse `(a, b = expr, ...rest)`.
@@ -341,6 +353,9 @@ class Parser:
         return FunctionExpr(parameters, body, name, is_generator)
 
     def statement(self) -> Stmt:
+        destructured = self.try_destructuring_assignment()
+        if destructured is not None:
+            return destructured
         if self.match(TokenType.FOR):
             return self.for_statement()
         if self.match(TokenType.IF):
@@ -366,6 +381,35 @@ class Parser:
         if self.match(TokenType.PRINT):
             return self.print_statement()
         return self.expression_statement()
+
+    def try_destructuring_assignment(self) -> Optional[Stmt]:
+        """Attempt to parse `<pattern> = expr;` -- assignment to existing
+        variables through an array or object pattern.
+
+        Only tried at the start of a statement, and speculatively: a leading
+        `{` is far more often a block, and `[` an array literal. Both forms
+        parse as a binding pattern whose trailing default *is* the assigned
+        value, so when there is no `= ...` this was something else and the
+        tokens are handed back untouched."""
+        if not self.starts_pattern():
+            return None
+
+        saved = self.current
+        token = self.peek()
+        try:
+            pattern = self.binding_pattern("a name in the pattern", allow_yield=True)
+        except ParseError:
+            self.current = saved
+            return None
+
+        if pattern.default is None:
+            self.current = saved
+            return None
+
+        value = pattern.default
+        pattern.default = None
+        self.consume_statement_end("Expect ';' after assignment.")
+        return DestructureAssign(pattern, value, token)
 
     def for_statement(self) -> Stmt:
         self.consume(TokenType.LPAREN, "Expect '(' after 'for'.")
@@ -520,6 +564,52 @@ class Parser:
             raise self.error(keyword, "A match needs at least one case.")
         return Match(subject, cases, keyword)
 
+    def match_expression(self) -> MatchExpr:
+        """`match (subject) { case <pattern>: <expr>, default: <expr> }`.
+
+        Arms are separated by commas and each one is a single expression, so
+        the whole construct reads as the value it produces. The statement
+        form above is what `match` means in statement position; this one is
+        reached only from `primary`, where a statement can't start."""
+        keyword = self.previous()
+        self.consume(TokenType.LPAREN, "Expect '(' after 'match'.")
+        subject = self.expression()
+        self.consume(TokenType.RPAREN, "Expect ')' after the match subject.")
+        self.consume(TokenType.LBRACE, "Expect '{' before match cases.")
+
+        arms: List[MatchArm] = []
+        seen_default = False
+        while not self.check(TokenType.RBRACE) and not self.is_at_end():
+            if self.match(TokenType.DEFAULT):
+                arm_keyword = self.previous()
+                if seen_default:
+                    raise self.error(arm_keyword, "A match can only have one 'default'.")
+                seen_default = True
+                self.consume(TokenType.COLON, "Expect ':' after 'default'.")
+                arms.append(MatchArm(None, None, self.expression(), arm_keyword))
+            else:
+                self.consume(TokenType.CASE, "Expect 'case' or 'default' in a match.")
+                arm_keyword = self.previous()
+                if seen_default:
+                    raise self.error(arm_keyword,
+                                     "'default' must be the last clause of a match.")
+                pattern = self.match_pattern()
+                guard = None
+                if self.match(TokenType.IF):
+                    self.consume(TokenType.LPAREN, "Expect '(' after 'if' in a case guard.")
+                    guard = self.expression()
+                    self.consume(TokenType.RPAREN, "Expect ')' after the case guard.")
+                self.consume(TokenType.COLON, "Expect ':' after the case pattern.")
+                arms.append(MatchArm(pattern, guard, self.expression(), arm_keyword))
+
+            if not self.match(TokenType.COMMA):
+                break
+
+        self.consume(TokenType.RBRACE, "Expect '}' after match cases.")
+        if not arms:
+            raise self.error(keyword, "A match needs at least one case.")
+        return MatchExpr(subject, arms, keyword)
+
     def case_body(self) -> List[Stmt]:
         """Statements up to the next `case`/`default`/`}`.
 
@@ -635,9 +725,28 @@ class Parser:
         if not self.function_yields:
             raise self.error(keyword, "'yield' is only allowed inside a function.")
         self.function_yields[-1] = True
+        # `yield* other` re-yields every item of another iterable. Spelled
+        # with the existing `*` token rather than a keyword of its own, so
+        # the lexer stays untouched.
+        delegate = self.match(TokenType.MULTIPLY)
         value = self.expression()
         self.consume_statement_end("Expect ';' after the yielded value.")
-        return Yield(keyword, value)
+        return Yield(keyword, value, delegate)
+
+    def yield_expression(self) -> Expr:
+        """`yield expr` used for its value, which the parser only ever calls
+        in the two places that can hold one: a `var` initializer and the
+        right-hand side of an assignment."""
+        keyword = self.consume(TokenType.YIELD, "Expect 'yield'.")
+        if not self.function_yields:
+            raise self.error(keyword, "'yield' is only allowed inside a function.")
+        self.function_yields[-1] = True
+        if self.check(TokenType.MULTIPLY):
+            raise self.error(
+                self.peek(),
+                "'yield*' re-yields a whole sequence and has no value of its own; "
+                "use it as a statement.")
+        return YieldExpr(keyword, self.expression())
 
     def throw_statement(self) -> Throw:
         keyword = self.previous()
@@ -660,7 +769,13 @@ class Parser:
         return statements
 
     def expression_statement(self) -> Stmt:
-        expr = self.expression()
+        # The outermost expression of a statement is the one place an
+        # assignment may take a `yield` as its value.
+        self.statement_rhs = True
+        try:
+            expr = self.expression()
+        finally:
+            self.statement_rhs = False
         self.consume_statement_end("Expect ';' after expression.")
         return Expression(expr)
 
@@ -683,11 +798,20 @@ class Parser:
         return self.assignment()
 
     def assignment(self) -> Expr:
+        # Consumed here rather than read where it is needed: descending into
+        # any sub-expression must clear it, and every sub-expression comes
+        # back through this method.
+        statement_rhs = self.statement_rhs
+        self.statement_rhs = False
+
         expr = self.or_expression()
 
         if self.match(TokenType.ASSIGN):
             equals = self.previous()
-            value = self.assignment()
+            if statement_rhs and self.check(TokenType.YIELD):
+                value = self.yield_expression()
+            else:
+                value = self.assignment()
             return self._make_assign_target(expr, equals, value)
 
         if self.match(*COMPOUND_ASSIGN_OPS.keys()):
@@ -836,6 +960,8 @@ class Parser:
             return self.interpolation(self.previous())
         if self.match(TokenType.FUNC):
             return self.function_expression()
+        if self.match(TokenType.MATCH):
+            return self.match_expression()
         if self.match(TokenType.IDENTIFIER):
             return Variable(self.previous())
         if self.match(TokenType.LPAREN):
@@ -911,14 +1037,17 @@ class Parser:
         return Interpolation(parts)
 
     def var_declaration(self) -> Var:
-        pattern = self.binding_pattern("variable name")
+        pattern = self.binding_pattern("variable name", allow_yield=True)
 
         # `var [a, b] = ...` parses its own `=` as part of the pattern's
         # default slot, so only take another initializer when the pattern
         # didn't already consume one.
         initializer = pattern.default
         if initializer is None and self.match(TokenType.ASSIGN):
-            initializer = self.expression()
+            if self.check(TokenType.YIELD):
+                initializer = self.yield_expression()
+            else:
+                initializer = self.expression()
         if initializer is not None and pattern.default is not None:
             pattern.default = None
 
@@ -940,6 +1069,23 @@ class Parser:
         if self.is_at_end():
             return False
         return self.peek().type == type
+
+    def match_word(self, word: str) -> bool:
+        """Consume an identifier spelled exactly `word`.
+
+        `from` and `as` are *contextual* keywords: they only mean anything
+        inside an import or export clause, so the lexer leaves them as
+        ordinary identifiers and a program is free to use them as a variable,
+        a struct field or a bareword object key."""
+        if self.check(TokenType.IDENTIFIER) and self.peek().lexeme == word:
+            self.advance()
+            return True
+        return False
+
+    def consume_word(self, word: str, message: str) -> Token:
+        if not self.match_word(word):
+            raise self.error(self.peek(), message)
+        return self.previous()
 
     def check_next(self, type: TokenType) -> bool:
         """One token of lookahead past `peek()`, used where a construct can't

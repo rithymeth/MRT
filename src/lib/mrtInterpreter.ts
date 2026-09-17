@@ -17,7 +17,6 @@ type TokenType =
   | 'TRUE' | 'FALSE' | 'BREAK' | 'CONTINUE'
   | 'NULL' | 'TRY' | 'CATCH' | 'FINALLY' | 'THROW' | 'IN'
   | 'IMPORT' | 'EXPORT' | 'STRUCT' | 'MATCH' | 'CASE' | 'DEFAULT' | 'YIELD'
-  | 'FROM' | 'AS'
   | 'IDENTIFIER' | 'NUMBER' | 'STRING' | 'TEMPLATE'
   | 'PLUS' | 'MINUS' | 'MULTIPLY' | 'DIVIDE' | 'MODULO'
   | 'PLUS_ASSIGN' | 'MINUS_ASSIGN' | 'MULTIPLY_ASSIGN' | 'DIVIDE_ASSIGN' | 'MODULO_ASSIGN'
@@ -81,7 +80,6 @@ const KEYWORDS: Map<string, TokenType> = new Map([
   ['throw', 'THROW'], ['in', 'IN'],
   ['import', 'IMPORT'], ['export', 'EXPORT'], ['struct', 'STRUCT'],
   ['match', 'MATCH'], ['case', 'CASE'], ['default', 'DEFAULT'], ['yield', 'YIELD'],
-  ['from', 'FROM'], ['as', 'AS'],
 ])
 
 // `\$` escapes an interpolation, so "\${x}" is the literal text "${x}".
@@ -329,6 +327,23 @@ type Expr =
   | { kind: 'FunctionExpr'; params: Param[]; body: Stmt[]; name: Token | null; isGenerator: boolean }
   | { kind: 'Spread'; value: Expr; token: Token }
   | { kind: 'Interpolation'; parts: (string | Expr)[] }
+  /** `yield expr` in the one position where it produces a value: as the
+   * entire right-hand side of a declaration or an assignment, i.e.
+   *
+   *     var x = yield 1;      x = yield 1;      [a, b] = yield 1;
+   *
+   * Its value is whatever the consumer sends back in with `send()`, or
+   * `null` when the generator is driven by `for`-`in` or `toArray`.
+   * Confining it to those shapes is what keeps suspension a statement-level
+   * concern: the interpreter never has to unwind a half-evaluated
+   * expression. Evaluating one through the ordinary expression path is a
+   * runtime error. */
+  | { kind: 'YieldExpr'; keyword: Token; value: Expr }
+  /** `match (subject) { case <pattern>: <expr>, default: <expr> }` used as a
+   * value: the same patterns and guards as the statement form, but each arm
+   * is a single expression and the whole thing evaluates to the matching
+   * arm's value. */
+  | { kind: 'MatchExpr'; subject: Expr; arms: MatchArm[]; keyword: Token }
 
 /** One `catch (e) { }` clause, optionally guarded by `if (cond)`. The guard
  * is evaluated with `name` already bound to the error, so it can inspect
@@ -355,6 +370,15 @@ interface MatchCase {
   keyword: Token
 }
 
+/** One arm of a `match` *expression*: a pattern and the expression its value
+ * is. */
+interface MatchArm {
+  pattern: MatchPattern | null   // null for `default:`
+  guard: Expr | null
+  value: Expr
+  keyword: Token
+}
+
 type Stmt =
   | { kind: 'Expression'; expression: Expr }
   | { kind: 'Function'; name: Token; params: Param[]; body: Stmt[]; isGenerator: boolean }
@@ -369,7 +393,14 @@ type Stmt =
   | { kind: 'Var'; pattern: Pattern; initializer: Expr | null }
   | { kind: 'ForIn'; pattern: Pattern; iterable: Expr; keyword: Token; body: Stmt }
   | { kind: 'Throw'; keyword: Token; value: Expr }
-  | { kind: 'Yield'; keyword: Token; value: Expr }
+  /** `yield expr;` makes the enclosing function a generator, and
+   * `yield* other;` delegates to another iterable, re-yielding every item. */
+  | { kind: 'Yield'; keyword: Token; value: Expr; delegate: boolean }
+  /** `[a, b] = pair;` / `{x, y} = point;` -- assignment through a pattern to
+   * variables that already exist. Deliberately a statement rather than an
+   * expression: `{...}` in expression position is an object literal, and only
+   * at the start of a statement can the parser tell the two apart. */
+  | { kind: 'DestructureAssign'; pattern: Pattern; value: Expr; token: Token }
   | { kind: 'Try'; tryBlock: Stmt; catches: CatchClause[]; finallyBlock: Stmt | null }
   | { kind: 'Import'; names: [Token, Token][]; specifier: Token; keyword: Token; namespace: Token | null }
   | { kind: 'ExportNames'; names: [Token, Token][]; specifier: Token | null; keyword: Token }
@@ -397,6 +428,11 @@ class Parser {
   /** `import`/`export` are only meaningful at the top level of a file, so
    * the parser tracks how deep into blocks it currently is. */
   private blockDepth = 0
+  /** True only while parsing the outermost expression of a statement, which
+   * is the one place a `yield` may produce a value. Cleared on the way into
+   * any nested expression, so `f(yield v)` is rejected while `x = yield v;`
+   * is not. */
+  private statementRhs = false
   /** One flag per function body being parsed, set when a `yield` is seen, so
    * a function knows at parse time whether it is a generator. */
   private functionYields: boolean[] = []
@@ -441,9 +477,9 @@ class Parser {
 
     // `import * as name from "..."` -- one object holding every export.
     if (this.match('MULTIPLY')) {
-      this.consume('AS', "Expect 'as' after '*' in an import.")
+      this.consumeWord('as', "Expect 'as' after '*' in an import.")
       const alias = this.consume('IDENTIFIER', "Expect a name after 'as'.")
-      this.consume('FROM', "Expect 'from' after the import name.")
+      this.consumeWord('from', "Expect 'from' after the import name.")
       const spec = this.consume('STRING', "Expect a module path string after 'from'.")
       this.consumeStatementEnd()
       return { kind: 'Import', names: [], specifier: spec, keyword, namespace: alias }
@@ -455,13 +491,13 @@ class Parser {
       do {
         const exported = this.consume('IDENTIFIER', 'Expect an imported name.')
         let local = exported
-        if (this.match('AS')) local = this.consume('IDENTIFIER', "Expect a local name after 'as'.")
+        if (this.matchWord('as')) local = this.consume('IDENTIFIER', "Expect a local name after 'as'.")
         names.push([exported, local])
       } while (this.match('COMMA'))
     }
     this.consume('RBRACE', "Expect '}' after imported names.")
 
-    this.consume('FROM', "Expect 'from' after imported names.")
+    this.consumeWord('from', "Expect 'from' after imported names.")
     const specifier = this.consume('STRING', "Expect a module path string after 'from'.")
     this.consumeStatementEnd()
     return { kind: 'Import', names, specifier, keyword, namespace: null }
@@ -481,14 +517,14 @@ class Parser {
         do {
           const local = this.consume('IDENTIFIER', 'Expect an exported name.')
           let exported = local
-          if (this.match('AS')) exported = this.consume('IDENTIFIER', "Expect a name after 'as'.")
+          if (this.matchWord('as')) exported = this.consume('IDENTIFIER', "Expect a name after 'as'.")
           names.push([local, exported])
         } while (this.match('COMMA'))
       }
       this.consume('RBRACE', "Expect '}' after exported names.")
 
       let specifier: Token | null = null
-      if (this.match('FROM')) {
+      if (this.matchWord('from')) {
         specifier = this.consume('STRING', "Expect a module path string after 'from'.")
       }
       this.consumeStatementEnd()
@@ -594,12 +630,12 @@ class Parser {
   /** Parse the left-hand side of a binding: a name, `[...]` or `{...}`.
    * `what` names the construct for error messages so a malformed pattern
    * still reads like the error the simple case would have produced. */
-  private bindingPattern(what: string): Pattern {
+  private bindingPattern(what: string, allowYield = false): Pattern {
     if (this.startsPattern()) {
-      return this.check('LBRACKET') ? this.arrayPattern() : this.objectPattern()
+      return this.check('LBRACKET') ? this.arrayPattern(allowYield) : this.objectPattern(allowYield)
     }
     const name = this.consume('IDENTIFIER', `Expect ${what}.`)
-    return { kind: 'NamePattern', name, default: this.patternDefault() }
+    return { kind: 'NamePattern', name, default: this.patternDefault(allowYield) }
   }
 
   /** Whether the next tokens really open a destructuring pattern. A bare `[`
@@ -617,11 +653,17 @@ class Parser {
     return false
   }
 
-  private patternDefault(): Expr | null {
-    return this.match('ASSIGN') ? this.expression() : null
+  /** `allowYield` permits `yield` as the pattern's own trailing default,
+   * which is how `var x = yield 1;` is parsed -- a `var` declaration's
+   * initializer arrives through that same slot. It is never passed down to
+   * nested patterns, so `var [a = yield 1] = xs;` stays an error. */
+  private patternDefault(allowYield = false): Expr | null {
+    if (!this.match('ASSIGN')) return null
+    if (allowYield && this.check('YIELD')) return this.yieldExpression()
+    return this.expression()
   }
 
-  private arrayPattern(): Pattern {
+  private arrayPattern(allowYield = false): Pattern {
     const token = this.consume('LBRACKET', "Expect '[' to start a pattern.")
     const elements: Pattern[] = []
     let rest: Token | null = null
@@ -635,10 +677,10 @@ class Parser {
       } while (this.match('COMMA'))
     }
     this.consume('RBRACKET', "Expect ']' after array pattern.")
-    return { kind: 'ArrayPattern', elements, rest, default: this.patternDefault(), token }
+    return { kind: 'ArrayPattern', elements, rest, default: this.patternDefault(allowYield), token }
   }
 
-  private objectPattern(): Pattern {
+  private objectPattern(allowYield = false): Pattern {
     const token = this.consume('LBRACE', "Expect '{' to start a pattern.")
     const entries: [string, Pattern][] = []
     let rest: Token | null = null
@@ -657,7 +699,7 @@ class Parser {
       } while (this.match('COMMA'))
     }
     this.consume('RBRACE', "Expect '}' after object pattern.")
-    return { kind: 'ObjectPattern', entries, rest, default: this.patternDefault(), token }
+    return { kind: 'ObjectPattern', entries, rest, default: this.patternDefault(allowYield), token }
   }
 
   /** Parse `(a, b = expr, ...rest)`. Two shape rules are enforced here
@@ -727,6 +769,8 @@ class Parser {
   }
 
   private statement(): Stmt {
+    const destructured = this.tryDestructuringAssignment()
+    if (destructured !== null) return destructured
     if (this.match('FOR')) return this.forStatement()
     if (this.match('IF')) return this.ifStatement()
     if (this.match('RETURN')) return this.returnStatement()
@@ -740,6 +784,39 @@ class Parser {
     if (this.match('LBRACE')) return { kind: 'Block', statements: this.block() }
     if (this.match('PRINT')) return this.printStatement()
     return this.expressionStatement()
+  }
+
+  /** Attempt to parse `<pattern> = expr;` -- assignment to existing variables
+   * through an array or object pattern.
+   *
+   * Only tried at the start of a statement, and speculatively: a leading `{`
+   * is far more often a block, and `[` an array literal. Both forms parse as
+   * a binding pattern whose trailing default *is* the assigned value, so
+   * when there is no `= ...` this was something else and the tokens are
+   * handed back untouched. */
+  private tryDestructuringAssignment(): Stmt | null {
+    if (!this.startsPattern()) return null
+
+    const saved = this.current
+    const token = this.peek()
+    let pattern: Pattern
+    try {
+      pattern = this.bindingPattern('a name in the pattern', true)
+    } catch (e) {
+      if (!(e instanceof MRTError)) throw e
+      this.current = saved
+      return null
+    }
+
+    if (pattern.default === null) {
+      this.current = saved
+      return null
+    }
+
+    const value = pattern.default
+    pattern.default = null
+    this.consumeStatementEnd()
+    return { kind: 'DestructureAssign', pattern, value, token }
   }
 
   private forStatement(): Stmt {
@@ -862,6 +939,53 @@ class Parser {
     return { kind: 'Match', subject, cases, keyword }
   }
 
+  /** `match (subject) { case <pattern>: <expr>, default: <expr> }`.
+   *
+   * Arms are separated by commas and each one is a single expression, so the
+   * whole construct reads as the value it produces. The statement form above
+   * is what `match` means in statement position; this one is reached only
+   * from `primary`, where a statement can't start. */
+  private matchExpression(): Expr {
+    const keyword = this.previous()
+    this.consume('LPAREN', "Expect '(' after 'match'.")
+    const subject = this.expression()
+    this.consume('RPAREN', "Expect ')' after the match subject.")
+    this.consume('LBRACE', "Expect '{' before match cases.")
+
+    const arms: MatchArm[] = []
+    let seenDefault = false
+    while (!this.check('RBRACE') && !this.isAtEnd()) {
+      if (this.match('DEFAULT')) {
+        const armKeyword = this.previous()
+        if (seenDefault) throw this.error(armKeyword, "A match can only have one 'default'.")
+        seenDefault = true
+        this.consume('COLON', "Expect ':' after 'default'.")
+        arms.push({ pattern: null, guard: null, value: this.expression(), keyword: armKeyword })
+      } else {
+        this.consume('CASE', "Expect 'case' or 'default' in a match.")
+        const armKeyword = this.previous()
+        if (seenDefault) {
+          throw this.error(armKeyword, "'default' must be the last clause of a match.")
+        }
+        const pattern = this.matchPattern()
+        let guard: Expr | null = null
+        if (this.match('IF')) {
+          this.consume('LPAREN', "Expect '(' after 'if' in a case guard.")
+          guard = this.expression()
+          this.consume('RPAREN', "Expect ')' after the case guard.")
+        }
+        this.consume('COLON', "Expect ':' after the case pattern.")
+        arms.push({ pattern, guard, value: this.expression(), keyword: armKeyword })
+      }
+
+      if (!this.match('COMMA')) break
+    }
+
+    this.consume('RBRACE', "Expect '}' after match cases.")
+    if (arms.length === 0) throw this.error(keyword, 'A match needs at least one case.')
+    return { kind: 'MatchExpr', subject, arms, keyword }
+  }
+
   /** Statements up to the next `case`/`default`/`}`. There is no
    * fall-through, so a case ends where the next begins and needs no break. */
   private caseBody(): Stmt[] {
@@ -975,9 +1099,31 @@ class Parser {
       throw this.error(keyword, "'yield' is only allowed inside a function.")
     }
     this.functionYields[this.functionYields.length - 1] = true
+    // `yield* other` re-yields every item of another iterable. Spelled with
+    // the existing `*` token rather than a keyword of its own, so the lexer
+    // stays untouched.
+    const delegate = this.match('MULTIPLY')
     const value = this.expression()
     this.consumeStatementEnd()
-    return { kind: 'Yield', keyword, value }
+    return { kind: 'Yield', keyword, value, delegate }
+  }
+
+  /** `yield expr` used for its value, which the parser only ever calls in the
+   * two places that can hold one: a `var` initializer and the right-hand side
+   * of an assignment. */
+  private yieldExpression(): Expr {
+    const keyword = this.consume('YIELD', "Expect 'yield'.")
+    if (this.functionYields.length === 0) {
+      throw this.error(keyword, "'yield' is only allowed inside a function.")
+    }
+    this.functionYields[this.functionYields.length - 1] = true
+    if (this.check('MULTIPLY')) {
+      throw this.error(
+        this.peek(),
+        "'yield*' re-yields a whole sequence and has no value of its own; " +
+        'use it as a statement.')
+    }
+    return { kind: 'YieldExpr', keyword, value: this.expression() }
   }
 
   private throwStatement(): Stmt {
@@ -1003,7 +1149,15 @@ class Parser {
   }
 
   private expressionStatement(): Stmt {
-    const expr = this.expression()
+    // The outermost expression of a statement is the one place an assignment
+    // may take a `yield` as its value.
+    this.statementRhs = true
+    let expr: Expr
+    try {
+      expr = this.expression()
+    } finally {
+      this.statementRhs = false
+    }
     this.consumeStatementEnd()
     return { kind: 'Expression', expression: expr }
   }
@@ -1023,11 +1177,19 @@ class Parser {
   private expression(): Expr { return this.assignment() }
 
   private assignment(): Expr {
+    // Consumed here rather than read where it is needed: descending into any
+    // sub-expression must clear it, and every sub-expression comes back
+    // through this method.
+    const statementRhs = this.statementRhs
+    this.statementRhs = false
+
     const expr = this.orExpression()
 
     if (this.match('ASSIGN')) {
       const equals = this.previous()
-      const value = this.assignment()
+      const value = statementRhs && this.check('YIELD')
+        ? this.yieldExpression()
+        : this.assignment()
       return this.makeAssignTarget(expr, equals, value)
     }
 
@@ -1152,6 +1314,7 @@ class Parser {
     if (this.match('NUMBER', 'STRING')) return { kind: 'Literal', value: this.previous().literal }
     if (this.match('TEMPLATE')) return this.interpolation(this.previous())
     if (this.match('FUNC')) return this.functionExpression()
+    if (this.match('MATCH')) return this.matchExpression()
     if (this.match('IDENTIFIER')) return { kind: 'Variable', name: this.previous() }
     if (this.match('LPAREN')) {
       const expr = this.expression()
@@ -1219,12 +1382,14 @@ class Parser {
   }
 
   private varDeclaration(): Stmt {
-    const pattern = this.bindingPattern('variable name')
+    const pattern = this.bindingPattern('variable name', true)
 
     // `var [a, b] = ...` parses its own `=` as the pattern's default slot,
     // so only take another initializer when the pattern didn't consume one.
     let initializer: Expr | null = pattern.default
-    if (initializer === null && this.match('ASSIGN')) initializer = this.expression()
+    if (initializer === null && this.match('ASSIGN')) {
+      initializer = this.check('YIELD') ? this.yieldExpression() : this.expression()
+    }
     if (initializer !== null && pattern.default !== null) pattern.default = null
 
     if (initializer === null && pattern.kind !== 'NamePattern') {
@@ -1246,6 +1411,25 @@ class Parser {
   /** One token of lookahead past `peek()`, for constructs that can't be
    * identified from their first token alone (`func name` vs `func(`,
    * `for (x in` vs `for (x =`, a bareword object key vs an expression). */
+  /** Consume an identifier spelled exactly `word`.
+   *
+   * `from` and `as` are *contextual* keywords: they only mean anything inside
+   * an import or export clause, so the lexer leaves them as ordinary
+   * identifiers and a program is free to use them as a variable, a struct
+   * field or a bareword object key. */
+  private matchWord(word: string): boolean {
+    if (this.check('IDENTIFIER') && this.peek().lexeme === word) {
+      this.advance()
+      return true
+    }
+    return false
+  }
+
+  private consumeWord(word: string, message: string): Token {
+    if (!this.matchWord(word)) throw this.error(this.peek(), message)
+    return this.previous()
+  }
+
   private checkNext(type: TokenType): boolean {
     return this.current + 1 < this.tokens.length && this.tokens[this.current + 1].type === type
   }
@@ -1361,28 +1545,73 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return a === b
 }
 
-/** A lazy sequence produced by calling a generator function. Nothing runs
- * until something iterates it, and only as far as it asks -- which is what
- * makes an endless generator usable. Like the host languages' own generators
- * it is single-use: iterating a second time is an error rather than a
- * silently empty loop. */
+/** A lazy sequence: the result of calling a generator function, or of a lazy
+ * built-in such as `map` over another generator.
+ *
+ * Nothing runs until something pulls from it, and only as far as it asks --
+ * which is what makes an endless generator usable. It is *resumable*: a loop
+ * that stops early leaves it suspended mid-body, and the next consumer
+ * carries on from there. It is not restartable: once the sequence has run out
+ * there is no way back to the start, so `for`-`in` over a finished generator
+ * is an error rather than a silently empty loop.
+ *
+ * `make` builds the host-language generator that actually runs the body, and
+ * is deliberately a callable rather than the generator itself so that nothing
+ * is set up until the first pull. */
 class MRTGenerator {
-  started = false
-  constructor(public function_: MRTFunction, public environment: Environment) {}
+  private running: Generator<unknown> | null = null
+  done = false
+  /** True while this generator's body is on the stack, so a program that
+   * resumes a generator from inside itself gets a real error rather than
+   * whichever host-language failure happens first. */
+  private active = false
 
-  start(interpreter: Interpreter, line?: number): Generator<unknown> {
-    if (this.started) {
+  constructor(public label: string, private make: () => Generator<unknown>) {}
+
+  /** Run to the next `yield`, returning `[done, value]`.
+   *
+   * `sent` becomes the value of the `yield` this generator is suspended at --
+   * discarded on the first step, because the body hasn't reached a `yield`
+   * yet to receive it. */
+  step(interpreter: Interpreter, sent: unknown = null, line?: number): [boolean, unknown] {
+    if (this.done) return [true, null]
+    if (this.active) {
       throw new MRTError(
-        `${this.toString()} has already been iterated; a generator can only be used once.`,
+        `${this.toString()} is already running; a generator can't be resumed from ` +
+        'inside itself.',
         line, 'ValueError')
     }
-    this.started = true
-    return interpreter.executeBlockGen(this.function_.body, this.environment)
+
+    if (this.running === null) {
+      this.running = this.make()
+      sent = null
+    }
+
+    const frame = this.toString()
+    // The body and whatever consumes it take turns using the interpreter's
+    // current scope, so each hand-off restores the consumer's.
+    const saved = interpreter.environment
+    this.active = true
+    let step: IteratorResult<unknown>
+    try {
+      step = this.running.next(sent)
+    } catch (e) {
+      this.done = true
+      // `return` inside a generator simply ends the sequence.
+      if (e instanceof ReturnSignal) return [true, null]
+      if (e instanceof MRTError) e.mrtStack.push(frame)
+      else if (e instanceof MRTThrow) e.stack.push(frame)
+      throw e
+    } finally {
+      this.active = false
+      interpreter.environment = saved
+    }
+
+    if (step.done) { this.done = true; return [true, null] }
+    return [false, step.value]
   }
 
-  toString() {
-    return this.function_.name ? `<generator ${this.function_.name}>` : '<generator>'
-  }
+  toString() { return this.label }
 }
 
 /** A declared struct type, and the callable that constructs it. Calling it
@@ -1540,7 +1769,10 @@ class MRTFunction {
 
     // Nothing in the body runs yet: calling a generator function only builds
     // the lazy sequence.
-    if (this.isGenerator) return new MRTGenerator(this, environment)
+    if (this.isGenerator) {
+      const label = this.name ? `<generator ${this.name}>` : '<generator>'
+      return new MRTGenerator(label, () => interpreter.executeBlockGen(this.body, environment))
+    }
 
     const frame = this.name ?? '<anonymous>'
     try {
@@ -1965,6 +2197,8 @@ class Interpreter {
     // Generators
     this.globals.define('toArray', (...a: unknown[]) => this.builtinToArray(a))
     this.globals.define('take', (...a: unknown[]) => this.builtinTake(a))
+    this.globals.define('next', (...a: unknown[]) => this.builtinNext(a))
+    this.globals.define('send', (...a: unknown[]) => this.builtinSend(a))
   }
 
   private arrayArg(value: unknown, who: string): unknown[] {
@@ -1972,28 +2206,89 @@ class Interpreter {
     return value
   }
 
-  private builtinMap(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('map() takes an array and a function.', undefined, 'ArityError')
-    return this.arrayArg(a[0], 'map').map((item) => this.callValue(a[1], [item]))
+  /** The first argument of a built-in that walks a sequence.
+   *
+   * Anything `for`-`in` accepts is accepted here too -- including a struct
+   * that implements `iter()` -- so the iterator protocol reaches the standard
+   * library rather than stopping at the loop keyword. The items are
+   * materialised, which is why the built-ins that use this are the eager
+   * ones. */
+  private itemsArg(value: unknown, who: string): unknown[] {
+    if (!this.isIterable(value)) {
+      throw new MRTError(
+        `${who}() needs something iterable, not ${typeName(value)}.`, undefined, 'TypeError')
+    }
+    return [...this.iterate(value)]
   }
 
+  /** `map(seq, f)` maps anything iterable; `map(gen, f)` stays lazy.
+   *
+   * Matching the input's laziness is what keeps a pipeline over an endless
+   * generator from hanging: `take(map(naturals(), square), 5)` calls `square`
+   * five times. On an array, eagerly returning an array keeps the common case
+   * a plain value you can index and print. */
+  private builtinMap(a: unknown[]): unknown {
+    if (a.length !== 2) {
+      throw new MRTError('map() takes a sequence and a function.', undefined, 'ArityError')
+    }
+    const [source, fn] = a
+    if (source instanceof MRTGenerator) {
+      return new MRTGenerator('<generator map>', () => this.lazyMap(source, fn))
+    }
+    return this.itemsArg(source, 'map').map((item) => this.callValue(fn, [item]))
+  }
+
+  private *lazyMap(source: unknown, fn: unknown): Generator<unknown> {
+    for (const item of this.iterate(source)) {
+      const value = this.callValue(fn, [item])
+      const mine = this.environment
+      yield value
+      this.environment = mine
+    }
+  }
+
+  /** `filter(seq, pred)` filters anything iterable; `filter(gen, pred)` stays
+   * lazy (see `map` above).
+   *
+   * A lazy filter over an endless generator only terminates if matches keep
+   * coming: `take(filter(naturals(), isEven), 3)` is fine, but filtering for
+   * something that never occurs runs forever -- the same bargain any lazy
+   * sequence makes. */
   private builtinFilter(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('filter() takes an array and a function.', undefined, 'ArityError')
-    return this.arrayArg(a[0], 'filter').filter((item) => this.isTruthy(this.callValue(a[1], [item])))
+    if (a.length !== 2) {
+      throw new MRTError('filter() takes a sequence and a function.', undefined, 'ArityError')
+    }
+    const [source, predicate] = a
+    if (source instanceof MRTGenerator) {
+      return new MRTGenerator('<generator filter>', () => this.lazyFilter(source, predicate))
+    }
+    return this.itemsArg(source, 'filter')
+      .filter((item) => this.isTruthy(this.callValue(predicate, [item])))
+  }
+
+  private *lazyFilter(source: unknown, predicate: unknown): Generator<unknown> {
+    for (const item of this.iterate(source)) {
+      if (!this.isTruthy(this.callValue(predicate, [item]))) continue
+      const mine = this.environment
+      yield item
+      this.environment = mine
+    }
   }
 
   private builtinReduce(a: unknown[]): unknown {
     if (a.length < 2 || a.length > 3) {
-      throw new MRTError('reduce() takes an array, a function, and an optional initial value.', undefined, 'ArityError')
+      throw new MRTError(
+        'reduce() takes a sequence, a function, and an optional initial value.',
+        undefined, 'ArityError')
     }
-    const items = this.arrayArg(a[0], 'reduce')
+    const items = this.itemsArg(a[0], 'reduce')
     let accumulator: unknown
     let rest: unknown[]
     if (a.length === 3) {
       accumulator = a[2]
       rest = items
     } else {
-      if (items.length === 0) throw new MRTError('reduce() of an empty array needs an initial value.', undefined, 'ValueError')
+      if (items.length === 0) throw new MRTError('reduce() of an empty sequence needs an initial value.', undefined, 'ValueError')
       accumulator = items[0]
       rest = items.slice(1)
     }
@@ -2002,21 +2297,21 @@ class Interpreter {
   }
 
   private builtinFind(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('find() takes an array and a function.', undefined, 'ArityError')
-    for (const item of this.arrayArg(a[0], 'find')) {
+    if (a.length !== 2) throw new MRTError('find() takes a sequence and a function.', undefined, 'ArityError')
+    for (const item of this.itemsArg(a[0], 'find')) {
       if (this.isTruthy(this.callValue(a[1], [item]))) return item
     }
     return null
   }
 
   private builtinSome(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('some() takes an array and a function.', undefined, 'ArityError')
-    return this.arrayArg(a[0], 'some').some((item) => this.isTruthy(this.callValue(a[1], [item])))
+    if (a.length !== 2) throw new MRTError('some() takes a sequence and a function.', undefined, 'ArityError')
+    return this.itemsArg(a[0], 'some').some((item) => this.isTruthy(this.callValue(a[1], [item])))
   }
 
   private builtinEvery(a: unknown[]): unknown {
-    if (a.length !== 2) throw new MRTError('every() takes an array and a function.', undefined, 'ArityError')
-    return this.arrayArg(a[0], 'every').every((item) => this.isTruthy(this.callValue(a[1], [item])))
+    if (a.length !== 2) throw new MRTError('every() takes a sequence and a function.', undefined, 'ArityError')
+    return this.itemsArg(a[0], 'every').every((item) => this.isTruthy(this.callValue(a[1], [item])))
   }
 
   /** `sort(arr)` or `sort(arr, compare)`. Returns a new array; the input is
@@ -2032,17 +2327,53 @@ class Interpreter {
   }
 
   /** The first `n` items of any iterable, as an array. Safe on an endless
-   * generator: it stops pulling once it has `n`. */
+   * generator: it stops pulling once it has `n`, and pulls exactly `n` --
+   * which matters now that what is left of a generator can still be consumed
+   * afterwards. */
   private builtinTake(a: unknown[]): unknown {
     if (a.length !== 2) throw new MRTError('take() takes an iterable and a count.', undefined, 'ArityError')
     const count = Math.trunc(numArg(a[1], 'take'))
     if (count < 0) throw new MRTError('take() count must not be negative.', undefined, 'ValueError')
+    const source = this.iterate(a[0])
     const out: unknown[] = []
-    for (const item of this.iterate(a[0])) {
-      if (out.length >= count) break
-      out.push(item)
+    while (out.length < count) {
+      const step = source.next()
+      if (step.done) break
+      out.push(step.value)
     }
     return out
+  }
+
+  /** One step of a generator, as `{done, value}`. */
+  private builtinNext(a: unknown[]): unknown {
+    if (a.length !== 1) throw new MRTError('next() takes a generator.', undefined, 'ArityError')
+    return this.stepResult(a[0], null, 'next')
+  }
+
+  /** One step of a generator, with `value` becoming the result of the `yield`
+   * it is suspended at. */
+  private builtinSend(a: unknown[]): unknown {
+    if (a.length !== 2) {
+      throw new MRTError('send() takes a generator and a value.', undefined, 'ArityError')
+    }
+    return this.stepResult(a[0], a[1], 'send')
+  }
+
+  /** Drive a generator by hand.
+   *
+   * Unlike `for`-`in`, a finished generator is not an error here: it keeps
+   * answering `{done: true, value: null}`, so the obvious drive loop needs no
+   * special case at the end.
+   *
+   * The value sent on the very first step is dropped, because the body hasn't
+   * reached a `yield` yet to receive it. */
+  private stepResult(generator: unknown, sent: unknown, who: string): Map<string, unknown> {
+    if (!(generator instanceof MRTGenerator)) {
+      throw new MRTError(
+        `${who}() needs a generator, not ${typeName(generator)}.`, undefined, 'TypeError')
+    }
+    const [done, value] = generator.step(this, sent)
+    return new Map<string, unknown>([['done', done], ['value', done ? null : value]])
   }
 
   private builtinSort(a: unknown[]): unknown {
@@ -2110,6 +2441,10 @@ class Interpreter {
         throw new BreakSignal()
       case 'Continue':
         throw new ContinueSignal()
+      case 'DestructureAssign':
+        this.bindPattern(stmt.pattern, this.evaluate(stmt.value), this.environment,
+          stmt.token.line, false)
+        return
       case 'Expression':
         this.evaluate(stmt.expression)
         return
@@ -2421,6 +2756,32 @@ class Interpreter {
   /** Test `value` against `pattern`, binding names into `environment`.
    * Returns false instead of throwing when the shape doesn't fit -- that's
    * the whole point of matching. */
+  /** The expression form of `match`: the first arm that fits decides the
+   * value. Shares `matchPattern` with the statement form, so the two
+   * spellings can never disagree about what a pattern means. */
+  private evaluateMatchExpr(expr: Extract<Expr, { kind: 'MatchExpr' }>): unknown {
+    const subject = this.evaluate(expr.subject)
+
+    for (const arm of expr.arms) {
+      const environment = new Environment(this.environment)
+
+      if (arm.pattern !== null && !this.matchPattern(arm.pattern, subject, environment)) continue
+
+      const previous = this.environment
+      try {
+        this.environment = environment
+        if (arm.guard !== null && !this.isTruthy(this.evaluate(arm.guard))) continue
+        return this.evaluate(arm.value)
+      } finally {
+        this.environment = previous
+      }
+    }
+
+    throw new MRTError(
+      `No case matched ${stringify(subject)} in this match, and there is no 'default'.`,
+      expr.keyword.line, 'ValueError')
+  }
+
   private matchPattern(pattern: MatchPattern, value: unknown, environment: Environment): boolean {
     switch (pattern.kind) {
       case 'LiteralMatch':
@@ -2486,8 +2847,14 @@ class Interpreter {
 
   /** Bind `value` to `pattern` inside `environment`. Destructuring is strict,
    * like the rest of the language: a missing element or key is an error
-   * unless that slot has a default, rather than quietly binding `null`. */
-  bindPattern(pattern: Pattern, value: unknown, environment: Environment, line?: number) {
+   * unless that slot has a default, rather than quietly binding `null`.
+   *
+   * With `declare = false` the leaves are *assigned* to variables that must
+   * already exist, which is what `[a, b] = pair;` means. Everything else
+   * about the pattern -- nesting, rest, defaults, the error messages -- is
+   * identical, so the two forms can never drift apart. */
+  bindPattern(pattern: Pattern, value: unknown, environment: Environment, line?: number,
+              declare = true) {
     if (value === MISSING) {
       if (pattern.default === null) {
         throw new MRTError(
@@ -2497,7 +2864,7 @@ class Interpreter {
     }
 
     if (pattern.kind === 'NamePattern') {
-      environment.define(pattern.name.lexeme, value)
+      this.bindName(pattern.name, value, environment, declare)
       return
     }
 
@@ -2515,10 +2882,10 @@ class Interpreter {
             `but the pattern needs at least ${pattern.elements.length}.`,
             where, 'IndexError')
         }
-        this.bindPattern(element, slot, environment, where)
+        this.bindPattern(element, slot, environment, where, declare)
       })
       if (pattern.rest !== null) {
-        environment.define(pattern.rest.lexeme, value.slice(pattern.elements.length))
+        this.bindName(pattern.rest, value.slice(pattern.elements.length), environment, declare)
       }
       return
     }
@@ -2537,13 +2904,18 @@ class Interpreter {
         throw new MRTError(
           `Cannot destructure: no key ${JSON.stringify(key)} in the object.`, where, 'KeyError')
       }
-      this.bindPattern(sub, slot, environment, where)
+      this.bindPattern(sub, slot, environment, where, declare)
     }
     if (pattern.rest !== null) {
       const remaining = new Map<unknown, unknown>()
       source.forEach((v, k) => { if (typeof k !== 'string' || !taken.has(k)) remaining.set(k, v) })
-      environment.define(pattern.rest.lexeme, remaining)
+      this.bindName(pattern.rest, remaining, environment, declare)
     }
+  }
+
+  private bindName(name: Token, value: unknown, environment: Environment, declare: boolean) {
+    if (declare) environment.define(name.lexeme, value)
+    else environment.assign(name, value)
   }
 
   // -- Generators ------------------------------------------------------------
@@ -2565,15 +2937,47 @@ class Interpreter {
 
   private *executeGen(stmt: Stmt): Generator<unknown> {
     switch (stmt.kind) {
-      case 'Yield': {
-        const value = this.evaluate(stmt.value)
-        // The consumer runs arbitrary code while we are suspended and will
-        // leave `this.environment` pointing somewhere else, so the generator
-        // re-establishes its own scope on resume.
-        const mine = this.environment
-        yield value
-        this.environment = mine
+      case 'Yield':
+        yield* this.executeYieldGen(stmt)
         return
+      // The three shapes that can receive a value sent back in. They are
+      // handled before the general `Var`/`Expression` execution below, which
+      // cannot suspend.
+      case 'Var':
+        if (stmt.initializer !== null && stmt.initializer.kind === 'YieldExpr') {
+          const sent = yield* this.suspend(stmt.initializer)
+          this.bindPattern(stmt.pattern, sent, this.environment)
+          return
+        }
+        break
+      case 'DestructureAssign':
+        if (stmt.value.kind === 'YieldExpr') {
+          const sent = yield* this.suspend(stmt.value)
+          this.bindPattern(stmt.pattern, sent, this.environment, stmt.token.line, false)
+          return
+        }
+        break
+      case 'Expression': {
+        const target = stmt.expression
+        if (target.kind === 'Assign' && target.value.kind === 'YieldExpr') {
+          const sent = yield* this.suspend(target.value)
+          this.environment.assign(target.name, sent)
+          return
+        }
+        if (target.kind === 'ArrayAssign' && target.value.kind === 'YieldExpr') {
+          const sent = yield* this.suspend(target.value)
+          // Re-enter the ordinary index-assignment path with the received
+          // value standing in for the `yield`, so the index checks and error
+          // messages stay in exactly one place.
+          this.evaluate({
+            kind: 'ArrayAssign',
+            array: target.array,
+            index: target.index,
+            value: { kind: 'Literal', value: sent },
+          })
+          return
+        }
+        break
       }
       case 'Block':
         yield* this.executeBlockGen(stmt.statements, new Environment(this.environment))
@@ -2637,10 +3041,49 @@ class Interpreter {
       case 'Match':
         yield* this.executeMatchGen(stmt)
         return
-      default:
-        // No `yield` can occur here, so ordinary execution is enough.
-        this.execute(stmt)
     }
+    // No `yield` can occur here, so ordinary execution is enough.
+    this.execute(stmt)
+  }
+
+  private *executeYieldGen(stmt: Extract<Stmt, { kind: 'Yield' }>): Generator<unknown> {
+    if (!stmt.delegate) {
+      const value = this.evaluate(stmt.value)
+      // The consumer runs arbitrary code while we are suspended and will
+      // leave `this.environment` pointing somewhere else, so the generator
+      // re-establishes its own scope on resume.
+      const mine = this.environment
+      yield value
+      this.environment = mine
+      return
+    }
+
+    // `yield* other` re-yields another iterable's items as if they were ours,
+    // and passes anything sent in straight through to it, so a chain of
+    // delegating generators still behaves like one.
+    const source = this.iterate(this.evaluate(stmt.value), stmt.keyword.line)
+    let sent: unknown = null
+    for (;;) {
+      const mine = this.environment
+      const step = source.next(sent)
+      this.environment = mine
+      if (step.done) return
+      sent = yield step.value
+      this.environment = mine
+    }
+  }
+
+  /** Hand `expr`'s value to the consumer and return what it sends back.
+   *
+   * `null` when the consumer is a `for`-`in` loop or `toArray`, which have
+   * nothing to send -- so a generator written for `send()` still works when
+   * it is merely iterated. */
+  private *suspend(expr: Extract<Expr, { kind: 'YieldExpr' }>): Generator<unknown, unknown> {
+    const value = this.evaluate(expr.value)
+    const mine = this.environment
+    const sent = yield value
+    this.environment = mine
+    return sent
   }
 
   private *executeTryGen(stmt: Extract<Stmt, { kind: 'Try' }>): Generator<unknown> {
@@ -2710,41 +3153,78 @@ class Interpreter {
       stmt.keyword.line, 'ValueError')
   }
 
-  /** Yield a value's items, lazily for a generator and from a snapshot for
-   * the eager containers (so mutating an array mid-loop can't shift the
-   * iteration underneath it). */
-  *iterate(value: unknown, line?: number): Generator<unknown> {
+  /** An iterator over a value's items -- lazily for a generator, from a
+   * snapshot for the eager containers (so mutating an array mid-loop can't
+   * shift the iteration underneath it).
+   *
+   * Deliberately an ordinary method returning a generator, rather than a
+   * generator function itself: "that isn't iterable" is then reported when
+   * `iterate` is *called*, not on the first item pulled, so `take(5, 0)`
+   * still says 5 isn't iterable instead of quietly answering `[]`.
+   *
+   * Every branch returns a host generator, so callers can send into whatever
+   * comes back without checking what it was. */
+  iterate(value: unknown, line?: number): Generator<unknown> {
     if (value instanceof MRTGenerator) {
-      const running = value.start(this, line)
-      const frame = value.toString()
-      for (;;) {
-        // The generator body and the loop body take turns using
-        // `this.environment`, so each hand-off restores the caller's.
-        const saved = this.environment
-        let step: IteratorResult<unknown>
-        try {
-          step = running.next()
-        } catch (e) {
-          // `return` inside a generator simply ends the sequence.
-          if (e instanceof ReturnSignal) return
-          if (e instanceof MRTError) e.mrtStack.push(frame)
-          else if (e instanceof MRTThrow) e.stack.push(frame)
-          throw e
-        } finally {
-          this.environment = saved
-        }
-        if (step.done) return
-        yield step.value
+      if (value.done) {
+        throw new MRTError(
+          `${value.toString()} has already been iterated; a generator can only be used once.`,
+          line, 'ValueError')
       }
+      return this.driveGenerator(value, line)
     }
 
-    if (Array.isArray(value)) { yield* [...value]; return }
-    if (typeof value === 'string') { yield* [...value]; return }
+    if (value instanceof MRTInstance && value.struct.methods.has('iter')) {
+      // The iterator protocol: a struct says how to iterate itself by
+      // declaring `iter()`, which returns anything else iterable -- usually a
+      // generator, but an array works just as well.
+      const sequence = this.callValue(value.get('iter', line), [], line)
+      if (sequence === value) {
+        throw new MRTError(
+          `${value.struct.name}.iter() returned the struct itself, which would ` +
+          'iterate forever.',
+          line, 'ValueError')
+      }
+      if (!this.isIterable(sequence)) {
+        // Named rather than left to the generic message below: the mistake is
+        // in the struct's `iter`, which may be a long way from the `for` loop
+        // that tripped over it.
+        throw new MRTError(
+          `${value.struct.name}.iter() returned ${typeName(sequence)}, which isn't iterable.`,
+          line, 'TypeError')
+      }
+      return this.iterate(sequence, line)
+    }
+
+    if (Array.isArray(value)) return this.driveItems([...value])
+    if (typeof value === 'string') return this.driveItems([...value])
     const source = objectLike(value)
-    if (source !== null) { yield* [...source.keys()]; return }
+    if (source !== null) return this.driveItems([...source.keys()])
 
     throw new MRTError(
       'Can only iterate over an array, string, object, or generator.', line, 'TypeError')
+  }
+
+  isIterable(value: unknown): boolean {
+    return value instanceof MRTGenerator || Array.isArray(value) ||
+      typeof value === 'string' || objectLike(value) !== null
+  }
+
+  /** Pull from an MRT generator, forwarding values sent in by whoever is
+   * consuming this iterator (that's how `yield*` stays two-way). */
+  private *driveGenerator(generator: MRTGenerator, line?: number): Generator<unknown> {
+    let sent: unknown = null
+    for (;;) {
+      const [done, item] = generator.step(this, sent, line)
+      if (done) return
+      sent = yield item
+    }
+  }
+
+  /** The same shape for an already-materialised sequence. Anything sent in
+   * has nowhere to go and is dropped. */
+  private *driveItems(items: unknown[]): Generator<unknown> {
+    for (const item of items) yield item
   }
 
   private executeForIn(stmt: Extract<Stmt, { kind: 'ForIn' }>) {
@@ -2864,6 +3344,17 @@ class Interpreter {
         throw new MRTError(
           "'...' is only allowed in a call's arguments or an array literal.",
           expr.token.line, 'TypeError')
+      case 'MatchExpr':
+        return this.evaluateMatchExpr(expr)
+      case 'YieldExpr':
+        // Unreachable through the parser, which only builds one where
+        // `executeGen` handles it. Kept so a future node that holds an
+        // expression without knowing about yield fails loudly instead of
+        // returning undefined.
+        throw new MRTError(
+          "'yield' can only be a statement of its own, or the entire " +
+          'right-hand side of a declaration or an assignment.',
+          expr.keyword.line, 'RuntimeError')
       case 'FunctionExpr':
         return new MRTFunction(expr.params, expr.body, this.environment,
           expr.name ? expr.name.lexeme : null, expr.isGenerator)

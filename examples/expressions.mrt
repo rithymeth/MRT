@@ -1,0 +1,91 @@
+// Two ways to say more with less: `match` as an expression, and assignment
+// through a pattern to variables that already exist.
+
+struct Circle { radius; }
+struct Rect { w, h; }
+
+// As an expression, a match *is* its value -- no temporary to declare and
+// then fill in from four branches.
+func area(shape) {
+    return match (shape) {
+        case Circle(r): round(3.14159 * r * r, 2),
+        case Rect(w, h): w * h,
+        default: 0
+    };
+}
+
+func httpMessage(code) {
+    return match (code) {
+        case 200: "OK",
+        case 404: "Not Found",
+        case n if (n >= 500): "Server Error (${n})",
+        case n if (n >= 400): "Client Error (${n})",
+        default: "Unknown (${code})"
+    };
+}
+
+// Destructuring assignment rotates values in a single line, with no
+// temporary. Note the pattern's leaves are plain *names*: a pattern binds
+// variables, so `[out[0], out[1]] = ...` is not a thing -- index assignment
+// stays `out[0] = ...`.
+func gcdSteps(a, b) {
+    var steps = [];
+    while (b != 0) {
+        push(steps, "${a} % ${b} = ${a % b}");
+        [a, b] = [b, a % b];
+    }
+    push(steps, "gcd = ${a}");
+    return steps;
+}
+
+func main() {
+    print("-- match as an expression --");
+    print(area(Circle(2)), area(Rect(3, 4)), area("nope"));
+    for (code in [200, 404, 503, 418, 1]) { print("${code}: ${httpMessage(code)}"); }
+
+    // It composes anywhere an expression does.
+    print(map([1, 2, 3], func(n) {
+        return match (n % 2) { case 0: "even", default: "odd" };
+    }));
+    print("today is ${ match (true) { case true: "fine", default: "not" } }");
+
+    print("-- destructuring assignment --");
+    var a = 1;
+    var b = 2;
+    [a, b] = [b, a];
+    print(a, b);
+
+    var x = 0;
+    var y = 0;
+    {x, y} = {x: 10, y: 20};
+    print(x, y);
+
+    var head = 0;
+    var tail = [];
+    [head, ...tail] = [1, 2, 3, 4];
+    print(head, tail);
+
+    var name = "";
+    var extras = {};
+    {name, ...extras} = {name: "Ada", born: 1815, field: "computing"};
+    print(name, extras);
+
+    for (line in gcdSteps(1071, 462)) { print(line); }
+
+    // Three variables rotate just as easily as two.
+    var first = "a";
+    var second = "b";
+    var third = "c";
+    [first, second, third] = [third, first, second];
+    print(first, second, third);
+
+    // Fibonacci without a temporary.
+    var p = 0;
+    var q = 1;
+    var seq = [];
+    for (var i = 0; i < 10; i += 1) {
+        push(seq, p);
+        [p, q] = [q, p + q];
+    }
+    print(seq);
+}

@@ -171,7 +171,9 @@ class MRTFunction:
         if self.is_generator:
             # Nothing in the body runs yet: calling a generator function only
             # builds the lazy sequence.
-            return MRTGenerator(self, environment)
+            label = f"<generator {self.name}>" if self.name else "<generator>"
+            return MRTGenerator(
+                label, lambda: interpreter.execute_block_gen(self.body, environment))
 
         frame = self.name if self.name else "<anonymous>"
         try:
@@ -193,29 +195,80 @@ class MRTFunction:
         return f"<function {self.name}>" if self.name else "<function>"
 
 class MRTGenerator:
-    """A lazy sequence produced by calling a generator function.
+    """A lazy sequence: the result of calling a generator function, or of a
+    lazy built-in such as `map` over another generator.
 
-    Nothing runs until something iterates it, and only as far as it asks --
-    which is what makes an endless generator usable. Like the host
-    languages' own generators it is single-use: iterating a second time is
-    an error rather than a silently empty loop."""
+    Nothing runs until something pulls from it, and only as far as it asks --
+    which is what makes an endless generator usable. It is *resumable*: a
+    loop that stops early leaves it suspended mid-body, and the next consumer
+    carries on from there. It is not restartable: once the sequence has run
+    out there is no way back to the start, so `for`-`in` over a finished
+    generator is an error rather than a silently empty loop.
 
-    def __init__(self, function: 'MRTFunction', environment: 'Environment'):
-        self.function = function
-        self.environment = environment
-        self.started = False
+    `make` builds the host-language generator that actually runs the body,
+    and is deliberately a callable rather than the generator itself so that
+    nothing is set up until the first pull."""
 
-    def start(self, interpreter: 'Interpreter', line: Optional[int] = None):
-        if self.started:
+    def __init__(self, label: str, make: Any):
+        self.label = label
+        self.make = make
+        self.running = None
+        self.done = False
+        # True while this generator's body is on the stack, so a program
+        # that resumes a generator from inside itself gets a real error
+        # rather than whichever host-language failure happens first.
+        self.active = False
+
+    def step(self, interpreter: 'Interpreter', sent: Any = None,
+             line: Optional[int] = None):
+        """Run to the next `yield`, returning `(done, value)`.
+
+        `sent` becomes the value of the `yield` this generator is suspended
+        at -- discarded on the first step, because the body hasn't reached a
+        `yield` yet to receive it."""
+        if self.done:
+            return True, None
+        if self.active:
             raise MRTRuntimeError(
-                f"{self} has already been iterated; a generator can only be used once.",
+                f"{self} is already running; a generator can't be resumed from "
+                f"inside itself.",
                 line, kind="ValueError")
-        self.started = True
-        return interpreter.execute_block_gen(self.function.body, self.environment)
+
+        if self.running is None:
+            self.running = self.make()
+            sent = None
+
+        frame = str(self)
+        # The body and whatever consumes it take turns using the
+        # interpreter's current scope, so each hand-off restores the
+        # consumer's.
+        saved = interpreter.environment
+        self.active = True
+        try:
+            item = self.running.send(sent)
+        except StopIteration:
+            self.done = True
+            return True, None
+        except ReturnSignal:
+            # `return` inside a generator simply ends the sequence.
+            self.done = True
+            return True, None
+        except MRTRuntimeError as e:
+            self.done = True
+            e.mrt_stack.append(frame)
+            raise
+        except MRTThrow as thrown:
+            self.done = True
+            thrown.stack.append(frame)
+            raise
+        finally:
+            self.active = False
+            interpreter.environment = saved
+
+        return False, item
 
     def __str__(self):
-        name = self.function.name
-        return f"<generator {name}>" if name else "<generator>"
+        return self.label
 
 
 class MRTStruct:
@@ -947,6 +1000,8 @@ class Interpreter:
         # Generators
         self.globals.define("toArray", self.builtin_toArray)
         self.globals.define("take", self.builtin_take)
+        self.globals.define("next", self.builtin_next)
+        self.globals.define("send", self.builtin_send)
 
     # -- Higher-order built-ins -------------------------------------------
     #
@@ -959,22 +1014,77 @@ class Interpreter:
             raise MRTRuntimeError(f"First argument to {who}() must be an array.", kind="TypeError")
         return value
 
+    def _items_arg(self, value: Any, who: str) -> List[Any]:
+        """The first argument of a built-in that walks a sequence.
+
+        Anything `for`-`in` accepts is accepted here too -- including a struct
+        that implements `iter()` -- so the iterator protocol reaches the
+        standard library rather than stopping at the loop keyword. The items
+        are materialised, which is why the built-ins that use this are the
+        eager ones."""
+        if not self.is_iterable(value):
+            raise MRTRuntimeError(
+                f"{who}() needs something iterable, not {type_name(value)}.",
+                kind="TypeError")
+        return list(self.iterate(value))
+
     def builtin_map(self, *args):
+        """`map(seq, f)` maps anything iterable; `map(gen, f)` stays lazy.
+
+        Matching the input's laziness is what keeps a pipeline over an
+        endless generator from hanging: `take(map(naturals(), square), 5)`
+        calls `square` five times. On an array, eagerly returning an array
+        keeps the common case a plain value you can index and print."""
         if len(args) != 2:
-            raise MRTRuntimeError("map() takes an array and a function.", kind="ArityError")
-        items = self._array_arg(args[0], "map")
-        return [self.call_value(args[1], [item]) for item in items]
+            raise MRTRuntimeError(
+                "map() takes a sequence and a function.", kind="ArityError")
+        source, function = args
+        if isinstance(source, MRTGenerator):
+            return MRTGenerator("<generator map>",
+                                lambda: self._lazy_map(source, function))
+        items = self._items_arg(source, "map")
+        return [self.call_value(function, [item]) for item in items]
+
+    def _lazy_map(self, source: Any, function: Any):
+        for item in self.iterate(source):
+            value = self.call_value(function, [item])
+            mine = self.environment
+            yield value
+            self.environment = mine
 
     def builtin_filter(self, *args):
+        """`filter(seq, pred)` filters anything iterable; `filter(gen, pred)`
+        stays lazy (see `map` above).
+
+        A lazy filter over an endless generator only terminates if matches
+        keep coming: `take(filter(naturals(), isEven), 3)` is fine, but
+        filtering for something that never occurs runs forever -- the same
+        bargain any lazy sequence makes."""
         if len(args) != 2:
-            raise MRTRuntimeError("filter() takes an array and a function.", kind="ArityError")
-        items = self._array_arg(args[0], "filter")
-        return [item for item in items if self.is_truthy(self.call_value(args[1], [item]))]
+            raise MRTRuntimeError(
+                "filter() takes a sequence and a function.", kind="ArityError")
+        source, predicate = args
+        if isinstance(source, MRTGenerator):
+            return MRTGenerator("<generator filter>",
+                                lambda: self._lazy_filter(source, predicate))
+        items = self._items_arg(source, "filter")
+        return [item for item in items
+                if self.is_truthy(self.call_value(predicate, [item]))]
+
+    def _lazy_filter(self, source: Any, predicate: Any):
+        for item in self.iterate(source):
+            if not self.is_truthy(self.call_value(predicate, [item])):
+                continue
+            mine = self.environment
+            yield item
+            self.environment = mine
 
     def builtin_reduce(self, *args):
         if not 2 <= len(args) <= 3:
-            raise MRTRuntimeError("reduce() takes an array, a function, and an optional initial value.", kind="ArityError")
-        items = self._array_arg(args[0], "reduce")
+            raise MRTRuntimeError(
+                "reduce() takes a sequence, a function, and an optional initial value.",
+                kind="ArityError")
+        items = self._items_arg(args[0], "reduce")
         function = args[1]
 
         if len(args) == 3:
@@ -982,7 +1092,8 @@ class Interpreter:
             rest = items
         else:
             if not items:
-                raise MRTRuntimeError("reduce() of an empty array needs an initial value.", kind="ValueError")
+                raise MRTRuntimeError("reduce() of an empty sequence needs an initial value.",
+                                      kind="ValueError")
             accumulator = items[0]
             rest = items[1:]
 
@@ -992,8 +1103,8 @@ class Interpreter:
 
     def builtin_find(self, *args):
         if len(args) != 2:
-            raise MRTRuntimeError("find() takes an array and a function.", kind="ArityError")
-        items = self._array_arg(args[0], "find")
+            raise MRTRuntimeError("find() takes a sequence and a function.", kind="ArityError")
+        items = self._items_arg(args[0], "find")
         for item in items:
             if self.is_truthy(self.call_value(args[1], [item])):
                 return item
@@ -1001,14 +1112,14 @@ class Interpreter:
 
     def builtin_some(self, *args):
         if len(args) != 2:
-            raise MRTRuntimeError("some() takes an array and a function.", kind="ArityError")
-        items = self._array_arg(args[0], "some")
+            raise MRTRuntimeError("some() takes a sequence and a function.", kind="ArityError")
+        items = self._items_arg(args[0], "some")
         return any(self.is_truthy(self.call_value(args[1], [item])) for item in items)
 
     def builtin_every(self, *args):
         if len(args) != 2:
-            raise MRTRuntimeError("every() takes an array and a function.", kind="ArityError")
-        items = self._array_arg(args[0], "every")
+            raise MRTRuntimeError("every() takes a sequence and a function.", kind="ArityError")
+        items = self._items_arg(args[0], "every")
         return all(self.is_truthy(self.call_value(args[1], [item])) for item in items)
 
     def builtin_toArray(self, *args):
@@ -1021,18 +1132,52 @@ class Interpreter:
 
     def builtin_take(self, *args):
         """The first `n` items of any iterable, as an array. Safe on an
-        endless generator: it stops pulling once it has `n`."""
+        endless generator: it stops pulling once it has `n`, and pulls
+        exactly `n` -- which matters now that what is left of a generator
+        can still be consumed afterwards."""
         if len(args) != 2:
             raise MRTRuntimeError("take() takes an iterable and a count.", kind="ArityError")
         count = int(_number_arg(args[1], "take"))
         if count < 0:
             raise MRTRuntimeError("take() count must not be negative.", kind="ValueError")
+        source = self.iterate(args[0])
         out = []
-        for item in self.iterate(args[0]):
-            if len(out) >= count:
+        while len(out) < count:
+            try:
+                out.append(next(source))
+            except StopIteration:
                 break
-            out.append(item)
         return out
+
+    def builtin_next(self, *args):
+        """One step of a generator, as `{done, value}`."""
+        if len(args) != 1:
+            raise MRTRuntimeError("next() takes a generator.", kind="ArityError")
+        return self._step_result(args[0], None, "next")
+
+    def builtin_send(self, *args):
+        """One step of a generator, with `value` becoming the result of the
+        `yield` it is suspended at."""
+        if len(args) != 2:
+            raise MRTRuntimeError("send() takes a generator and a value.",
+                                  kind="ArityError")
+        return self._step_result(args[0], args[1], "send")
+
+    def _step_result(self, generator: Any, sent: Any, who: str) -> Dict[str, Any]:
+        """Drive a generator by hand.
+
+        Unlike `for`-`in`, a finished generator is not an error here: it keeps
+        answering `{done: true, value: null}`, so the obvious drive loop
+        needs no special case at the end.
+
+        The value sent on the very first step is dropped, because the body
+        hasn't reached a `yield` yet to receive it."""
+        if not isinstance(generator, MRTGenerator):
+            raise MRTRuntimeError(
+                f"{who}() needs a generator, not {type_name(generator)}.",
+                kind="TypeError")
+        done, value = generator.step(self, sent)
+        return {"done": done, "value": None if done else value}
 
     def builtin_sort(self, *args):
         """`sort(arr)` or `sort(arr, compare)`. Returns a new array; the
@@ -1121,6 +1266,9 @@ class Interpreter:
                 raise BreakSignal()
             case Continue():
                 raise ContinueSignal()
+            case DestructureAssign():
+                self.bind_pattern(stmt.pattern, self.evaluate(stmt.value),
+                                  self.environment, stmt.token.line, declare=False)
             case Expression():
                 self.evaluate(stmt.expression)
             case For():
@@ -1352,13 +1500,28 @@ class Interpreter:
     def execute_gen(self, stmt: Stmt):
         match stmt:
             case Yield():
-                value = self.evaluate(stmt.value)
-                # The consumer runs arbitrary code while we are suspended and
-                # will leave `self.environment` pointing somewhere else, so
-                # the generator re-establishes its own scope on resume.
-                mine = self.environment
-                yield value
-                self.environment = mine
+                yield from self.execute_yield_gen(stmt)
+            # The three shapes that can receive a value sent back in. They are
+            # matched before the general `Var`/`Expression` handling below,
+            # which cannot suspend.
+            case Var() if isinstance(stmt.initializer, YieldExpr):
+                sent = yield from self.suspend(stmt.initializer)
+                self.bind_pattern(stmt.pattern, sent, self.environment)
+            case DestructureAssign() if isinstance(stmt.value, YieldExpr):
+                sent = yield from self.suspend(stmt.value)
+                self.bind_pattern(stmt.pattern, sent, self.environment,
+                                  stmt.token.line, declare=False)
+            case Expression(expression=Assign(value=YieldExpr())):
+                target = stmt.expression
+                sent = yield from self.suspend(target.value)
+                self.environment.assign(target.name, sent)
+            case Expression(expression=ArrayAssign(value=YieldExpr())):
+                target = stmt.expression
+                sent = yield from self.suspend(target.value)
+                # Re-enter the ordinary index-assignment path with the
+                # received value standing in for the `yield`, so the index
+                # checks and error messages stay in exactly one place.
+                self.evaluate(ArrayAssign(target.array, target.index, Literal(sent)))
             case Block():
                 yield from self.execute_block_gen(stmt.statements, Environment(self.environment))
             case If():
@@ -1412,6 +1575,48 @@ class Interpreter:
             case _:
                 # No `yield` can occur here, so ordinary execution is enough.
                 self.execute(stmt)
+
+    def execute_yield_gen(self, stmt: Yield):
+        """`yield v;` and `yield* other;`."""
+        if not stmt.delegate:
+            value = self.evaluate(stmt.value)
+            # The consumer runs arbitrary code while we are suspended and
+            # will leave `self.environment` pointing somewhere else, so the
+            # generator re-establishes its own scope on resume.
+            mine = self.environment
+            yield value
+            self.environment = mine
+            return
+
+        # `yield* other` re-yields another iterable's items as if they were
+        # ours, and passes anything sent in straight through to it, so a
+        # chain of delegating generators still behaves like one.
+        source = self.iterate(self.evaluate(stmt.value), stmt.keyword.line)
+        sent = None
+        while True:
+            mine = self.environment
+            try:
+                item = source.send(sent)
+            except StopIteration:
+                # Caught rather than allowed to escape: a StopIteration that
+                # leaves a generator body is a host-language error, not the
+                # end of this sequence.
+                self.environment = mine
+                return
+            sent = yield item
+            self.environment = mine
+
+    def suspend(self, expr: YieldExpr):
+        """Hand `expr`'s value to the consumer and return what it sends back.
+
+        `null` when the consumer is a `for`-`in` loop or `toArray`, which have
+        nothing to send -- so a generator written for `send()` still works
+        when it is merely iterated."""
+        value = self.evaluate(expr.value)
+        mine = self.environment
+        sent = yield value
+        self.environment = mine
+        return sent
 
     def execute_try_gen(self, stmt: Try):
         try:
@@ -1469,48 +1674,77 @@ class Interpreter:
             stmt.keyword.line, kind="ValueError")
 
     def iterate(self, value: Any, line: Optional[int] = None):
-        """Yield a value's items, lazily for a generator and from a snapshot
-        for the eager containers (so mutating an array mid-loop can't shift
-        the iteration underneath it)."""
+        """An iterator over a value's items -- lazily for a generator, from a
+        snapshot for the eager containers (so mutating an array mid-loop
+        can't shift the iteration underneath it).
+
+        Deliberately an ordinary method returning a generator, rather than a
+        generator function itself: "that isn't iterable" is then reported
+        when `iterate` is *called*, not on the first item pulled, so
+        `take(5, 0)` still says 5 isn't iterable instead of quietly
+        answering `[]`.
+
+        Every branch returns a host generator, so callers can `.send()` into
+        whatever comes back without checking what it was."""
         if isinstance(value, MRTGenerator):
-            running = value.start(self, line)
-            frame = str(value)
-            while True:
-                # The generator body and the loop body take turns using
-                # `self.environment`, so each hand-off restores the caller's.
-                saved = self.environment
-                try:
-                    item = next(running)
-                except StopIteration:
-                    return
-                except ReturnSignal:
-                    # `return` inside a generator simply ends the sequence.
-                    return
-                except MRTRuntimeError as e:
-                    e.mrt_stack.append(frame)
-                    raise
-                except MRTThrow as thrown:
-                    thrown.stack.append(frame)
-                    raise
-                finally:
-                    self.environment = saved
-                yield item
-            return
+            if value.done:
+                raise MRTRuntimeError(
+                    f"{value} has already been iterated; a generator can only be "
+                    f"used once.",
+                    line, kind="ValueError")
+            return self._drive_generator(value, line)
+
+        if isinstance(value, MRTInstance) and "iter" in value.struct.methods:
+            # The iterator protocol: a struct says how to iterate itself by
+            # declaring `iter()`, which returns anything else iterable --
+            # usually a generator, but an array works just as well.
+            sequence = self.call_value(value.get("iter", self, line), [], line)
+            if sequence is value:
+                raise MRTRuntimeError(
+                    f"{value.struct.name}.iter() returned the struct itself, "
+                    f"which would iterate forever.",
+                    line, kind="ValueError")
+            if not self.is_iterable(sequence):
+                # Named rather than left to the generic message below: the
+                # mistake is in the struct's `iter`, which may be a long way
+                # from the `for` loop that tripped over it.
+                raise MRTRuntimeError(
+                    f"{value.struct.name}.iter() returned {type_name(sequence)}, "
+                    f"which isn't iterable.",
+                    line, kind="TypeError")
+            return self.iterate(sequence, line)
 
         if isinstance(value, list):
-            yield from list(value)
-            return
+            return self._drive_items(list(value))
         if isinstance(value, str):
-            yield from list(value)
-            return
+            return self._drive_items(list(value))
         source = object_like(value)
         if source is not None:
-            yield from list(source.keys())
-            return
+            return self._drive_items(list(source.keys()))
 
         raise MRTRuntimeError(
             "Can only iterate over an array, string, object, or generator.",
             line, kind="TypeError")
+
+    def is_iterable(self, value: Any) -> bool:
+        return (isinstance(value, (MRTGenerator, list, str))
+                or object_like(value) is not None)
+
+    def _drive_generator(self, generator: MRTGenerator, line: Optional[int] = None):
+        """Pull from an MRT generator, forwarding values sent in by whoever
+        is consuming this iterator (that's how `yield*` stays two-way)."""
+        sent = None
+        while True:
+            done, item = generator.step(self, sent, line)
+            if done:
+                return
+            sent = yield item
+
+    def _drive_items(self, items: List[Any]):
+        """The same shape for an already-materialised sequence. Anything sent
+        in has nowhere to go and is dropped."""
+        for item in items:
+            yield item
 
     # -- match --------------------------------------------------------------
 
@@ -1539,6 +1773,33 @@ class Interpreter:
         raise MRTRuntimeError(
             f"No case matched {stringify(subject)} in this match, and there is no 'default'.",
             stmt.keyword.line, kind="ValueError")
+
+    def evaluate_match_expr(self, expr: MatchExpr) -> Any:
+        """The expression form of `match`: the first arm that fits decides the
+        value. Shares `match_pattern` with the statement form, so the two
+        spellings can never disagree about what a pattern means."""
+        subject = self.evaluate(expr.subject)
+
+        for arm in expr.arms:
+            environment = Environment(self.environment)
+
+            if arm.pattern is not None:
+                if not self.match_pattern(arm.pattern, subject, environment):
+                    continue
+
+            previous = self.environment
+            try:
+                self.environment = environment
+                if arm.guard is not None and not self.is_truthy(self.evaluate(arm.guard)):
+                    continue
+                return self.evaluate(arm.value)
+            finally:
+                self.environment = previous
+
+        raise MRTRuntimeError(
+            f"No case matched {stringify(subject)} in this match, and there is "
+            f"no 'default'.",
+            expr.keyword.line, kind="ValueError")
 
     def match_pattern(self, pattern: MatchPattern, value: Any,
                       environment: 'Environment') -> bool:
@@ -1605,12 +1866,17 @@ class Interpreter:
     # -- Binding patterns ---------------------------------------------------
 
     def bind_pattern(self, pattern: Pattern, value: Any, environment: 'Environment',
-                     line: Optional[int] = None):
+                     line: Optional[int] = None, declare: bool = True):
         """Bind `value` to `pattern` inside `environment`.
 
         Destructuring is strict, like the rest of the language: a missing
         element or key is an error unless that slot has a default, rather
-        than quietly binding `null`."""
+        than quietly binding `null`.
+
+        With `declare=False` the leaves are *assigned* to variables that must
+        already exist, which is what `[a, b] = pair;` means. Everything else
+        about the pattern -- nesting, rest, defaults, the error messages --
+        is identical, so the two forms can never drift apart."""
         if value is MISSING:
             if pattern.default is None:
                 raise MRTRuntimeError(
@@ -1619,7 +1885,7 @@ class Interpreter:
             value = self.evaluate(pattern.default)
 
         if isinstance(pattern, NamePattern):
-            environment.define(pattern.name.lexeme, value)
+            self._bind_name(pattern.name, value, environment, declare)
             return
 
         if isinstance(pattern, ArrayPattern):
@@ -1635,9 +1901,10 @@ class Interpreter:
                         f"Cannot destructure: the array has {len(value)} element(s) "
                         f"but the pattern needs at least {len(pattern.elements)}.",
                         where, kind="IndexError")
-                self.bind_pattern(element, slot, environment, where)
+                self.bind_pattern(element, slot, environment, where, declare)
             if pattern.rest is not None:
-                environment.define(pattern.rest.lexeme, list(value[len(pattern.elements):]))
+                self._bind_name(pattern.rest, list(value[len(pattern.elements):]),
+                                environment, declare)
             return
 
         if isinstance(pattern, ObjectPattern):
@@ -1655,14 +1922,22 @@ class Interpreter:
                     raise MRTRuntimeError(
                         f"Cannot destructure: no key {json.dumps(key)} in the object.",
                         where, kind="KeyError")
-                self.bind_pattern(sub, slot, environment, where)
+                self.bind_pattern(sub, slot, environment, where, declare)
             if pattern.rest is not None:
-                environment.define(
-                    pattern.rest.lexeme,
-                    {k: v for k, v in source.items() if k not in taken})
+                self._bind_name(
+                    pattern.rest,
+                    {k: v for k, v in source.items() if k not in taken},
+                    environment, declare)
             return
 
         raise MRTRuntimeError("Unknown binding pattern.", line, kind="RuntimeError")
+
+    def _bind_name(self, name: Token, value: Any, environment: 'Environment',
+                   declare: bool):
+        if declare:
+            environment.define(name.lexeme, value)
+        else:
+            environment.assign(name, value)
 
     def execute_for_in(self, stmt: ForIn):
         iterable = self.evaluate(stmt.iterable)
@@ -1775,6 +2050,17 @@ class Interpreter:
                     out.append(part if isinstance(part, str)
                                else stringify(self.evaluate(part)))
                 return "".join(out)
+            case MatchExpr():
+                return self.evaluate_match_expr(expr)
+            case YieldExpr():
+                # Unreachable through the parser, which only builds one where
+                # `execute_gen` handles it. Kept so a future node that holds
+                # an expression without knowing about yield fails loudly
+                # instead of returning None.
+                raise MRTRuntimeError(
+                    "'yield' can only be a statement of its own, or the entire "
+                    "right-hand side of a declaration or an assignment.",
+                    expr.keyword.line, kind="RuntimeError")
             case Grouping():
                 return self.evaluate(expr.expression)
             case Literal():
