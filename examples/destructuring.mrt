@@ -1,0 +1,66 @@
+// Destructuring: take a value apart in the same place you name it.
+
+func distance([x1, y1], [x2, y2]) {
+    var dx = x2 - x1;
+    var dy = y2 - y1;
+    return sqrt(dx * dx + dy * dy);
+}
+
+func summarise({name, role = "unknown", ...extra}) {
+    return "${name} (${role}) +${len(extra)}";
+}
+
+func main() {
+    print("-- arrays --");
+    var [first, second] = [10, 20];
+    print(first, second);
+
+    var [head, ...tail] = [1, 2, 3, 4];
+    print(head, tail);
+
+    var [a, b = 99] = [1];
+    print(a, b);
+
+    print("distance:", distance([0, 0], [3, 4]));
+
+    print("-- objects --");
+    var person = {name: "Ada", role: "engineer", city: "London"};
+    var {name, role} = person;
+    print(name, role);
+
+    var {name: who, missing = "n/a"} = person;
+    print(who, missing);
+
+    var {name: n2, ...rest} = person;
+    print(n2, rest);
+
+    print(summarise(person));
+    print(summarise({name: "Bob"}));
+
+    print("-- nesting --");
+    var {items: [firstItem, ...others], meta: {tag}} =
+        {items: ["a", "b", "c"], meta: {tag: "demo"}};
+    print(firstItem, others, tag);
+
+    print("-- loops and catch --");
+    for ([key, value] in [["x", 1], ["y", 2]]) {
+        print("${key} = ${value}");
+    }
+
+    for ({name: personName, role: personRole} in [{name: "Bob", role: "ops"}]) {
+        print(personName, "does", personRole);
+    }
+
+    try {
+        var empty = [];
+        print(empty[5]);
+    } catch ({kind, message}) {
+        print("caught a ${kind}: ${message}");
+    }
+
+    print("-- strictness --");
+    // Destructuring never quietly produces null: a missing piece is an error
+    // unless that slot has a default.
+    try { var [p, q] = [1]; } catch (e) { print(e.kind, "|", e.message); }
+    try { var {nope} = {}; } catch (e) { print(e.kind, "|", e.message); }
+}

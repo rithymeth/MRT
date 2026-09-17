@@ -26,6 +26,11 @@ class TokenType(Enum):
     IN = auto()
     IMPORT = auto()
     EXPORT = auto()
+    STRUCT = auto()
+    YIELD = auto()
+    MATCH = auto()
+    CASE = auto()
+    DEFAULT = auto()
     FROM = auto()
     AS = auto()
 
@@ -110,6 +115,11 @@ class Lexer:
             "finally": TokenType.FINALLY,
             "throw": TokenType.THROW,
             "in": TokenType.IN,
+            "struct": TokenType.STRUCT,
+            "yield": TokenType.YIELD,
+            "match": TokenType.MATCH,
+            "case": TokenType.CASE,
+            "default": TokenType.DEFAULT,
             "import": TokenType.IMPORT,
             "export": TokenType.EXPORT,
             "from": TokenType.FROM,

@@ -206,6 +206,113 @@ func safeDivide(a, b) {
 }`
     },
     {
+      name: 'Structs & Matching',
+      code: `// A struct gives a value a name and a fixed shape.
+struct Circle { radius; func area() { return 3.14159 * this.radius * this.radius; } }
+struct Rect   { w, h;   func area() { return this.w * this.h; } }
+
+func describe(value) {
+    // match branches on a value's *shape*, not just equality.
+    match (value) {
+        case Circle(r) if (r > 10):  return "a huge circle";
+        case Circle(r):              return "a circle of radius \${r}";
+        case Rect(w, h) if (w == h): return "a \${w}x\${h} square";
+        case Rect(w, h):             return "a \${w}x\${h} rectangle";
+        case [a, b]:                 return "a pair: \${a}, \${b}";
+        case {kind: k}:              return "something tagged \${k}";
+        case n if (type(n) == "number"): return "the number \${n}";
+        default:                     return "something else";
+    }
+}
+
+func main() {
+    var shapes = [Circle(2), Circle(50), Rect(3, 3), Rect(3, 4)];
+    for (s in shapes) {
+        print(describe(s), "-> area", round(s.area(), 2));
+    }
+
+    for (v in [[1, 2], {kind: "note"}, 42, "text"]) {
+        print(describe(v));
+    }
+
+    // Structs are values: equal by fields, usable in the pipeline.
+    print(Circle(2) == Circle(2), Circle(2) == Rect(1, 1));
+    print(map(shapes, func(s) { return round(s.area(), 1); }));
+}`
+    },
+    {
+      name: 'Generators',
+      code: `// A function containing \`yield\` is lazy: calling it runs nothing and
+// hands back a sequence that computes values only when asked.
+
+func naturals() {
+    var n = 0;
+    while (true) { yield n; n += 1; }
+}
+
+func fibonacci() {
+    var a = 0; var b = 1;
+    while (true) { yield a; var next = a + b; a = b; b = next; }
+}
+
+// Generators consuming generators: nothing in between is materialised.
+func mapped(source, f)   { for (x in source) { yield f(x); } }
+func kept(source, pred)  { for (x in source) { if (pred(x)) { yield x; } } }
+func until(source, pred) { for (x in source) { if (!pred(x)) { return; } yield x; } }
+
+func main() {
+    print("naturals:", take(naturals(), 8));
+    print("fibonacci:", take(fibonacci(), 10));
+
+    var squares = mapped(naturals(), func(n) { return n * n; });
+    print("squares under 200:", toArray(until(squares, func(n) { return n < 200; })));
+
+    var evenFibs = kept(fibonacci(), func(n) { return n % 2 == 0; });
+    print("even fibonacci:", take(evenFibs, 6));
+
+    // break just stops asking the source for more.
+    var seen = [];
+    for (n in naturals()) {
+        if (len(seen) == 4) { break; }
+        push(seen, n * 10);
+    }
+    print("stopped early:", seen);
+}`
+    },
+    {
+      name: 'Destructuring',
+      code: `// Wherever you name something, you can take it apart instead.
+
+func midpoint([x1, y1], [x2, y2]) {
+    return [(x1 + x2) / 2, (y1 + y2) / 2];
+}
+
+func greet({name, greeting = "Hello"}) {
+    return "\${greeting}, \${name}!";
+}
+
+func main() {
+    var [first, ...rest] = [1, 2, 3, 4];
+    print(first, rest);
+
+    var {name, role = "unknown"} = {name: "Ada", city: "London"};
+    print(name, role);
+
+    var {name: who, ...others} = {name: "Bob", team: "ops", level: 3};
+    print(who, others);
+
+    print(midpoint([0, 0], [4, 6]));
+    print(greet({name: "Ada"}), greet({name: "Bob", greeting: "Hi"}));
+
+    for ([label, count] in [["apples", 3], ["pears", 7]]) {
+        print("\${label}: \${count}");
+    }
+
+    // Destructuring is strict: a missing piece is an error, not null.
+    try { var [a, b] = [1]; } catch ({kind, message}) { print(kind, "-", message); }
+}`
+    },
+    {
       name: 'Modules',
       code: `// The Playground ships two built-in modules you can import.
 // Run the same program from the command line and the imports

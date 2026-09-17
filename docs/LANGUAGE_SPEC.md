@@ -22,9 +22,13 @@ happens?*
 7. [Scoping and closures](#scoping-and-closures)
 8. [Error model](#error-model)
 9. [Built-in functions](#built-in-functions)
-10. [Modules](#modules)
-11. [Known ambiguities (by design)](#known-ambiguities-by-design)
-12. [Future work / explicitly out of scope](#future-work--explicitly-out-of-scope)
+10. [Destructuring](#destructuring)
+11. [Structs](#structs)
+12. [Pattern matching](#pattern-matching)
+13. [Generators](#generators)
+14. [Modules](#modules)
+15. [Known ambiguities (by design)](#known-ambiguities-by-design)
+16. [Future work / explicitly out of scope](#future-work--explicitly-out-of-scope)
 
 ## Design goals and non-goals
 
@@ -34,13 +38,14 @@ meant to be fast or to interoperate with other languages. Concretely:
 
 - **Goals:** readable C/JS-family syntax; a handful of clean, orthogonal
   data types (number, string, boolean, array, object, null, function);
-  first-class functions with lexical closures; predictable, strict runtime
+  first-class functions with lexical closures; user-defined struct types
+  and matching on shape; predictable, strict runtime
   errors (index out of bounds, division by zero, and similar always raise
   rather than silently producing `null` or `NaN`) that a program may
   nonetheless catch and recover from; a reference implementation short
   enough to read start to finish.
 - **Non-goals (for now):** a static type system, integers distinct from
-  floats, or user-defined types and classes. See
+  floats, or inheritance between user-defined types. See
   [Future work](#future-work--explicitly-out-of-scope).
 
 ## Lexical grammar
@@ -103,12 +108,13 @@ func return if else while for print var
 true false break continue
 null try catch finally throw in
 import export from as
+struct match case default yield
 ```
 
-The last row is new in the current revision: `import`, `export`, `from` and
-`as` are now reserved, so a program that used any of them as a variable or
-function name no longer parses. (The row before it added `null`, `try`,
-`catch`, `finally`, `throw` and `in` in the previous revision.)
+The last row is new in the current revision: `struct`, `match`, `case`,
+`default` and `yield` are now reserved, so a program that used any of them
+as a variable or function name no longer parses. (The row before it added
+`import`, `export`, `from` and `as` in the previous revision.)
 
 ### Operators and punctuation
 
@@ -124,7 +130,7 @@ function name no longer parses. (The row before it added `null`, `try`,
 
 ## Types and values
 
-MRT has exactly seven kinds of runtime value:
+MRT has these kinds of runtime value:
 
 | Type       | Example                        | Truthy?                                   |
 |------------|---------------------------------|--------------------------------------------|
@@ -135,6 +141,9 @@ MRT has exactly seven kinds of runtime value:
 | `object`   | `{"a": 1}`                      | always truthy (including `{}`) |
 | `null`     | *(see above)*                   | always falsy |
 | `function` | a `func` declaration or a `func(...) { ... }` expression, passed by reference | always truthy |
+| *a struct name* | an instance of a declared `struct`; `type()` reports the struct's own name, e.g. `"Point"` | always truthy |
+| `struct` | the struct type itself, which is also its constructor | always truthy |
+| `generator` | the lazy sequence a generator function returns | always truthy |
 
 **Truthiness** (used by `if`, `while`, `for`'s condition, and `&&`/`||`):
 only `null` and `false` are falsy. Every other value — including `0`,
@@ -174,8 +183,15 @@ program        = declaration* EOF ;
 declaration    = importDecl
                | exportDecl
                | funcDecl
+               | structDecl
                | varDecl
                | statement ;
+
+structDecl     = "struct" IDENTIFIER "{" structMember* "}" ;
+structMember   = "func" IDENTIFIER "(" parameters? ")" block
+               | fieldNames ";"? ;
+fieldNames     = field ( "," field )* ;
+field          = IDENTIFIER ( "=" expression )? ;
 
 importDecl     = "import" "{" importNames? "}" "from" STRING ";"? ;
 importNames    = importName ( "," importName )* ;
@@ -187,14 +203,23 @@ exportDecl     = "export" ( funcDecl | varDecl ) ;
 
 funcDecl       = "func" IDENTIFIER "(" parameters? ")" block ;
 parameters     = parameter ( "," parameter )* ;
-parameter      = IDENTIFIER ( "=" expression )?
+parameter      = pattern
                | "..." IDENTIFIER ;
                (* a rest parameter must come last; a required parameter may
                   not follow one with a default *)
 
-varDecl        = "var" IDENTIFIER ( "=" expression )? ";"? ;
+varDecl        = "var" pattern ( "=" expression )? ";"? ;
+               (* an initializer is required unless the pattern is a
+                  plain name *)
+
+pattern        = IDENTIFIER ( "=" expression )?
+               | "[" ( pattern ( "," pattern )* ( "," "..." IDENTIFIER )? )? "]" ( "=" expression )?
+               | "{" ( objEntry ( "," objEntry )* ( "," "..." IDENTIFIER )? )? "}" ( "=" expression )? ;
+objEntry       = IDENTIFIER ( ":" pattern | ( "=" expression )? ) ;
 
 statement      = exprStmt
+               | matchStmt
+               | yieldStmt
                | forStmt
                | forInStmt
                | ifStmt
@@ -213,7 +238,7 @@ forStmt        = "for" "(" ( varDecl | exprStmt | ";" )
                             expression? ";"
                             expression? ")" statement ;
 
-forInStmt      = "for" "(" "var"? IDENTIFIER "in" expression ")" statement ;
+forInStmt      = "for" "(" "var"? pattern "in" expression ")" statement ;
 
 ifStmt         = "if" "(" expression ")" statement ( "else" statement )? ;
 
@@ -229,11 +254,26 @@ breakStmt      = "break" ";"? ;
 continueStmt   = "continue" ";"? ;
 
 tryStmt        = "try" block catchClause* ( "finally" block )? ;
-catchClause    = "catch" "(" IDENTIFIER ")" ( "if" "(" expression ")" )? block ;
+catchClause    = "catch" "(" pattern ")" ( "if" "(" expression ")" )? block ;
                (* at least one catch clause or a finally must be present;
                   clauses are tried in order, first match wins *)
 
 throwStmt      = "throw" expression ";"? ;
+
+yieldStmt      = "yield" expression ";"? ;
+               (* only inside a function; its presence makes that function
+                  a generator *)
+
+matchStmt      = "match" "(" expression ")" "{" caseClause* defaultClause? "}" ;
+caseClause     = "case" matchPattern ( "if" "(" expression ")" )? ":" statement* ;
+defaultClause  = "default" ":" statement* ;
+
+matchPattern   = NUMBER | STRING | "true" | "false" | "null" | "-" NUMBER
+               | IDENTIFIER
+               | IDENTIFIER "(" ( matchPattern ( "," matchPattern )* )? ")"
+               | "[" ( matchPattern ( "," matchPattern )* ( "," "..." IDENTIFIER )? )? "]"
+               | "{" matchEntry ( "," matchEntry )* "}" ;
+matchEntry     = IDENTIFIER ( ":" matchPattern )? ;
 
 block          = "{" declaration* "}" ;
 
@@ -297,6 +337,16 @@ recursive-descent parser in `src/parser.py`):
   rejected anywhere but the top level of a file.
 - `...` is a single token. `a..b` is therefore still a syntax error, and
   `...` outside an argument list, array literal or `print` is rejected.
+- A leading `[` or `{` only starts a *pattern* when what follows could
+  plausibly be one (a name, a closing bracket, or `...`). Otherwise it is
+  parsed as whatever it would have been before, which keeps a missing
+  paren — `func main( {` — reported on its own line instead of wherever
+  the brace's contents happen to start.
+- `for (` uses a speculative parse rather than lookahead to tell the
+  for-in form from the C-style one, since a pattern can be arbitrarily
+  long; it rewinds if the `in` never arrives.
+- Whether a function is a generator is settled at parse time by whether a
+  `yield` appeared directly in its body (not inside a nested function).
 
 ## Expressions and operator precedence
 
@@ -622,8 +672,9 @@ can be passed to higher-order functions like any other value
 (`map(xs, toUpper)`).
 
 `toString`/`print` render a function as `<function name>` for a named
-declaration, `<function>` for an anonymous one, and `<builtin>` for a
-built-in. (Built-ins deliberately do not expose their host-language
+declaration, `<function>` for an anonymous one, `<builtin>` for a built-in,
+`<struct Name>` for a struct type, `<generator name>` for a generator, and
+`Name(field: value, ...)` for a struct instance. (Built-ins deliberately do not expose their host-language
 identity: rendering them naively would print a Python repr complete with a
 memory address on one side and JavaScript source text on the other.)
 
@@ -631,7 +682,7 @@ memory address on one side and JavaScript source text on the other.)
 
 | Function | Signature | Notes |
 |---|---|---|
-| `len(x)` | `(array\|object\|string) -> number` | |
+| `len(x)` | `(array\|object\|string\|struct) -> number` | a struct instance counts its fields |
 | `push(arr, v)` | `(array, any) -> any` | mutates `arr`, returns `v` |
 | `pop(arr)` | `(array) -> any` | mutates `arr`; error if empty |
 | `slice(arr, start, end?)` | `(array, number, number?) -> array` | negative indices count from the end, like Python |
@@ -647,6 +698,8 @@ memory address on one side and JavaScript source text on the other.)
 | `count(arr, v)` | `(array, any) -> number` | structural equality |
 | `sum(arr)` | `(array) -> number` | error if any element isn't a number; `sum([])` is `0` |
 | `range(end)` / `range(start, end)` / `range(start, end, step)` | `(number, number?, number?) -> array` | half-open, like Python; `step` may be negative but not `0` |
+| `toArray(x)` | `(iterable) -> array` | materialises an array, string, object's keys, or a generator |
+| `take(x, n)` | `(iterable, number) -> array` | the first `n` items; safe on an endless generator |
 
 ### Higher-order
 
@@ -721,6 +774,189 @@ Raw generator output is a fraction with a 2^32 denominator; prefer
 because it avoids relying on float-formatting agreement between the two
 runtimes.
 
+## Destructuring
+
+Anywhere a name is bound — `var`, a function parameter, a `for`-`in` loop
+variable, a `catch` clause — a *pattern* may take the value apart instead.
+
+```mrt
+var [first, ...rest] = [1, 2, 3];
+var {name, role = "unknown"} = person;
+
+func distance([x1, y1], [x2, y2]) { ... }
+for ([key, value] in pairs) { ... }
+try { ... } catch ({kind, message}) { ... }
+```
+
+### Array patterns
+
+- Bind positionally. **Extra elements are ignored**: `[a]` happily matches a
+  three-element array, because a pattern names what it wants.
+- `...rest` collects the remainder into an array, empty rather than `null`
+  when there is nothing left. It must be last.
+- A slot with no corresponding element is an error unless it has a default
+  (`[a, b = 0]`).
+- Destructuring a non-array with an array pattern is a `TypeError`.
+
+### Object patterns
+
+- `{name}` is shorthand for `{name: name}`; `{name: local}` binds under a
+  different name; `{name = "anon"}` supplies a default.
+- `...rest` collects the *unlisted* keys into a new object.
+- A missing key without a default is a `KeyError`.
+- The value may be a plain object **or a struct instance**, whose fields
+  (not its methods) are what gets read.
+
+### Everywhere else
+
+- Patterns nest arbitrarily: `var [{id}, [inner]] = ...`.
+- A whole pattern may carry a default, which matters for parameters:
+  `func f({x} = {x: 5})`.
+- A `for`-`in` pattern still binds afresh each iteration, so closures made
+  in the body capture that iteration's values.
+- `var` with a non-name pattern **requires** an initializer; `var [a, b];`
+  is a syntax error.
+- `export var` requires a plain name, since a destructuring declaration
+  binds several at once.
+
+Destructuring is strict on purpose. The alternative — quietly binding
+`null` for anything absent — turns a typo'd key into a value that fails
+somewhere else entirely, which is exactly what the language's
+raise-early rules exist to avoid.
+
+## Structs
+
+A `struct` declares a named type with a fixed set of fields and the methods
+that operate on them.
+
+```mrt
+struct Point {
+    x, y;
+
+    func magnitude() { return sqrt(this.x * this.x + this.y * this.y); }
+    func scaled(k) { return Point(this.x * k, this.y * k); }
+}
+
+var p = Point(3, 4);
+print(p.magnitude());        // 5
+print(p);                    // Point(x: 3, y: 4)
+print(type(p));              // Point
+```
+
+- **Fields** are declared as a comma-separated run, each optionally with a
+  default. A default is evaluated at construction time in a scope where the
+  fields to its left are bound, so `struct C { host, url = "http://${host}"; }`
+  works. A field without a default may not follow one with a default.
+- **Construction** is the struct name applied to positional field values:
+  `Point(3, 4)`. Arity is checked exactly as for a function call.
+- **Methods** are ordinary functions — defaults, rest parameters and
+  generators all work — that additionally see `this` bound to the receiver.
+  A method read off an instance (`var m = p.magnitude;`) stays bound to it.
+- **Fields are mutable but fixed**: `p.x = 6` is fine, `p.z = 1` is a
+  `KeyError`. A struct is a shape, not a bag.
+- **Equality** is structural *and* per-struct: two instances are equal when
+  they share a struct and every field matches. An instance never equals a
+  plain object, even one with the same keys.
+- **`type()`** returns the struct's own name for an instance and `"struct"`
+  for the type itself.
+- Struct declarations are **hoisted** alongside functions, so they may refer
+  to one another in any order, and they can be `export`ed.
+- `keys`, `values`, `has`, `get`, `len` and object destructuring all treat
+  an instance as its fields — methods are deliberately not included, so
+  those built-ins describe the data.
+
+There is no inheritance, no visibility modifiers and no user-defined
+operators. A struct is the smallest thing that gives a value a name and a
+guaranteed shape.
+
+## Pattern matching
+
+`match` dispatches on a value's *shape*, binding as it goes.
+
+```mrt
+match (shape) {
+    case Circle(r):                    return 3.14159 * r * r;
+    case Rect(w, h):                   return w * h;
+    case [x, y]:                       return x * y;
+    case {kind: "error", message: m}:  return m;
+    case n if (n > 100):               return "big";
+    case n:                            return "other";
+    default:                           return "nothing matched";
+}
+```
+
+Cases are tried in order and the **first** whose pattern fits, and whose
+guard passes, runs. There is **no fall-through**, so no `break` is needed.
+
+### Pattern kinds
+
+| Pattern | Matches |
+|---|---|
+| `0`, `-1`, `"s"`, `true`, `null` | that value, by the same structural equality `==` uses |
+| `name` | anything, binding it to `name` |
+| `[a, b]` | an array of **exactly** that length, element-wise |
+| `[a, ...rest]` | an array of at least that length |
+| `{k: p, ...}` | an object **or struct instance** having at least those keys |
+| `Point(a, b)` | an instance of exactly that struct, fields in declaration order |
+
+Note the deliberate difference from destructuring: a *match* array pattern
+requires an exact length (unless it has a rest), because `case [x]:`
+silently swallowing every non-empty array would make matching useless. An
+*object* pattern stays partial, because listing every key of a large object
+to match on one of them would be worse.
+
+### Other rules
+
+- A **guard** is `case <pattern> if (expr):`, evaluated with the pattern's
+  bindings already in scope.
+- Bindings are **scoped to their case** and do not leak.
+- `default:` must be last, and there may be at most one.
+- **If nothing matches and there is no `default`, that is a runtime
+  error**, not a silent no-op. MRT cannot check exhaustiveness statically,
+  so it checks it at the moment it matters.
+- A struct pattern whose field count disagrees with the declaration is an
+  `ArityError`, and a name that isn't a struct is a `TypeError` — both are
+  program bugs rather than failed matches.
+
+## Generators
+
+A function whose body contains `yield` is a **generator function**. Calling
+it runs nothing; it returns a lazy sequence that computes each value only
+when something asks for it.
+
+```mrt
+func naturals() { var n = 0; while (true) { yield n; n += 1; } }
+func squares(source) { for (x in source) { yield x * x; } }
+
+print(take(naturals(), 5));            // [0, 1, 2, 3, 4]
+print(take(squares(naturals()), 4));   // [0, 1, 4, 9]
+```
+
+- **`yield` is a statement**, not an expression, and nothing is sent back
+  in. That restriction is what makes generators implementable in a
+  tree-walking interpreter without rewriting every expression path: only
+  statement execution has to be suspendable.
+- `yield` is legal inside `if`, `while`, `for`, `for`-`in`, `try`/`catch`/
+  `finally`, `match` and nested blocks. It is a syntax error outside a
+  function.
+- Whether a function is a generator is decided **at parse time**, and a
+  `yield` inside a *nested* function belongs to that inner function.
+- **`return` ends the sequence** (its value is discarded); falling off the
+  end does the same.
+- A generator is **single use**. Iterating one a second time is an error
+  rather than an empty loop, matching what the host languages do and
+  turning a silent bug into a loud one.
+- `for`-`in` pulls lazily, so `break` simply stops asking. Errors and
+  `throw`s propagate out to whatever is iterating, with the generator's
+  name added to `e.stack`.
+- A generator keeps its own scope across suspensions, so the consumer
+  running arbitrary code in between cannot disturb it.
+- Struct methods can be generators too.
+
+`toArray(x)` materialises any iterable into an array, and `take(x, n)`
+takes the first `n` — the latter being what makes an endless generator
+usable. Both also accept arrays, strings and objects.
+
 ## Modules
 
 A program may span several files. A file that uses `export` or `import` is
@@ -739,10 +975,16 @@ func main() { print(PI, sq(4)); }
 
 ### Rules
 
-- **`export` prefixes a `func` or `var` declaration.** The name still binds
-  normally inside its own module; `export` additionally records it in the
-  module's export table. There is no `export { a, b }` list and no default
-  export.
+- **`export` prefixes a `func`, `var` or `struct` declaration.** The name
+  still binds normally inside its own module; `export` additionally records
+  it in the module's export table. `export var` requires a plain name, not
+  a destructuring pattern.
+- **`export { a, b as c };`** re-exports names already declared in this
+  module, and **`export { a } from "./m.mrt";`** forwards another module's
+  export without binding it locally. There is still no default export.
+- **`import * as m from "./m.mrt";`** binds one ordinary MRT object holding
+  every export, so `m.thing`, `keys(m)` and destructuring all work on it
+  with no special rules. Private names are simply absent from it.
 - **`import { a, b as c } from "path";`** binds each named export into the
   importing file's top-level scope, optionally under a new name.
 - **Both are only legal at the top level of a file.** Inside any block —
@@ -874,6 +1116,26 @@ The parity checker exercises multi-file programs through both.
 - **A rest parameter is always an array, never `null`.** `f()` on
   `func f(...xs)` binds `xs` to `[]`. This differs from a defaulted
   parameter, which can be `null` if that is its default.
+- **A match array pattern is exact, a destructuring array pattern is
+  not.** `var [a] = [1, 2, 3]` binds `a` and ignores the rest, but
+  `case [a]:` does *not* match `[1, 2, 3]`. The two do different jobs:
+  destructuring says "give me this piece", matching asks "is it this
+  shape?".
+- **An object pattern matches a struct instance.** That is usually what you
+  want (`case {x, y}:` catches any point-like value), but it means a struct
+  pattern is the only way to insist on a *particular* struct.
+- **A struct's methods are invisible to `keys`/`values`/`has`/`get` and to
+  object destructuring.** Those describe a value's data. Use `p.method` to
+  reach a method, and note `has(p, "method")` is `false`.
+- **Field and parameter defaults are evaluated left to right at call
+  time**, so `struct C { a, b = a; }` works but `struct C { a = b, b; }`
+  does not — and the latter is already rejected, since a field without a
+  default cannot follow one that has one.
+- **A generator is single use, and `for`-`in` consumes it.** Iterating the
+  same generator value twice is an error; call the generator function again
+  to get a fresh sequence.
+- **`yield` cannot appear in an expression.** `var x = yield 1;` is a
+  syntax error. Generators produce values; they do not receive them.
 - **`sort()` without a comparator refuses mixed types.** JavaScript's
   default of coercing every element to a string and comparing
   lexicographically (so `[10, 9]` sorts to `[10, 9]`) is a well-known
@@ -886,12 +1148,19 @@ Deliberately not implemented in this revision (candidates for a future
 one, listed so a contributor doesn't have to guess whether an omission
 was an oversight):
 
-- User-defined types, classes, or structs.
+- Inheritance, interfaces or traits between structs; a struct is a flat
+  shape with methods and nothing more.
 - Integer vs. float distinction (everything numeric is a 64-bit float).
-- Iterator protocol / generators; `for`-`in` works on the three built-in
-  container types and nothing else.
-- Namespace imports (`import * as m from "..."`), default exports, and
-  re-exports. Only named imports of named exports exist.
-- Destructuring assignment (`var [a, b] = pair;`).
+- A user-implementable iterator protocol: `for`-`in` drives the built-in
+  containers and generators, and a struct cannot yet make itself iterable
+  except by exposing a generator method.
+- Two-way generators (`var x = yield v;`), generator delegation
+  (`yield*`), and lazy `map`/`filter` built-ins that return generators
+  rather than arrays.
+- Destructuring *assignment* to existing variables (`[a, b] = pair;`);
+  patterns only appear in declarations and bindings.
+- `match` as an expression rather than a statement, and exhaustiveness
+  checking.
+- Default exports and `export * from "..."`.
 - File I/O and date/time. `random` is seeded and deterministic by design,
   so there is deliberately no entropy source either.

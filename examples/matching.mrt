@@ -1,0 +1,74 @@
+// Pattern matching: branch on a value's *shape*, not just its equality.
+
+struct Circle { radius; }
+struct Rect { w, h; }
+struct Triangle { base, height; }
+
+func area(shape) {
+    match (shape) {
+        case Circle(r):        return round(3.14159 * r * r, 2);
+        case Rect(w, h):       return w * h;
+        case Triangle(b, h):   return b * h / 2;
+        default:               throw "not a shape: ${toString(shape)}";
+    }
+}
+
+func describe(value) {
+    match (value) {
+        case 0:                            return "zero";
+        case -1:                           return "minus one";
+        case null:                         return "nothing";
+        case true:                         return "yes";
+        case "":                           return "an empty string";
+        case []:                           return "an empty array";
+        case [only]:                       return "one item: ${only}";
+        case [a, b]:                       return "a pair: ${a} and ${b}";
+        case [head, ...tail]:              return "${head} then ${len(tail)} more";
+        case {kind: "error", message: m}:  return "an error: ${m}";
+        case {kind: k}:                    return "tagged ${k}";
+        case n if (type(n) == "number" && n > 1000): return "a big number";
+        case n if (type(n) == "number"):   return "the number ${n}";
+        case other:                        return "something else (${type(other)})";
+    }
+}
+
+func main() {
+    print("-- struct patterns --");
+    for (shape in [Circle(2), Rect(3, 4), Triangle(6, 5)]) {
+        print(type(shape), "->", area(shape));
+    }
+    try { area("nope"); } catch (e) { print("caught:", e); }
+
+    print("-- shape patterns --");
+    var samples = [
+        0, -1, null, true, "", [], [7], [1, 2], [1, 2, 3, 4],
+        {kind: "error", message: "disk full"}, {kind: "info"},
+        5000, 42, "hello"
+    ];
+    for (v in samples) { print(describe(v)); }
+
+    print("-- guards pick the first that fits --");
+    for (n in [-5, 0, 50, 5000]) {
+        match (n) {
+            case x if (x < 0):    print("${x}: negative");
+            case 0:               print("0: zero");
+            case x if (x > 1000): print("${x}: huge");
+            default:              print("${n}: ordinary");
+        }
+    }
+
+    print("-- nesting --");
+    var events = [
+        ["click", {x: 10, y: 20}],
+        ["key", {code: "Esc"}],
+        ["scroll", 3]
+    ];
+    for (event in events) {
+        match (event) {
+            case ["click", {x, y}]:   print("click at ${x},${y}");
+            case ["key", {code}]:     print("key ${code}");
+            case [name, payload]:     print("${name} with ${toString(payload)}");
+            default:                  print("unknown event");
+        }
+    }
+}

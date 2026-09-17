@@ -516,3 +516,192 @@ func main() {
 ```
 
 Full programs: `examples/modules.mrt` and `examples/lib/`.
+
+## Taking Values Apart
+
+### Destructuring in every binding position
+```mrt
+func main() {
+    var [first, ...rest] = [1, 2, 3, 4];
+    print(first, rest);
+
+    var {name, role = "unknown"} = {name: "Ada"};
+    print(name, role);
+
+    for ([label, count] in [["apples", 3], ["pears", 7]]) {
+        print("${label}: ${count}");
+    }
+
+    try {
+        var empty = [];
+        print(empty[0]);
+    } catch ({kind, message}) {
+        print("${kind} -- ${message}");
+    }
+}
+```
+
+### Destructured parameters
+```mrt
+func midpoint([x1, y1], [x2, y2]) {
+    return [(x1 + x2) / 2, (y1 + y2) / 2];
+}
+
+func greet({name, greeting = "Hello"}) {
+    return "${greeting}, ${name}!";
+}
+
+func main() {
+    print(midpoint([0, 0], [4, 6]));
+    print(greet({name: "Ada"}));
+    print(greet({name: "Bob", greeting: "Hi"}));
+}
+```
+
+## Structs
+
+### A type with behaviour
+```mrt
+struct Temperature {
+    celsius;
+
+    func fahrenheit() { return this.celsius * 9 / 5 + 32; }
+    func warmer(by) { return Temperature(this.celsius + by); }
+    func describe() {
+        if (this.celsius < 0) { return "freezing"; }
+        if (this.celsius < 15) { return "cold"; }
+        if (this.celsius < 25) { return "mild"; }
+        return "hot";
+    }
+}
+
+func main() {
+    var t = Temperature(18);
+    print(t, t.fahrenheit(), t.describe());
+    print(t.warmer(10).describe());
+}
+```
+
+### Records with defaults
+```mrt
+struct Task {
+    title, done = false, priority = "normal";
+
+    func summary() {
+        var mark = "[ ]";
+        if (this.done) { mark = "[x]"; }
+        return "${mark} ${this.title} (${this.priority})";
+    }
+}
+
+func main() {
+    var tasks = [
+        Task("write docs"),
+        Task("ship release", false, "high"),
+        Task("tidy desk", true)
+    ];
+    for (t in tasks) { print(t.summary()); }
+
+    var pending = filter(tasks, func(t) { return !t.done; });
+    print("pending:", len(pending));
+}
+```
+
+## Pattern Matching
+
+### Interpreting a small command language
+```mrt
+func run(command) {
+    match (command) {
+        case ["set", name, value]:  return "${name} = ${value}";
+        case ["get", name]:         return "read ${name}";
+        case ["add", a, b] if (type(a) == "number" && type(b) == "number"):
+                                    return "sum ${a + b}";
+        case ["add", ...args]:      return "cannot add ${toString(args)}";
+        case [verb, ...rest]:       return "unknown verb '${verb}'";
+        case []:                    return "empty command";
+        default:                    return "not a command";
+    }
+}
+
+func main() {
+    var commands = [
+        ["set", "x", 1], ["get", "x"], ["add", 2, 3],
+        ["add", "a", "b"], ["jump"], [], "nonsense"
+    ];
+    for (c in commands) { print(run(c)); }
+}
+```
+
+### Shapes, with structs
+```mrt
+struct Circle { radius; }
+struct Square { side; }
+
+func area(shape) {
+    match (shape) {
+        case Circle(r):  return round(3.14159 * r * r, 2);
+        case Square(s):  return s * s;
+        default:         throw "unsupported shape";
+    }
+}
+
+func main() {
+    for (s in [Circle(1), Square(3)]) { print(type(s), area(s)); }
+    try { area(42); } catch (e) { print("caught:", e); }
+}
+```
+
+## Generators
+
+### An endless sequence, used finitely
+```mrt
+func primes() {
+    var found = [];
+    var candidate = 2;
+    while (true) {
+        var isPrime = true;
+        for (p in found) {
+            if (p * p > candidate) { break; }
+            if (candidate % p == 0) { isPrime = false; break; }
+        }
+        if (isPrime) { push(found, candidate); yield candidate; }
+        candidate += 1;
+    }
+}
+
+func main() {
+    print(take(primes(), 10));
+}
+```
+
+### A pipeline that never materialises the middle
+```mrt
+func naturals() { var n = 0; while (true) { yield n; n += 1; } }
+func mapped(source, f) { for (x in source) { yield f(x); } }
+func kept(source, pred) { for (x in source) { if (pred(x)) { yield x; } } }
+
+func main() {
+    var tripled = mapped(naturals(), func(n) { return n * 3; });
+    var big = kept(tripled, func(n) { return n > 10; });
+    print(take(big, 5));
+}
+```
+
+### Walking a nested structure lazily
+```mrt
+func flattenDeep(value) {
+    if (type(value) != "array") { yield value; return; }
+    for (item in value) {
+        for (leaf in flattenDeep(item)) { yield leaf; }
+    }
+}
+
+func main() {
+    print(toArray(flattenDeep([1, [2, [3, [4, 5]]], 6])));
+    print(take(flattenDeep([1, [2, [3, [4, 5]]], 6]), 3));
+}
+```
+
+Full programs: `examples/destructuring.mrt`, `examples/structs.mrt`,
+`examples/matching.mrt` and `examples/generators.mrt`.

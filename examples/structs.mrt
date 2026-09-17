@@ -1,0 +1,60 @@
+// Structs: named types with fixed fields and methods.
+
+struct Point {
+    x, y;
+
+    func magnitude() { return sqrt(this.x * this.x + this.y * this.y); }
+    func scaled(k) { return Point(this.x * k, this.y * k); }
+    func plus(other) { return Point(this.x + other.x, this.y + other.y); }
+    func label(prefix = "P") { return "${prefix}(${this.x}, ${this.y})"; }
+}
+
+struct Account {
+    owner, balance = 0, currency = "GBP";
+
+    func deposit(amount) {
+        if (amount <= 0) { throw {kind: "BadAmount", amount: amount}; }
+        this.balance += amount;
+        return this.balance;
+    }
+    func describe() { return "${this.owner}: ${this.balance} ${this.currency}"; }
+}
+
+func main() {
+    print("-- construction --");
+    var p = Point(3, 4);
+    print(p);
+    print(p.x, p.y, type(p));
+
+    print("-- methods --");
+    print("magnitude:", p.magnitude());
+    print("scaled:", p.scaled(2));
+    print("plus:", p.plus(Point(1, 1)));
+    print(p.label(), p.label("Q"));
+
+    print("-- fields are mutable, but fixed --");
+    p.x = 6;
+    print(p);
+    try { p.z = 1; } catch (e) { print(e.kind, "|", e.message); }
+
+    print("-- defaults --");
+    var acct = Account("Ada");
+    print(acct.describe());
+    acct.deposit(250);
+    print(acct.describe());
+    try { acct.deposit(-5); } catch (e) { print("rejected:", e.kind, e.amount); }
+
+    print("-- equality is structural, per struct --");
+    print(Point(1, 2) == Point(1, 2), Point(1, 2) == Point(9, 9));
+    print(indexOf([Point(0, 0), Point(1, 2)], Point(1, 2)));
+
+    print("-- structs work with the rest of the language --");
+    var points = [Point(3, 4), Point(1, 1), Point(6, 8)];
+    var far = filter(points, func(q) { return q.magnitude() > 2; });
+    print(map(far, func(q) { return q.label(); }));
+
+    // keys/values/get see the data, not the methods.
+    print(keys(p), values(p));
+    var {x, y} = p;
+    print("destructured:", x, y);
+}

@@ -1,0 +1,67 @@
+// Generators: a function containing `yield` is lazy. Calling it runs
+// nothing -- it hands back a sequence that computes each value only when
+// something asks for it, so an endless sequence is perfectly usable.
+
+func naturals() {
+    var n = 0;
+    while (true) { yield n; n += 1; }
+}
+
+func fibonacci() {
+    var a = 0;
+    var b = 1;
+    while (true) {
+        yield a;
+        var next = a + b;
+        a = b;
+        b = next;
+    }
+}
+
+// Generators that consume generators: each stage pulls one value at a time,
+// so nothing in the middle is ever materialised.
+func mapped(source, f) { for (x in source) { yield f(x); } }
+func kept(source, pred) { for (x in source) { if (pred(x)) { yield x; } } }
+func until(source, pred) { for (x in source) { if (!pred(x)) { return; } yield x; } }
+
+func lines(text) { for (line in split(text, "\n")) { yield trim(line); } }
+
+func main() {
+    print("-- finite --");
+    for (v in countdown(3)) { print(v); }
+
+    print("-- endless, consumed finitely --");
+    print("first 8 naturals:", take(naturals(), 8));
+    print("first 10 fibonacci:", take(fibonacci(), 10));
+
+    print("-- a streaming pipeline --");
+    var squaresUnder200 = until(mapped(naturals(), func(n) { return n * n; }),
+                                func(n) { return n < 200; });
+    print(toArray(squaresUnder200));
+
+    var evenFibs = take(kept(fibonacci(), func(n) { return n % 2 == 0; }), 6);
+    print("even fibonacci:", evenFibs);
+
+    print("-- break stops the source --");
+    var seen = [];
+    for (n in naturals()) {
+        if (len(seen) == 4) { break; }
+        push(seen, n * 10);
+    }
+    print(seen);
+
+    print("-- generators are single use --");
+    var once = countdown(2);
+    print(toArray(once));
+    try { toArray(once); } catch (e) { print(e.kind, "|", e.message); }
+
+    print("-- practical: walk text lazily --");
+    var text = "  alpha \n beta \n  gamma ";
+    for (line in lines(text)) { print("[${line}]"); }
+}
+
+func countdown(start) {
+    var n = start;
+    while (n > 0) { yield n; n -= 1; }
+    yield "liftoff";
+}
