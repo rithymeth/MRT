@@ -9,6 +9,8 @@ resolver = "2"
 members = [
     "crates/mrt-diagnostics",
     "crates/mrt-lexer",
+    "crates/mrt-ast",
+    "crates/mrt-parser",
     "cli",
 ]
 

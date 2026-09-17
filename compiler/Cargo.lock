@@ -3,11 +3,21 @@
 version = 3
 
 [[package]]
-name = "mrt-check"
+name = "mrt-ast"
 version = "0.1.0"
 dependencies = [
  "mrt-diagnostics",
  "mrt-lexer",
+]
+
+[[package]]
+name = "mrt-check"
+version = "0.1.0"
+dependencies = [
+ "mrt-ast",
+ "mrt-diagnostics",
+ "mrt-lexer",
+ "mrt-parser",
 ]
 
 [[package]]
@@ -19,4 +29,13 @@ name = "mrt-lexer"
 version = "0.1.0"
 dependencies = [
  "mrt-diagnostics",
+]
+
+[[package]]
+name = "mrt-parser"
+version = "0.1.0"
+dependencies = [
+ "mrt-ast",
+ "mrt-diagnostics",
+ "mrt-lexer",
 ]

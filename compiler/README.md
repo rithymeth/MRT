@@ -1,8 +1,8 @@
 # The MRT 2.0 compiler frontend
 
-A new frontend for MRT, written in Rust. This is **Phase 1**: lexer, and next
-parser and resolver. There is no evaluator here yet, and the MRT 1.x Python
-and TypeScript interpreters remain the implementations that actually run
+A new frontend for MRT, written in Rust. This is **Phase 1**: lexer, AST and
+parser, with the resolver next. There is no evaluator here yet, and the MRT 1.x
+Python and TypeScript interpreters remain the implementations that actually run
 programs.
 
 ## Why this exists
@@ -40,19 +40,34 @@ about what MRT *is*. It is not a chance to quietly improve the language.
 
 `scripts/check-frontend-conformance.py` feeds every bundled example, every
 inline snippet in the interpreter parity checker, every Playground example and
-a set of hand-written lexer edge cases through **both** frontends and requires
+a set of hand-written edge cases through **both** frontends and requires
 byte-identical results — including identical rejections, with identical
-messages and line numbers.
+messages and line numbers, and including files that produce *several* errors.
+
+Every input is checked at two levels:
+
+* **Tokens** catch lexer divergence.
+* **ASTs** catch the far larger class of parser divergence, where two
+  frontends tokenise a program identically and then disagree about what it
+  means.
 
 ```bash
 cargo build --manifest-path compiler/Cargo.toml
 python3 scripts/check-frontend-conformance.py
 ```
 
-The harness has been mutation-tested: breaking the Rust lexer in three
-plausible ways (a bare `.` continuing a number, stamping tokens with their
-start line, dropping the backslash on an unrecognised escape) makes 2, 44 and
-1 checks fail respectively. A harness that cannot fail is not a harness.
+The harness has been mutation-tested at both levels, because a harness that
+cannot fail is not a harness:
+
+| Broken deliberately | Checks failed |
+|---|---|
+| A bare `.` continues a number | 2 |
+| Tokens stamped with their start line | 44 |
+| Unrecognised escape drops its backslash | 1 |
+| Binary operands swapped | 84 |
+| A leading `{` never opens a pattern | 18 |
+| The generator flag is never set | 32 |
+| `a.b` not desugared to `a["b"]` | 57 |
 
 Three inherited behaviours are deliberate, and each looks like a bug until you
 try to change it:
@@ -70,7 +85,9 @@ try to change it:
 compiler/
 ├── crates/
 │   ├── mrt-diagnostics/   spans, source maps, two error renderers
-│   └── mrt-lexer/         tokens and the scanner
+│   ├── mrt-lexer/         tokens and the scanner
+│   ├── mrt-ast/           the tree, and its canonical dump format
+│   └── mrt-parser/        recursive descent, with error recovery
 └── cli/                   mrt-check, the frontend driver
 ```
 
@@ -91,12 +108,26 @@ cargo fmt --manifest-path compiler/Cargo.toml --all --check
 
 mrt-check FILE                 # rich diagnostics
 mrt-check --dump-tokens FILE   # canonical token stream
+mrt-check --dump-ast FILE      # canonical AST
 mrt-check --compat FILE        # MRT 1.x error text, byte for byte
 ```
 
+`--compat` selects the *error format* and composes with either dump, which is
+how the harness gets a machine-comparable tree and comparable error text in
+one run.
+
+## Spans are the part conformance cannot check
+
+The Python parser has no spans, so nothing in the conformance harness can tell
+whether a span is *right* — only that the tree shape matches. Span correctness
+is therefore covered by Rust unit tests instead, including the awkward case: an
+expression inside a `${...}` run is parsed from a detached fragment, and its
+spans have to be shifted back onto the real file or every diagnostic inside a
+template points at the wrong place.
+
 ## What is not here yet
 
-The parser, the resolver, and everything downstream of them. The 314
-behavioural tests and 146 interpreter parity cases are the gate for a backend
-that can run programs; they cannot be applied to a frontend that produces no
-output, so token- and later AST-level conformance is what Phase 1 is held to.
+The resolver, and everything downstream of it. The 314 behavioural tests and
+146 interpreter parity cases are the gate for a backend that can run programs;
+they cannot be applied to a frontend that produces no output, so token- and
+AST-level conformance is what Phase 1 is held to.

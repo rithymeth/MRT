@@ -1,0 +1,13 @@
+[package]
+name = "mrt-ast"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mrt-diagnostics = { path = "../mrt-diagnostics" }
+mrt-lexer = { path = "../mrt-lexer" }
+
+[lints]
+workspace = true
