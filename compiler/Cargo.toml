@@ -1,0 +1,26 @@
+# The MRT 2.0 compiler frontend.
+#
+# Deliberately zero external dependencies: a hand-written lexer, parser and
+# resolver need none, and a hermetic build keeps `cargo test` usable in CI
+# and offline. Add a dependency only when it pays for the supply chain it
+# brings with it.
+[workspace]
+resolver = "2"
+members = [
+    "crates/mrt-diagnostics",
+    "crates/mrt-lexer",
+    "cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = true
+panic = "abort"

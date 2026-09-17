@@ -52,3 +52,6 @@ npm-debug.log*
 .coverage
 htmlcov/
 
+
+# Rust build output for the MRT 2.0 frontend
+compiler/target/

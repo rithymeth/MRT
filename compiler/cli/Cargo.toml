@@ -1,0 +1,17 @@
+[package]
+name = "mrt-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mrt-check"
+path = "src/main.rs"
+
+[dependencies]
+mrt-diagnostics = { path = "../crates/mrt-diagnostics" }
+mrt-lexer = { path = "../crates/mrt-lexer" }
+
+[lints]
+workspace = true
