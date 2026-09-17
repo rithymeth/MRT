@@ -172,7 +172,7 @@ def test_export_is_only_allowed_at_the_top_level():
 def test_export_requires_a_declaration():
     output, errors = run_mrt('export 5;\nfunc main() { }')
     assert errors != []
-    assert "Expect a 'func' or 'var' declaration after 'export'" in errors[0].message
+    assert "Expect a 'func', 'var' or 'struct' declaration" in errors[0].message
 
 
 def test_importing_without_a_file_path_is_a_clear_error():

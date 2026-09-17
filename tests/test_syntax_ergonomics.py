@@ -203,7 +203,8 @@ def test_for_in_loop_variable_does_not_leak():
 def test_for_in_rejects_a_non_iterable():
     output, errors = run_mrt('func main() { for (x in 5) { print(x); } }')
     assert errors == []
-    assert any("Can only iterate over an array, string, or object." in line for line in output)
+    assert any("Can only iterate over an array, string, object, or generator." in line
+               for line in output)
 
 
 def test_c_style_for_loop_still_parses():

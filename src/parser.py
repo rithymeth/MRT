@@ -21,6 +21,9 @@ class Parser:
         # `import`/`export` are only meaningful at the top level of a file,
         # so the parser tracks how deep into blocks it currently is.
         self.block_depth = 0
+        # One flag per function body being parsed, set when a `yield` is
+        # seen, so a function knows at parse time whether it is a generator.
+        self.function_yields: List[bool] = []
 
     def parse(self) -> List[Stmt]:
         statements = []
@@ -42,6 +45,8 @@ class Parser:
             if self.check(TokenType.FUNC) and self.check_next(TokenType.IDENTIFIER):
                 self.advance()
                 return self.function("function")
+            if self.match(TokenType.STRUCT):
+                return self.struct_declaration()
             if self.match(TokenType.VAR):
                 return self.var_declaration()
             return self.statement()
@@ -54,6 +59,16 @@ class Parser:
         keyword = self.previous()
         if self.block_depth > 0:
             raise self.error(keyword, "'import' is only allowed at the top level of a file.")
+
+        # `import * as name from "..."` -- one object holding every export.
+        if self.match(TokenType.MULTIPLY):
+            self.consume(TokenType.AS, "Expect 'as' after '*' in an import.")
+            alias = self.consume(TokenType.IDENTIFIER, "Expect a name after 'as'.")
+            self.consume(TokenType.FROM, "Expect 'from' after the import name.")
+            specifier = self.consume(TokenType.STRING,
+                                     "Expect a module path string after 'from'.")
+            self.consume_statement_end("Expect ';' after import.")
+            return Import([], specifier, keyword, alias)
 
         self.consume(TokenType.LBRACE, "Expect '{' after 'import'.")
         names: List[tuple] = []
@@ -78,21 +93,191 @@ class Parser:
         if self.block_depth > 0:
             raise self.error(keyword, "'export' is only allowed at the top level of a file.")
 
+        # `export { a, b as c };` or `export { a } from "./m.mrt";`
+        if self.check(TokenType.LBRACE):
+            self.advance()
+            names: List[tuple] = []
+            if not self.check(TokenType.RBRACE):
+                while True:
+                    local = self.consume(TokenType.IDENTIFIER, "Expect an exported name.")
+                    exported = local
+                    if self.match(TokenType.AS):
+                        exported = self.consume(TokenType.IDENTIFIER,
+                                                "Expect a name after 'as'.")
+                    names.append((local, exported))
+                    if not self.match(TokenType.COMMA):
+                        break
+            self.consume(TokenType.RBRACE, "Expect '}' after exported names.")
+
+            specifier = None
+            if self.match(TokenType.FROM):
+                specifier = self.consume(TokenType.STRING,
+                                         "Expect a module path string after 'from'.")
+            self.consume_statement_end("Expect ';' after export.")
+            return ExportNames(names, specifier, keyword)
+
+        if self.match(TokenType.STRUCT):
+            declaration = self.struct_declaration()
+            return Export(declaration, declaration.name)
+
         if self.check(TokenType.FUNC) and self.check_next(TokenType.IDENTIFIER):
             self.advance()
             declaration = self.function("function")
             return Export(declaration, declaration.name)
         if self.match(TokenType.VAR):
             declaration = self.var_declaration()
-            return Export(declaration, declaration.name)
-        raise self.error(self.peek(), "Expect a 'func' or 'var' declaration after 'export'.")
+            if not isinstance(declaration.pattern, NamePattern):
+                raise self.error(keyword,
+                                 "Only a plain `var name` can be exported, not a destructuring one.")
+            return Export(declaration, declaration.pattern.name)
+        raise self.error(self.peek(),
+                         "Expect a 'func', 'var' or 'struct' declaration, "
+                         "or '{ names }', after 'export'.")
+
+    def struct_declaration(self) -> StructDecl:
+        """`struct Name { fieldList; methods... }`.
+
+        Fields and methods may be interleaved; a member starting with `func`
+        is a method and anything else is a comma-separated run of field
+        names, each optionally with a default."""
+        name = self.consume(TokenType.IDENTIFIER, "Expect struct name.")
+        self.consume(TokenType.LBRACE, "Expect '{' before struct body.")
+
+        fields: List[Param] = []
+        methods: List[Function] = []
+        seen_default = False
+
+        self.block_depth += 1
+        try:
+            while not self.check(TokenType.RBRACE) and not self.is_at_end():
+                if self.check(TokenType.FUNC):
+                    self.advance()
+                    methods.append(self.function("method"))
+                    continue
+
+                while True:
+                    field = self.consume(TokenType.IDENTIFIER,
+                                         "Expect a field name or a 'func' method.")
+                    default = None
+                    if self.match(TokenType.ASSIGN):
+                        default = self.expression()
+                        seen_default = True
+                    elif seen_default:
+                        raise self.error(
+                            field,
+                            "A field without a default can't follow one with a default value.")
+                    fields.append(Param(NamePattern(field, default), False))
+                    if not self.match(TokenType.COMMA):
+                        break
+                self.consume_statement_end("Expect ';' after struct fields.")
+        finally:
+            self.block_depth -= 1
+
+        self.consume(TokenType.RBRACE, "Expect '}' after struct body.")
+
+        names = [f.pattern.name.lexeme for f in fields]
+        if len(set(names)) != len(names):
+            raise self.error(name, f"Struct '{name.lexeme}' has a duplicate field name.")
+        method_names = [m.name.lexeme for m in methods]
+        if len(set(method_names)) != len(method_names):
+            raise self.error(name, f"Struct '{name.lexeme}' has a duplicate method name.")
+        clash = set(names) & set(method_names)
+        if clash:
+            raise self.error(
+                name,
+                f"Struct '{name.lexeme}' has a field and a method both named "
+                f"'{sorted(clash)[0]}'.")
+
+        return StructDecl(name, fields, methods)
 
     def function(self, kind: str) -> Function:
         name = self.consume(TokenType.IDENTIFIER, f"Expect {kind} name.")
         parameters = self.parameter_list(f"Expect '(' after {kind} name.")
         self.consume(TokenType.LBRACE, f"Expect '{{' before {kind} body.")
-        body = self.block()
-        return Function(name, parameters, body)
+        self.function_yields.append(False)
+        try:
+            body = self.block()
+            is_generator = self.function_yields[-1]
+        finally:
+            self.function_yields.pop()
+        return Function(name, parameters, body, is_generator)
+
+    # -- Binding patterns --------------------------------------------------
+
+    def binding_pattern(self, what: str) -> Pattern:
+        """Parse the left-hand side of a binding: a name, `[...]` or `{...}`.
+
+        `what` names the construct for error messages ("variable name",
+        "parameter name", ...) so a malformed pattern still reads like the
+        error the simple case would have produced."""
+        if self.starts_pattern():
+            if self.check(TokenType.LBRACKET):
+                return self.array_pattern()
+            return self.object_pattern()
+        name = self.consume(TokenType.IDENTIFIER, f"Expect {what}.")
+        return NamePattern(name, self.pattern_default())
+
+    def starts_pattern(self) -> bool:
+        """Whether the next tokens really open a destructuring pattern.
+
+        A bare `[` or `{` isn't enough: `func main( {` is a missing paren, not
+        an object pattern, and treating it as one would drag the syntax error
+        onto whatever line the brace's contents happen to start on. Requiring
+        a plausible first element keeps that error where the mistake is."""
+        if self.check(TokenType.LBRACKET):
+            return (self.check_next(TokenType.IDENTIFIER)
+                    or self.check_next(TokenType.RBRACKET)
+                    or self.check_next(TokenType.ELLIPSIS)
+                    or self.check_next(TokenType.LBRACKET)
+                    or self.check_next(TokenType.LBRACE))
+        if self.check(TokenType.LBRACE):
+            return (self.check_next(TokenType.IDENTIFIER)
+                    or self.check_next(TokenType.RBRACE)
+                    or self.check_next(TokenType.ELLIPSIS))
+        return False
+
+    def pattern_default(self) -> Optional[Expr]:
+        if self.match(TokenType.ASSIGN):
+            return self.expression()
+        return None
+
+    def array_pattern(self) -> ArrayPattern:
+        token = self.consume(TokenType.LBRACKET, "Expect '[' to start a pattern.")
+        elements: List[Pattern] = []
+        rest = None
+        if not self.check(TokenType.RBRACKET):
+            while True:
+                if self.match(TokenType.ELLIPSIS):
+                    rest = self.consume(TokenType.IDENTIFIER,
+                                        "Expect a name after '...' in a pattern.")
+                    break
+                elements.append(self.binding_pattern("a name in the pattern"))
+                if not self.match(TokenType.COMMA):
+                    break
+        self.consume(TokenType.RBRACKET, "Expect ']' after array pattern.")
+        return ArrayPattern(elements, rest, self.pattern_default(), token)
+
+    def object_pattern(self) -> ObjectPattern:
+        token = self.consume(TokenType.LBRACE, "Expect '{' to start a pattern.")
+        entries: List[tuple] = []
+        rest = None
+        if not self.check(TokenType.RBRACE):
+            while True:
+                if self.match(TokenType.ELLIPSIS):
+                    rest = self.consume(TokenType.IDENTIFIER,
+                                        "Expect a name after '...' in a pattern.")
+                    break
+                key = self.consume(TokenType.IDENTIFIER, "Expect a key name in the pattern.")
+                if self.match(TokenType.COLON):
+                    # `{key: <pattern>}` -- bind the key to something else.
+                    entries.append((key.lexeme, self.binding_pattern("a name in the pattern")))
+                else:
+                    # `{key}` shorthand, optionally `{key = default}`.
+                    entries.append((key.lexeme, NamePattern(key, self.pattern_default())))
+                if not self.match(TokenType.COMMA):
+                    break
+        self.consume(TokenType.RBRACE, "Expect '}' after object pattern.")
+        return ObjectPattern(entries, rest, self.pattern_default(), token)
 
     def parameter_list(self, lparen_message: str) -> List[Param]:
         """Parse `(a, b = expr, ...rest)`.
@@ -116,22 +301,22 @@ class Parser:
                                      "A rest parameter must be the last parameter.")
 
                 is_rest = self.match(TokenType.ELLIPSIS)
-                name = self.consume(TokenType.IDENTIFIER, "Expect parameter name.")
-
-                default = None
                 if is_rest:
                     seen_rest = True
+                    name = self.consume(TokenType.IDENTIFIER, "Expect parameter name.")
                     if self.check(TokenType.ASSIGN):
                         raise self.error(self.peek(),
                                          "A rest parameter can't have a default value.")
-                elif self.match(TokenType.ASSIGN):
-                    default = self.expression()
-                    seen_default = True
-                elif seen_default:
-                    raise self.error(name,
-                                     "A required parameter can't follow one with a default value.")
-
-                parameters.append(Param(name, default, is_rest))
+                    parameters.append(Param(NamePattern(name), True))
+                else:
+                    start = self.peek()
+                    pattern = self.binding_pattern("parameter name")
+                    if pattern.default is not None:
+                        seen_default = True
+                    elif seen_default:
+                        raise self.error(start,
+                                         "A required parameter can't follow one with a default value.")
+                    parameters.append(Param(pattern, False))
                 if not self.match(TokenType.COMMA):
                     break
 
@@ -147,8 +332,13 @@ class Parser:
             name = self.advance()
         parameters = self.parameter_list("Expect '(' after 'func'.")
         self.consume(TokenType.LBRACE, "Expect '{' before function body.")
-        body = self.block()
-        return FunctionExpr(parameters, body, name)
+        self.function_yields.append(False)
+        try:
+            body = self.block()
+            is_generator = self.function_yields[-1]
+        finally:
+            self.function_yields.pop()
+        return FunctionExpr(parameters, body, name, is_generator)
 
     def statement(self) -> Stmt:
         if self.match(TokenType.FOR):
@@ -163,10 +353,14 @@ class Parser:
             return self.break_statement()
         if self.match(TokenType.CONTINUE):
             return self.continue_statement()
+        if self.match(TokenType.MATCH):
+            return self.match_statement()
         if self.match(TokenType.TRY):
             return self.try_statement()
         if self.match(TokenType.THROW):
             return self.throw_statement()
+        if self.match(TokenType.YIELD):
+            return self.yield_statement()
         if self.match(TokenType.LBRACE):
             return Block(self.block())
         if self.match(TokenType.PRINT):
@@ -180,18 +374,11 @@ class Parser:
         # C-style three-clause form below is untouched. Both spellings mean
         # the same thing; `var` is allowed because it reads naturally and
         # because the loop variable really is a fresh binding each time.
-        if (self.check(TokenType.IDENTIFIER) and self.check_next(TokenType.IN)) or \
-           (self.check(TokenType.VAR) and self.check_next(TokenType.IDENTIFIER)):
-            saved = self.current
-            self.match(TokenType.VAR)
-            if self.check(TokenType.IDENTIFIER) and self.check_next(TokenType.IN):
-                name = self.advance()
-                self.advance()  # consume 'in'
-                iterable = self.expression()
-                self.consume(TokenType.RPAREN, "Expect ')' after for-in iterable.")
-                body = self.statement()
-                return ForIn(name, iterable, body)
-            self.current = saved
+        saved = self.current
+        for_in = self.try_for_in()
+        if for_in is not None:
+            return for_in
+        self.current = saved
 
         # Initializer
         initializer = None
@@ -220,6 +407,29 @@ class Parser:
         # that `continue` inside the body still runs the increment step
         # before re-checking the condition.
         return For(initializer, condition, increment, body)
+
+    def try_for_in(self) -> Optional[ForIn]:
+        """Attempt to parse the `for (<pattern> in expr)` form.
+
+        Returns None (with the caller restoring the token position) when this
+        is really the C-style three-clause loop. A pattern can start with `[`
+        or `{`, which no C-style initializer does, so speculative parsing is
+        simpler here than deeper lookahead -- and cheap, since it bails at the
+        first token that doesn't fit."""
+        keyword = self.previous()
+        self.match(TokenType.VAR)
+        if not (self.check(TokenType.IDENTIFIER) or self.starts_pattern()):
+            return None
+        try:
+            pattern = self.binding_pattern("loop variable name")
+        except ParseError:
+            return None
+        if pattern.default is not None or not self.match(TokenType.IN):
+            return None
+        iterable = self.expression()
+        self.consume(TokenType.RPAREN, "Expect ')' after for-in iterable.")
+        body = self.statement()
+        return ForIn(pattern, iterable, keyword, body)
 
     def if_statement(self) -> If:
         self.consume(TokenType.LPAREN, "Expect '(' after 'if'.")
@@ -267,6 +477,128 @@ class Parser:
         self.consume_statement_end("Expect ';' after 'continue'.")
         return Continue(keyword)
 
+    # -- match --------------------------------------------------------------
+
+    def match_statement(self) -> Match:
+        keyword = self.previous()
+        self.consume(TokenType.LPAREN, "Expect '(' after 'match'.")
+        subject = self.expression()
+        self.consume(TokenType.RPAREN, "Expect ')' after the match subject.")
+        self.consume(TokenType.LBRACE, "Expect '{' before match cases.")
+
+        cases: List[MatchCase] = []
+        seen_default = False
+        self.block_depth += 1
+        try:
+            while not self.check(TokenType.RBRACE) and not self.is_at_end():
+                if self.match(TokenType.DEFAULT):
+                    case_keyword = self.previous()
+                    if seen_default:
+                        raise self.error(case_keyword, "A match can only have one 'default'.")
+                    seen_default = True
+                    self.consume(TokenType.COLON, "Expect ':' after 'default'.")
+                    cases.append(MatchCase(None, None, self.case_body(), case_keyword))
+                    continue
+
+                self.consume(TokenType.CASE, "Expect 'case' or 'default' in a match.")
+                case_keyword = self.previous()
+                if seen_default:
+                    raise self.error(case_keyword, "'default' must be the last clause of a match.")
+                pattern = self.match_pattern()
+                guard = None
+                if self.match(TokenType.IF):
+                    self.consume(TokenType.LPAREN, "Expect '(' after 'if' in a case guard.")
+                    guard = self.expression()
+                    self.consume(TokenType.RPAREN, "Expect ')' after the case guard.")
+                self.consume(TokenType.COLON, "Expect ':' after the case pattern.")
+                cases.append(MatchCase(pattern, guard, self.case_body(), case_keyword))
+        finally:
+            self.block_depth -= 1
+
+        self.consume(TokenType.RBRACE, "Expect '}' after match cases.")
+        if not cases:
+            raise self.error(keyword, "A match needs at least one case.")
+        return Match(subject, cases, keyword)
+
+    def case_body(self) -> List[Stmt]:
+        """Statements up to the next `case`/`default`/`}`.
+
+        There is no fall-through, so a case ends where the next one begins and
+        needs no `break`."""
+        statements: List[Stmt] = []
+        while not (self.check(TokenType.CASE) or self.check(TokenType.DEFAULT)
+                   or self.check(TokenType.RBRACE) or self.is_at_end()):
+            stmt = self.declaration()
+            if stmt:
+                statements.append(stmt)
+        return statements
+
+    def match_pattern(self) -> MatchPattern:
+        # Literals match by value.
+        if self.match(TokenType.NUMBER, TokenType.STRING):
+            return LiteralMatch(self.previous().literal)
+        if self.match(TokenType.TRUE):
+            return LiteralMatch(True)
+        if self.match(TokenType.FALSE):
+            return LiteralMatch(False)
+        if self.match(TokenType.NULL):
+            return LiteralMatch(None)
+        if self.match(TokenType.MINUS):
+            number = self.consume(TokenType.NUMBER, "Expect a number after '-' in a pattern.")
+            return LiteralMatch(-number.literal)
+
+        if self.check(TokenType.LBRACKET):
+            return self.array_match()
+        if self.check(TokenType.LBRACE):
+            return self.object_match()
+
+        if self.check(TokenType.IDENTIFIER):
+            name = self.advance()
+            if self.match(TokenType.LPAREN):
+                # `Point(x, y)` -- an instance of that struct.
+                elements: List[MatchPattern] = []
+                if not self.check(TokenType.RPAREN):
+                    while True:
+                        elements.append(self.match_pattern())
+                        if not self.match(TokenType.COMMA):
+                            break
+                self.consume(TokenType.RPAREN, "Expect ')' after struct pattern fields.")
+                return StructMatch(name, elements)
+            return BindMatch(name)
+
+        raise self.error(self.peek(), "Expect a pattern after 'case'.")
+
+    def array_match(self) -> ArrayMatch:
+        token = self.consume(TokenType.LBRACKET, "Expect '[' to start a pattern.")
+        elements: List[MatchPattern] = []
+        rest = None
+        if not self.check(TokenType.RBRACKET):
+            while True:
+                if self.match(TokenType.ELLIPSIS):
+                    rest = self.consume(TokenType.IDENTIFIER,
+                                        "Expect a name after '...' in a pattern.")
+                    break
+                elements.append(self.match_pattern())
+                if not self.match(TokenType.COMMA):
+                    break
+        self.consume(TokenType.RBRACKET, "Expect ']' after array pattern.")
+        return ArrayMatch(elements, rest, token)
+
+    def object_match(self) -> ObjectMatch:
+        token = self.consume(TokenType.LBRACE, "Expect '{' to start a pattern.")
+        entries: List[tuple] = []
+        if not self.check(TokenType.RBRACE):
+            while True:
+                key = self.consume(TokenType.IDENTIFIER, "Expect a key name in the pattern.")
+                if self.match(TokenType.COLON):
+                    entries.append((key.lexeme, self.match_pattern()))
+                else:
+                    entries.append((key.lexeme, BindMatch(key)))
+                if not self.match(TokenType.COMMA):
+                    break
+        self.consume(TokenType.RBRACE, "Expect '}' after object pattern.")
+        return ObjectMatch(entries, token)
+
     def try_statement(self) -> Try:
         keyword = self.previous()
         self.consume(TokenType.LBRACE, "Expect '{' after 'try'.")
@@ -275,7 +607,7 @@ class Parser:
         catches: List[Catch] = []
         while self.match(TokenType.CATCH):
             self.consume(TokenType.LPAREN, "Expect '(' after 'catch'.")
-            name = self.consume(TokenType.IDENTIFIER, "Expect variable name in catch.")
+            pattern = self.binding_pattern("variable name in catch")
             self.consume(TokenType.RPAREN, "Expect ')' after catch variable.")
 
             # An optional guard: `catch (e) if (cond) { ... }`.
@@ -286,7 +618,7 @@ class Parser:
                 self.consume(TokenType.RPAREN, "Expect ')' after catch guard.")
 
             self.consume(TokenType.LBRACE, "Expect '{' after catch.")
-            catches.append(Catch(name, guard, Block(self.block())))
+            catches.append(Catch(pattern, guard, Block(self.block())))
 
         finally_block = None
         if self.match(TokenType.FINALLY):
@@ -297,6 +629,15 @@ class Parser:
             raise self.error(keyword, "Expect 'catch' or 'finally' after 'try' block.")
 
         return Try(try_block, catches, finally_block)
+
+    def yield_statement(self) -> Yield:
+        keyword = self.previous()
+        if not self.function_yields:
+            raise self.error(keyword, "'yield' is only allowed inside a function.")
+        self.function_yields[-1] = True
+        value = self.expression()
+        self.consume_statement_end("Expect ';' after the yielded value.")
+        return Yield(keyword, value)
 
     def throw_statement(self) -> Throw:
         keyword = self.previous()
@@ -570,14 +911,23 @@ class Parser:
         return Interpolation(parts)
 
     def var_declaration(self) -> Var:
-        name = self.consume(TokenType.IDENTIFIER, "Expect variable name.")
+        pattern = self.binding_pattern("variable name")
 
-        initializer = None
-        if self.match(TokenType.ASSIGN):
+        # `var [a, b] = ...` parses its own `=` as part of the pattern's
+        # default slot, so only take another initializer when the pattern
+        # didn't already consume one.
+        initializer = pattern.default
+        if initializer is None and self.match(TokenType.ASSIGN):
             initializer = self.expression()
+        if initializer is not None and pattern.default is not None:
+            pattern.default = None
+
+        if initializer is None and not isinstance(pattern, NamePattern):
+            raise self.error(self.previous(),
+                             "A destructuring declaration needs an initializer.")
 
         self.consume_statement_end("Expect ';' after variable declaration.")
-        return Var(name, initializer)
+        return Var(pattern, initializer)
 
     def match(self, *types: TokenType) -> bool:
         for type in types:
@@ -640,7 +990,8 @@ class Parser:
             match self.peek().type:
                 case (TokenType.FUNC | TokenType.IF | TokenType.RETURN | TokenType.WHILE
                       | TokenType.VAR | TokenType.FOR | TokenType.TRY | TokenType.THROW
-                      | TokenType.IMPORT | TokenType.EXPORT):
+                      | TokenType.IMPORT | TokenType.EXPORT | TokenType.STRUCT
+                      | TokenType.MATCH | TokenType.YIELD):
                     return
 
             self.advance()

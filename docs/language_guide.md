@@ -12,7 +12,11 @@
 9. [String Operations](#string-operations)
 10. [Error Handling](#error-handling)
 11. [Sequence and Utility Functions](#sequence-and-utility-functions)
-12. [Modules](#modules)
+12. [Destructuring](#destructuring)
+13. [Structs](#structs)
+14. [Pattern Matching](#pattern-matching)
+15. [Generators](#generators)
+16. [Modules](#modules)
 
 See also the [Operators](#operators) reference, [Break and Continue](#break-and-continue),
 and the [full language specification](LANGUAGE_SPEC.md) for precise grammar and semantics.
@@ -657,3 +661,171 @@ same program run from the command line resolves those imports against real
 files instead — the semantics are identical.
 
 See `examples/modules.mrt` and `examples/lib/`.
+
+
+## Destructuring
+
+Wherever you name something, you can take it apart instead.
+
+```mrt
+var [first, second] = [1, 2];
+var [head, ...tail] = [1, 2, 3, 4];
+var {name, role} = person;
+var {name: who, missing = "n/a"} = person;
+```
+
+It works in function parameters, `for`-`in` loops and `catch` clauses too:
+
+```mrt
+func distance([x1, y1], [x2, y2]) {
+    return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+}
+
+for ([key, value] in [["a", 1], ["b", 2]]) { print(key, value); }
+
+try { risky(); } catch ({kind, message}) { print(kind, message); }
+```
+
+Patterns nest, and `...rest` collects what's left:
+
+```mrt
+var {items: [firstItem, ...others], meta: {tag}} = payload;
+var {name, ...everythingElse} = person;
+```
+
+Destructuring is **strict**: a missing element or key is an error unless
+that slot has a default. It never quietly hands you `null`.
+
+```mrt
+var [a, b] = [1];        // error: the array has 1 element(s)...
+var [a, b = 0] = [1];    // fine: b is 0
+```
+
+See `examples/destructuring.mrt`.
+
+## Structs
+
+A `struct` gives a value a name and a guaranteed shape.
+
+```mrt
+struct Point {
+    x, y;
+
+    func magnitude() { return sqrt(this.x * this.x + this.y * this.y); }
+    func scaled(k) { return Point(this.x * k, this.y * k); }
+}
+
+var p = Point(3, 4);
+print(p);                // Point(x: 3, y: 4)
+print(p.magnitude());    // 5
+print(type(p));          // Point
+```
+
+- Construct with the struct's name and positional field values.
+- Methods see `this`, and a method pulled off an instance stays bound to it.
+- Fields have defaults, and a default can use the fields before it:
+
+```mrt
+struct Config { host, port = 8080, url = "http://${host}:${port}"; }
+print(Config("example"));     // Config(host: example, port: 8080, url: http://example:8080)
+```
+
+- Fields are mutable but **fixed** — assigning an undeclared one is an error:
+
+```mrt
+p.x = 6;      // fine
+p.z = 1;      // KeyError: Struct Point has no field "z".
+```
+
+- Equality is structural and per-struct: `Point(1,2) == Point(1,2)` is
+  `true`, but a `Point` never equals a plain object with the same keys.
+- `keys`, `values`, `has`, `get` and object destructuring see the **fields**,
+  not the methods.
+
+See `examples/structs.mrt`.
+
+## Pattern Matching
+
+`match` branches on a value's shape and binds as it goes.
+
+```mrt
+match (value) {
+    case 0:                           print("zero");
+    case [x, y]:                      print("a pair", x, y);
+    case {kind: "error", message: m}: print("failed:", m);
+    case Point(x, y):                 print("point", x, y);
+    case n if (n > 100):              print("big");
+    case n:                           print("something else", n);
+    default:                          print("nothing matched");
+}
+```
+
+The first case that fits wins, and there's no fall-through — no `break`
+needed.
+
+Patterns can be a literal, a name (which matches anything and binds it), an
+array, an object, or a struct:
+
+| Pattern | Matches |
+|---|---|
+| `0`, `"s"`, `true`, `null`, `-1` | that exact value |
+| `n` | anything, bound to `n` |
+| `[a, b]` | an array of exactly two elements |
+| `[a, ...rest]` | an array of at least one |
+| `{kind: k}` | an object (or struct) that has a `kind` key |
+| `Circle(r)` | an instance of the `Circle` struct |
+
+Two things to remember:
+
+- A **match** array pattern needs an exact length (unless it has a rest),
+  while destructuring ignores extras. `case [x]:` will not match `[1, 2]`.
+- If nothing matches and there's no `default`, that's an **error** — MRT
+  would rather tell you than quietly do nothing.
+
+See `examples/matching.mrt`.
+
+## Generators
+
+A function containing `yield` is lazy. Calling it runs nothing; it hands
+back a sequence that produces values on demand — so an endless one is
+perfectly usable.
+
+```mrt
+func naturals() {
+    var n = 0;
+    while (true) { yield n; n += 1; }
+}
+
+print(take(naturals(), 5));    // [0, 1, 2, 3, 4]
+```
+
+Generators can consume other generators, which is how you build a pipeline
+that never materialises anything in the middle:
+
+```mrt
+func mapped(source, f) { for (x in source) { yield f(x); } }
+func until(source, pred) { for (x in source) { if (!pred(x)) { return; } yield x; } }
+
+var squares = mapped(naturals(), func(n) { return n * n; });
+print(toArray(until(squares, func(n) { return n < 100; })));
+```
+
+`for`-`in` pulls lazily, so `break` just stops asking:
+
+```mrt
+for (n in naturals()) {
+    if (n > 3) { break; }
+    print(n);
+}
+```
+
+Notes:
+
+- `yield` is a **statement** — `var x = yield 1;` is not valid. Generators
+  produce values; they don't receive them.
+- `return` ends the sequence early.
+- A generator is **single use**; call the function again for a fresh one.
+- `toArray(x)` materialises any iterable; `take(x, n)` takes the first `n`.
+- Struct methods can be generators too.
+
+See `examples/generators.mrt`.

@@ -8,8 +8,12 @@ MRT is a modern, expressive programming language designed for simplicity and rea
 - Dynamic typing
 - First-class functions: anonymous `func(...)` values, lexical closures, and
   a `map`/`filter`/`reduce`/`sort` pipeline
-- Default and rest parameters, plus `...` spread
-- A module system: `export` / `import` across files
+- Default and rest parameters, plus `...` spread, and destructuring patterns
+- `struct` types with fields, defaults and methods
+- `match` / `case` pattern matching on shape
+- Generators: `yield` makes a function a lazy, composable sequence
+- A module system: `export` / `import` across files, namespace imports and
+  re-exports
 - Recoverable errors with `throw` and `try`/`catch`/`finally`, classified by
   kind and carrying a stack trace
 - String interpolation, `null`, bareword object keys, and `for`-`in` loops
@@ -148,16 +152,64 @@ try {
 }
 ```
 
+### Destructuring
+
+```mrt
+var [first, ...rest] = [1, 2, 3];                       // 1, [2, 3]
+var {name, role = "unknown"} = person;
+
+func distance([x1, y1], [x2, y2]) { ... }
+for ([key, value] in pairs) { ... }
+try { risky(); } catch ({kind, message}) { ... }
+```
+
+### Structs
+
+```mrt
+struct Point {
+    x, y;
+    func magnitude() { return sqrt(this.x * this.x + this.y * this.y); }
+}
+
+var p = Point(3, 4);
+print(p);                                               // Point(x: 3, y: 4)
+print(p.magnitude(), type(p));                          // 5 Point
+```
+
+### Pattern matching
+
+```mrt
+match (shape) {
+    case Circle(r):                    print("circle", r);
+    case [x, y]:                       print("pair", x, y);
+    case {kind: "error", message: m}:  print("failed:", m);
+    case n if (n > 100):               print("big");
+    default:                           print("something else");
+}
+```
+
+### Generators
+
+```mrt
+func naturals() { var n = 0; while (true) { yield n; n += 1; } }
+func squares(src) { for (x in src) { yield x * x; } }
+
+print(take(naturals(), 5));                             // [0, 1, 2, 3, 4]
+print(take(squares(naturals()), 4));                    // [0, 1, 4, 9]
+```
+
 ### Modules
 
 ```mrt
 // lib/math.mrt
 export var PI = 3.14159;
 export func square(n) { return n * n; }
+export struct Point { x, y; }
 
 // main.mrt
 import { PI, square as sq } from "./lib/math.mrt";
-func main() { print(PI, sq(4)); }
+import * as math from "./lib/math.mrt";
+func main() { print(PI, sq(4), math.PI); }
 ```
 
 ### Interpolation, null and for-in
@@ -185,7 +237,8 @@ for (ch in "hi") { print(ch); }
 Loops also support `break` and `continue`.
 
 Reserved words: `func return if else while for print var true false break
-continue null try catch finally throw in import export from as`.
+continue null try catch finally throw in import export from as struct match
+case default yield`.
 
 `...` marks a rest parameter or spreads an array.
 
@@ -201,6 +254,10 @@ continue null try catch finally throw in import export from as`.
 - `has(array, element)` / `get(array, index, default)`: Membership check / safe read
 - `reverse(x)`, `unique(arr)`, `flatten(arr, depth)`, `zip(a, b)`, `enumerate(arr)`
 - `count(arr, value)`, `sum(arr)`, `range(start, end, step)`
+
+### Generators and Iteration
+- `toArray(x)`: Materialises any iterable into an array
+- `take(x, n)`: The first `n` items; safe on an endless generator
 
 ### Higher-Order Functions
 - `map(arr, f)` / `filter(arr, f)` / `reduce(arr, f, init)`
@@ -243,7 +300,8 @@ continue null try catch finally throw in import export from as`.
   - `examples.md`: Example programs and tutorials
   - `getting_started.md`: Installation and quick start
 - `examples/`: Example MRT programs (`functions.mrt`, `errors.mrt`,
-  `modern_syntax.mrt`, `stdlib.mrt`, `modules.mrt`, and more)
+  `modern_syntax.mrt`, `stdlib.mrt`, `modules.mrt`, `destructuring.mrt`,
+  `structs.mrt`, `matching.mrt`, `generators.mrt`, and more)
   - `examples/lib/`: library modules imported by `modules.mrt`
 - `tests/`: Test suite
 

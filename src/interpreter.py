@@ -24,6 +24,8 @@ def stringify(value: Any) -> str:
         return "[" + ", ".join(stringify(v) for v in value) + "]"
     if isinstance(value, dict):
         return "{" + ", ".join(f"{stringify(k)}: {stringify(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, (MRTInstance, MRTGenerator)):
+        return str(value)
     if callable(value):
         # A built-in (a host-language function, not an MRTFunction, which
         # has its own __str__). Without this, Python would render it as
@@ -33,6 +35,44 @@ def stringify(value: Any) -> str:
         # JavaScript source text instead.
         return "<builtin>"
     return str(value)
+
+
+def type_name(value: Any) -> str:
+    """The MRT type of a value, as `type()` reports it -- used in error
+    messages so they name the language's types, not Python's."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, MRTInstance):
+        # An instance reports its own struct's name, so `type(p) == "Point"`.
+        return value.struct.name
+    if isinstance(value, MRTStruct):
+        return "struct"
+    if isinstance(value, MRTGenerator):
+        return "generator"
+    return "function"
+
+
+def object_like(value: Any) -> Optional[Dict[str, Any]]:
+    """The field mapping of anything that reads like an object.
+
+    A struct instance answers `keys`/`values`/`has`/`get` and object
+    destructuring with its fields (not its methods), so the same code that
+    walks a plain object works on a struct without special-casing."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, MRTInstance):
+        return value.values
+    return None
 
 
 def values_equal(a: Any, b: Any) -> bool:
@@ -53,6 +93,14 @@ def values_equal(a: Any, b: Any) -> bool:
         if len(a) != len(b):
             return False
         return all(k in b and values_equal(v, b[k]) for k, v in a.items())
+    if isinstance(a, MRTInstance) or isinstance(b, MRTInstance):
+        # Two instances are equal when they share a struct and every field
+        # matches; an instance never equals a plain object.
+        if not (isinstance(a, MRTInstance) and isinstance(b, MRTInstance)):
+            return False
+        if a.struct is not b.struct:
+            return False
+        return all(values_equal(v, b.values[k]) for k, v in a.values.items())
     if isinstance(a, list) != isinstance(b, list):
         return False
     if isinstance(a, dict) != isinstance(b, dict):
@@ -66,11 +114,13 @@ class MRTFunction:
     runtime, differing only in whether `name` is set."""
 
     def __init__(self, params: List[Token], body: List[Stmt],
-                 closure: 'Environment', name: Optional[str] = None):
+                 closure: 'Environment', name: Optional[str] = None,
+                 is_generator: bool = False):
         self.params = params
         self.body = body
         self.closure = closure
         self.name = name
+        self.is_generator = is_generator
 
     def arity_description(self) -> str:
         """How this function's accepted argument count reads in an error."""
@@ -103,22 +153,25 @@ class MRTFunction:
         try:
             interpreter.environment = environment
             for i, param in enumerate(positional):
-                if i < len(arguments):
-                    value = arguments[i]
-                else:
-                    value = interpreter.evaluate(param.default)
-                environment.define(param.name.lexeme, value)
+                value = arguments[i] if i < len(arguments) else MISSING
+                interpreter.bind_pattern(param.pattern, value, environment)
         finally:
             interpreter.environment = previous
 
         for param in self.params:
             if param.rest:
-                environment.define(param.name.lexeme, list(arguments[len(positional):]))
+                environment.define(param.pattern.name.lexeme,
+                                   list(arguments[len(positional):]))
 
         return environment
 
     def call(self, interpreter: 'Interpreter', arguments: List[Any]) -> Any:
         environment = self.bind(interpreter, arguments)
+
+        if self.is_generator:
+            # Nothing in the body runs yet: calling a generator function only
+            # builds the lazy sequence.
+            return MRTGenerator(self, environment)
 
         frame = self.name if self.name else "<anonymous>"
         try:
@@ -138,6 +191,115 @@ class MRTFunction:
 
     def __str__(self):
         return f"<function {self.name}>" if self.name else "<function>"
+
+class MRTGenerator:
+    """A lazy sequence produced by calling a generator function.
+
+    Nothing runs until something iterates it, and only as far as it asks --
+    which is what makes an endless generator usable. Like the host
+    languages' own generators it is single-use: iterating a second time is
+    an error rather than a silently empty loop."""
+
+    def __init__(self, function: 'MRTFunction', environment: 'Environment'):
+        self.function = function
+        self.environment = environment
+        self.started = False
+
+    def start(self, interpreter: 'Interpreter', line: Optional[int] = None):
+        if self.started:
+            raise MRTRuntimeError(
+                f"{self} has already been iterated; a generator can only be used once.",
+                line, kind="ValueError")
+        self.started = True
+        return interpreter.execute_block_gen(self.function.body, self.environment)
+
+    def __str__(self):
+        name = self.function.name
+        return f"<generator {name}>" if name else "<generator>"
+
+
+class MRTStruct:
+    """A declared struct type, and the callable that constructs it.
+
+    Calling it builds an MRTInstance with the declared fields bound
+    positionally; field defaults work exactly like parameter defaults."""
+
+    def __init__(self, name: str, fields: List[Param], methods: Dict[str, 'MRTFunction']):
+        self.name = name
+        self.fields = fields
+        self.methods = methods
+
+    def field_names(self) -> List[str]:
+        return [f.pattern.name.lexeme for f in self.fields]
+
+    def arity_description(self) -> str:
+        required = sum(1 for f in self.fields if f.default is None)
+        if required == len(self.fields):
+            return str(required)
+        return f"between {required} and {len(self.fields)}"
+
+    def accepts(self, count: int) -> bool:
+        required = sum(1 for f in self.fields if f.default is None)
+        return required <= count <= len(self.fields)
+
+    def construct(self, interpreter: 'Interpreter', arguments: List[Any]) -> 'MRTInstance':
+        values: Dict[str, Any] = {}
+        # Defaults are evaluated in a scope where the fields to their left
+        # are already bound, mirroring how parameter defaults behave.
+        scope = Environment(interpreter.globals)
+        previous = interpreter.environment
+        try:
+            interpreter.environment = scope
+            for index, field in enumerate(self.fields):
+                key = field.pattern.name.lexeme
+                if index < len(arguments):
+                    value = arguments[index]
+                else:
+                    value = interpreter.evaluate(field.default)
+                values[key] = value
+                scope.define(key, value)
+        finally:
+            interpreter.environment = previous
+        return MRTInstance(self, values)
+
+    def __str__(self):
+        return f"<struct {self.name}>"
+
+
+class MRTInstance:
+    """One value of a struct type: a fixed set of named fields, plus the
+    methods its struct declares."""
+
+    def __init__(self, struct: MRTStruct, values: Dict[str, Any]):
+        self.struct = struct
+        self.values = values
+
+    def get(self, name: str, interpreter: 'Interpreter', line: Optional[int] = None) -> Any:
+        if name in self.values:
+            return self.values[name]
+        method = self.struct.methods.get(name)
+        if method is not None:
+            # Bind `this` by wrapping the method's closure, so a method
+            # pulled off an instance still knows its receiver later.
+            bound = Environment(method.closure)
+            bound.define("this", self)
+            return MRTFunction(method.params, method.body, bound, method.name,
+                               method.is_generator)
+        raise MRTRuntimeError(
+            f"Struct {self.struct.name} has no field or method {json.dumps(name)}.",
+            line, kind="KeyError")
+
+    def set(self, name: str, value: Any, line: Optional[int] = None):
+        if name not in self.values:
+            raise MRTRuntimeError(
+                f"Struct {self.struct.name} has no field {json.dumps(name)}.",
+                line, kind="KeyError")
+        self.values[name] = value
+
+    def __str__(self):
+        inner = ", ".join(f"{k}: {stringify(v)}" for k, v in self.values.items())
+        return f"{self.struct.name}({inner})"
+
 
 class ReturnSignal(Exception):
     def __init__(self, value: Any):
@@ -170,6 +332,17 @@ def make_error_value(error: MRTRuntimeError) -> Dict[str, Any]:
         "kind": error.kind,
         "stack": list(error.mrt_stack),
     }
+
+class _Missing:
+    """Sentinel for "this pattern slot had no corresponding value", which is
+    distinct from a value that is genuinely `null`."""
+
+    def __repr__(self):
+        return "<missing>"
+
+
+MISSING = _Missing()
+
 
 class BreakSignal(Exception):
     pass
@@ -210,7 +383,10 @@ class MRTBuiltin:
     def len(*args):
         if len(args) != 1:
             raise MRTRuntimeError("len() takes exactly one argument.", kind="ArityError")
-        if isinstance(args[0], (str, list, dict)):
+        source = object_like(args[0])
+        if source is not None:
+            return float(len(source))
+        if isinstance(args[0], (str, list)):
             return float(len(args[0]))
         raise MRTRuntimeError("len() argument must be an array, object, or string.", kind="TypeError")
 
@@ -363,22 +539,10 @@ class MRTBuiltin:
     def type_(*args):
         if len(args) != 1:
             raise MRTRuntimeError("type() takes exactly one argument.", kind="ArityError")
-        value = args[0]
-        if value is None:
-            return "null"
-        if isinstance(value, bool):
-            return "boolean"
-        if isinstance(value, (int, float)):
-            return "number"
-        if isinstance(value, str):
-            return "string"
-        if isinstance(value, list):
-            return "array"
-        if isinstance(value, dict):
-            return "object"
-        if isinstance(value, MRTFunction) or callable(value):
-            return "function"
-        return "unknown"
+        # One source of truth, shared with the error messages that name a
+        # value's type -- otherwise the two drift, and a new kind of value
+        # shows up as "unknown" in one place and correctly in the other.
+        return type_name(args[0])
 
     @staticmethod
     def toNumber(*args):
@@ -436,7 +600,7 @@ class MRTBuiltin:
             raise MRTRuntimeError("round() takes 1 or 2 arguments.", kind="ArityError")
         value = MRTBuiltin._num(args[0], "round")
         digits = int(MRTBuiltin._num(args[1], "round")) if len(args) == 2 else 0
-        return float(round(value, digits))
+        return _round_half_away(value, digits)
 
     @staticmethod
     def floor(*args):
@@ -469,23 +633,26 @@ class MRTBuiltin:
 
     @staticmethod
     def keys(*args):
-        if len(args) != 1 or not isinstance(args[0], dict):
+        source = object_like(args[0]) if len(args) == 1 else None
+        if source is None:
             raise MRTRuntimeError("keys() takes exactly one object argument.", kind="ArityError")
-        return list(args[0].keys())
+        return list(source.keys())
 
     @staticmethod
     def values(*args):
-        if len(args) != 1 or not isinstance(args[0], dict):
+        source = object_like(args[0]) if len(args) == 1 else None
+        if source is None:
             raise MRTRuntimeError("values() takes exactly one object argument.", kind="ArityError")
-        return list(args[0].values())
+        return list(source.values())
 
     @staticmethod
     def has(*args):
         if len(args) != 2:
             raise MRTRuntimeError("has() takes exactly 2 arguments.", kind="ArityError")
         container, key = args
-        if isinstance(container, dict):
-            return key in container
+        source = object_like(container)
+        if source is not None:
+            return key in source
         if isinstance(container, list):
             return any(values_equal(item, key) for item in container)
         raise MRTRuntimeError("First argument to has() must be an array or object.", kind="TypeError")
@@ -496,8 +663,9 @@ class MRTBuiltin:
             raise MRTRuntimeError("get() takes 2 or 3 arguments.", kind="ArityError")
         container, key = args[0], args[1]
         default = args[2] if len(args) == 3 else None
-        if isinstance(container, dict):
-            return container.get(key, default)
+        source = object_like(container)
+        if source is not None:
+            return source.get(key, default)
         if isinstance(container, list):
             if isinstance(key, (int, float)) and not isinstance(key, bool):
                 i = int(key)
@@ -675,6 +843,21 @@ class MRTBuiltin:
         return next_value
 
 
+def _round_half_away(value: float, digits: int) -> float:
+    """Round half away from zero, scaling first.
+
+    Deliberately *not* Python's built-in `round`, which rounds half to even
+    on the exact binary value. The Playground has no equivalent, so the two
+    interpreters would disagree on any value landing near a .5 boundary --
+    `round(3.14159 * 2500, 2)` gave 7853.97 here and 7853.98 there. Doing
+    the same double arithmetic in both is what keeps them identical, and
+    half-away-from-zero is the behaviour most people expect."""
+    factor = 10.0 ** digits
+    scaled = value * factor
+    rounded = math.floor(abs(scaled) + 0.5)
+    return (-rounded if scaled < 0 else rounded) / factor
+
+
 def _number_arg(value: Any, who: str) -> float:
     """Validate a numeric built-in argument. The message is worded to match
     the Playground interpreter's `numArg` exactly -- a caught error's
@@ -761,6 +944,9 @@ class Interpreter:
         self.globals.define("some", self.builtin_some)
         self.globals.define("every", self.builtin_every)
         self.globals.define("sort", self.builtin_sort)
+        # Generators
+        self.globals.define("toArray", self.builtin_toArray)
+        self.globals.define("take", self.builtin_take)
 
     # -- Higher-order built-ins -------------------------------------------
     #
@@ -824,6 +1010,29 @@ class Interpreter:
             raise MRTRuntimeError("every() takes an array and a function.", kind="ArityError")
         items = self._array_arg(args[0], "every")
         return all(self.is_truthy(self.call_value(args[1], [item])) for item in items)
+
+    def builtin_toArray(self, *args):
+        """Materialise any iterable -- array, string, object keys, or a
+        generator -- into an array. On an endless generator this never
+        returns, which is why `take` exists."""
+        if len(args) != 1:
+            raise MRTRuntimeError("toArray() takes exactly one argument.", kind="ArityError")
+        return list(self.iterate(args[0]))
+
+    def builtin_take(self, *args):
+        """The first `n` items of any iterable, as an array. Safe on an
+        endless generator: it stops pulling once it has `n`."""
+        if len(args) != 2:
+            raise MRTRuntimeError("take() takes an iterable and a count.", kind="ArityError")
+        count = int(_number_arg(args[1], "take"))
+        if count < 0:
+            raise MRTRuntimeError("take() count must not be negative.", kind="ValueError")
+        out = []
+        for item in self.iterate(args[0]):
+            if len(out) >= count:
+                break
+            out.append(item)
+        return out
 
     def builtin_sort(self, *args):
         """`sort(arr)` or `sort(arr, compare)`. Returns a new array; the
@@ -918,12 +1127,25 @@ class Interpreter:
                 self.execute_for(stmt)
             case Function():
                 function = MRTFunction(stmt.params, stmt.body, self.environment,
-                                       stmt.name.lexeme)
+                                       stmt.name.lexeme, stmt.is_generator)
                 self.environment.define(stmt.name.lexeme, function)
+            case Match():
+                self.execute_match(stmt)
+            case StructDecl():
+                methods = {
+                    m.name.lexeme: MRTFunction(m.params, m.body, self.environment,
+                                               m.name.lexeme, m.is_generator)
+                    for m in stmt.methods
+                }
+                self.environment.define(
+                    stmt.name.lexeme,
+                    MRTStruct(stmt.name.lexeme, stmt.fields, methods))
             case ForIn():
                 self.execute_for_in(stmt)
             case Import():
                 self.execute_import(stmt)
+            case ExportNames():
+                self.execute_export_names(stmt)
             case Export():
                 self.execute(stmt.declaration)
                 self.current_exports[stmt.name.lexeme] = self.environment.get(stmt.name)
@@ -947,7 +1169,7 @@ class Interpreter:
                 value = None
                 if stmt.initializer:
                     value = self.evaluate(stmt.initializer)
-                self.environment.define(stmt.name.lexeme, value)
+                self.bind_pattern(stmt.pattern, value, self.environment)
             case While():
                 while self.is_truthy(self.evaluate(stmt.condition)):
                     try:
@@ -1061,8 +1283,32 @@ class Interpreter:
         self.module_exports[path] = exports
         return exports
 
+    def execute_export_names(self, stmt: ExportNames):
+        """`export { a };` re-exports a local name; `export { a } from "..."`
+        forwards another module's export without binding it here."""
+        if stmt.specifier is not None:
+            source = self.load_module(stmt.specifier.literal, stmt.keyword.line)
+            for local, exported in stmt.names:
+                if local.lexeme not in source:
+                    raise MRTRuntimeError(
+                        f"Module {json.dumps(stmt.specifier.literal)} has no export named "
+                        f"'{local.lexeme}'.",
+                        local.line, kind="NameError")
+                self.current_exports[exported.lexeme] = source[local.lexeme]
+            return
+
+        for local, exported in stmt.names:
+            self.current_exports[exported.lexeme] = self.environment.get(local)
+
     def execute_import(self, stmt: Import):
         exports = self.load_module(stmt.specifier.literal, stmt.keyword.line)
+
+        if stmt.namespace is not None:
+            # A namespace import binds one ordinary MRT object, so the usual
+            # dot access and `keys()` work on it with no new machinery.
+            self.environment.define(stmt.namespace.lexeme, dict(exports))
+            return
+
         for exported, local in stmt.names:
             if exported.lexeme not in exports:
                 raise MRTRuntimeError(
@@ -1072,43 +1318,363 @@ class Interpreter:
             self.environment.define(local.lexeme, exports[exported.lexeme])
 
     def run_top_level(self, statements: List[Stmt]):
-        """Run a file's top-level statements: function declarations first, so
-        they can refer to each other regardless of order, then everything
-        else in source order."""
+        """Run a file's top-level statements: function and struct
+        declarations first, so they can refer to each other regardless of
+        order, then everything else in source order."""
+        def is_hoisted(statement) -> bool:
+            inner = statement.declaration if isinstance(statement, Export) else statement
+            return isinstance(inner, (Function, StructDecl))
+
         for statement in statements:
-            if isinstance(statement, Function):
-                self.execute(statement)
-            elif isinstance(statement, Export) and isinstance(statement.declaration, Function):
+            if is_hoisted(statement):
                 self.execute(statement)
 
         for statement in statements:
-            if isinstance(statement, Function):
-                continue
-            if isinstance(statement, Export) and isinstance(statement.declaration, Function):
-                continue
-            self.execute(statement)
+            if not is_hoisted(statement):
+                self.execute(statement)
+
+    # -- Generators ----------------------------------------------------------
+    #
+    # Only *statements* can suspend, because `yield` is a statement. So there
+    # is a second, generator-flavoured execution path that mirrors `execute`
+    # for the compound statements a `yield` can sit inside, and hands
+    # everything else straight to the ordinary `execute`.
+
+    def execute_block_gen(self, statements: List[Stmt], environment: 'Environment'):
+        previous = self.environment
+        try:
+            self.environment = environment
+            for statement in statements:
+                yield from self.execute_gen(statement)
+        finally:
+            self.environment = previous
+
+    def execute_gen(self, stmt: Stmt):
+        match stmt:
+            case Yield():
+                value = self.evaluate(stmt.value)
+                # The consumer runs arbitrary code while we are suspended and
+                # will leave `self.environment` pointing somewhere else, so
+                # the generator re-establishes its own scope on resume.
+                mine = self.environment
+                yield value
+                self.environment = mine
+            case Block():
+                yield from self.execute_block_gen(stmt.statements, Environment(self.environment))
+            case If():
+                if self.is_truthy(self.evaluate(stmt.condition)):
+                    yield from self.execute_gen(stmt.then_branch)
+                elif stmt.else_branch:
+                    yield from self.execute_gen(stmt.else_branch)
+            case While():
+                while self.is_truthy(self.evaluate(stmt.condition)):
+                    try:
+                        yield from self.execute_gen(stmt.body)
+                    except BreakSignal:
+                        break
+                    except ContinueSignal:
+                        continue
+            case For():
+                previous = self.environment
+                self.environment = Environment(previous)
+                try:
+                    if stmt.initializer:
+                        self.execute(stmt.initializer)
+                    while stmt.condition is None or self.is_truthy(self.evaluate(stmt.condition)):
+                        try:
+                            yield from self.execute_gen(stmt.body)
+                        except BreakSignal:
+                            break
+                        except ContinueSignal:
+                            pass
+                        if stmt.increment is not None:
+                            self.evaluate(stmt.increment)
+                finally:
+                    self.environment = previous
+            case ForIn():
+                previous = self.environment
+                try:
+                    for item in self.iterate(self.evaluate(stmt.iterable), stmt.keyword.line):
+                        self.environment = Environment(previous)
+                        self.bind_pattern(stmt.pattern, item, self.environment, stmt.keyword.line)
+                        try:
+                            yield from self.execute_gen(stmt.body)
+                        except BreakSignal:
+                            break
+                        except ContinueSignal:
+                            continue
+                finally:
+                    self.environment = previous
+            case Try():
+                yield from self.execute_try_gen(stmt)
+            case Match():
+                yield from self.execute_match_gen(stmt)
+            case _:
+                # No `yield` can occur here, so ordinary execution is enough.
+                self.execute(stmt)
+
+    def execute_try_gen(self, stmt: Try):
+        try:
+            try:
+                yield from self.execute_gen(stmt.try_block)
+            except MRTThrow as thrown:
+                handled = yield from self.run_catch_gen(stmt, thrown.value)
+                if not handled:
+                    raise
+            except MRTRuntimeError as e:
+                handled = yield from self.run_catch_gen(stmt, make_error_value(e))
+                if not handled:
+                    raise
+        finally:
+            if stmt.finally_block is not None:
+                yield from self.execute_gen(stmt.finally_block)
+
+    def run_catch_gen(self, stmt: Try, value: Any):
+        for clause in stmt.catches:
+            environment = Environment(self.environment)
+            self.bind_pattern(clause.pattern, value, environment)
+
+            if clause.guard is not None:
+                previous = self.environment
+                try:
+                    self.environment = environment
+                    if not self.is_truthy(self.evaluate(clause.guard)):
+                        continue
+                finally:
+                    self.environment = previous
+
+            yield from self.execute_block_gen(clause.block.statements, environment)
+            return True
+        return False
+
+    def execute_match_gen(self, stmt: Match):
+        subject = self.evaluate(stmt.subject)
+        for case in stmt.cases:
+            environment = Environment(self.environment)
+            if case.pattern is not None:
+                if not self.match_pattern(case.pattern, subject, environment):
+                    continue
+            if case.guard is not None:
+                previous = self.environment
+                try:
+                    self.environment = environment
+                    if not self.is_truthy(self.evaluate(case.guard)):
+                        continue
+                finally:
+                    self.environment = previous
+            yield from self.execute_block_gen(case.body, environment)
+            return
+        raise MRTRuntimeError(
+            f"No case matched {stringify(subject)} in this match, and there is no 'default'.",
+            stmt.keyword.line, kind="ValueError")
+
+    def iterate(self, value: Any, line: Optional[int] = None):
+        """Yield a value's items, lazily for a generator and from a snapshot
+        for the eager containers (so mutating an array mid-loop can't shift
+        the iteration underneath it)."""
+        if isinstance(value, MRTGenerator):
+            running = value.start(self, line)
+            frame = str(value)
+            while True:
+                # The generator body and the loop body take turns using
+                # `self.environment`, so each hand-off restores the caller's.
+                saved = self.environment
+                try:
+                    item = next(running)
+                except StopIteration:
+                    return
+                except ReturnSignal:
+                    # `return` inside a generator simply ends the sequence.
+                    return
+                except MRTRuntimeError as e:
+                    e.mrt_stack.append(frame)
+                    raise
+                except MRTThrow as thrown:
+                    thrown.stack.append(frame)
+                    raise
+                finally:
+                    self.environment = saved
+                yield item
+            return
+
+        if isinstance(value, list):
+            yield from list(value)
+            return
+        if isinstance(value, str):
+            yield from list(value)
+            return
+        source = object_like(value)
+        if source is not None:
+            yield from list(source.keys())
+            return
+
+        raise MRTRuntimeError(
+            "Can only iterate over an array, string, object, or generator.",
+            line, kind="TypeError")
+
+    # -- match --------------------------------------------------------------
+
+    def execute_match(self, stmt: Match):
+        subject = self.evaluate(stmt.subject)
+
+        for case in stmt.cases:
+            environment = Environment(self.environment)
+
+            if case.pattern is not None:
+                if not self.match_pattern(case.pattern, subject, environment):
+                    continue
+
+            if case.guard is not None:
+                previous = self.environment
+                try:
+                    self.environment = environment
+                    if not self.is_truthy(self.evaluate(case.guard)):
+                        continue
+                finally:
+                    self.environment = previous
+
+            self.execute_block(case.body, environment)
+            return
+
+        raise MRTRuntimeError(
+            f"No case matched {stringify(subject)} in this match, and there is no 'default'.",
+            stmt.keyword.line, kind="ValueError")
+
+    def match_pattern(self, pattern: MatchPattern, value: Any,
+                      environment: 'Environment') -> bool:
+        """Test `value` against `pattern`, binding names into `environment`.
+
+        Returns False instead of raising when the shape doesn't fit -- that's
+        the whole point of matching. Bindings made by a partially successful
+        match are left in `environment`, which is discarded by the caller when
+        the overall match fails."""
+        if isinstance(pattern, LiteralMatch):
+            return values_equal(value, pattern.value)
+
+        if isinstance(pattern, BindMatch):
+            environment.define(pattern.name.lexeme, value)
+            return True
+
+        if isinstance(pattern, ArrayMatch):
+            if not isinstance(value, list):
+                return False
+            if pattern.rest is None:
+                if len(value) != len(pattern.elements):
+                    return False
+            elif len(value) < len(pattern.elements):
+                return False
+            for element, item in zip(pattern.elements, value):
+                if not self.match_pattern(element, item, environment):
+                    return False
+            if pattern.rest is not None:
+                environment.define(pattern.rest.lexeme, list(value[len(pattern.elements):]))
+            return True
+
+        if isinstance(pattern, ObjectMatch):
+            source = object_like(value)
+            if source is None:
+                return False
+            for key, sub in pattern.entries:
+                if key not in source:
+                    return False
+                if not self.match_pattern(sub, source[key], environment):
+                    return False
+            return True
+
+        if isinstance(pattern, StructMatch):
+            struct = self.environment.get(pattern.name)
+            if not isinstance(struct, MRTStruct):
+                raise MRTRuntimeError(
+                    f"'{pattern.name.lexeme}' is not a struct, so it can't be used as a "
+                    f"pattern.",
+                    pattern.name.line, kind="TypeError")
+            if len(pattern.elements) != len(struct.fields):
+                raise MRTRuntimeError(
+                    f"Pattern for struct {struct.name} has {len(pattern.elements)} field(s) "
+                    f"but the struct declares {len(struct.fields)}.",
+                    pattern.name.line, kind="ArityError")
+            if not isinstance(value, MRTInstance) or value.struct is not struct:
+                return False
+            for element, field in zip(pattern.elements, struct.field_names()):
+                if not self.match_pattern(element, value.values[field], environment):
+                    return False
+            return True
+
+        raise MRTRuntimeError("Unknown match pattern.", kind="RuntimeError")
+
+    # -- Binding patterns ---------------------------------------------------
+
+    def bind_pattern(self, pattern: Pattern, value: Any, environment: 'Environment',
+                     line: Optional[int] = None):
+        """Bind `value` to `pattern` inside `environment`.
+
+        Destructuring is strict, like the rest of the language: a missing
+        element or key is an error unless that slot has a default, rather
+        than quietly binding `null`."""
+        if value is MISSING:
+            if pattern.default is None:
+                raise MRTRuntimeError(
+                    "Cannot destructure: no value for this part of the pattern.",
+                    line, kind="ValueError")
+            value = self.evaluate(pattern.default)
+
+        if isinstance(pattern, NamePattern):
+            environment.define(pattern.name.lexeme, value)
+            return
+
+        if isinstance(pattern, ArrayPattern):
+            where = pattern.token.line if pattern.token else line
+            if not isinstance(value, list):
+                raise MRTRuntimeError(
+                    f"Cannot destructure {type_name(value)} with an array pattern.",
+                    where, kind="TypeError")
+            for index, element in enumerate(pattern.elements):
+                slot = value[index] if index < len(value) else MISSING
+                if slot is MISSING and element.default is None:
+                    raise MRTRuntimeError(
+                        f"Cannot destructure: the array has {len(value)} element(s) "
+                        f"but the pattern needs at least {len(pattern.elements)}.",
+                        where, kind="IndexError")
+                self.bind_pattern(element, slot, environment, where)
+            if pattern.rest is not None:
+                environment.define(pattern.rest.lexeme, list(value[len(pattern.elements):]))
+            return
+
+        if isinstance(pattern, ObjectPattern):
+            where = pattern.token.line if pattern.token else line
+            source = object_like(value)
+            if source is None:
+                raise MRTRuntimeError(
+                    f"Cannot destructure {type_name(value)} with an object pattern.",
+                    where, kind="TypeError")
+            taken = set()
+            for key, sub in pattern.entries:
+                taken.add(key)
+                slot = source[key] if key in source else MISSING
+                if slot is MISSING and sub.default is None:
+                    raise MRTRuntimeError(
+                        f"Cannot destructure: no key {json.dumps(key)} in the object.",
+                        where, kind="KeyError")
+                self.bind_pattern(sub, slot, environment, where)
+            if pattern.rest is not None:
+                environment.define(
+                    pattern.rest.lexeme,
+                    {k: v for k, v in source.items() if k not in taken})
+            return
+
+        raise MRTRuntimeError("Unknown binding pattern.", line, kind="RuntimeError")
 
     def execute_for_in(self, stmt: ForIn):
         iterable = self.evaluate(stmt.iterable)
 
-        if isinstance(iterable, list):
-            items = list(iterable)
-        elif isinstance(iterable, str):
-            items = list(iterable)
-        elif isinstance(iterable, dict):
-            items = list(iterable.keys())
-        else:
-            raise MRTRuntimeError(
-                "Can only iterate over an array, string, or object.", stmt.name.line, kind="TypeError")
-
         previous = self.environment
         try:
-            for item in items:
+            for item in self.iterate(iterable, stmt.keyword.line):
                 # A fresh scope per iteration, so a closure made in the body
                 # captures this item rather than sharing one slot with every
                 # other iteration.
                 self.environment = Environment(previous)
-                self.environment.define(stmt.name.lexeme, item)
+                self.bind_pattern(stmt.pattern, item, self.environment, stmt.keyword.line)
                 try:
                     self.execute(stmt.body)
                 except BreakSignal:
@@ -1146,7 +1712,7 @@ class Interpreter:
         match, the error keeps propagating (and `finally` still runs)."""
         for clause in stmt.catches:
             environment = Environment(self.environment)
-            environment.define(clause.name.lexeme, value)
+            self.bind_pattern(clause.pattern, value, environment)
 
             if clause.guard is not None:
                 previous = self.environment
@@ -1201,7 +1767,8 @@ class Interpreter:
                     expr.token.line, kind="TypeError")
             case FunctionExpr():
                 return MRTFunction(expr.params, expr.body, self.environment,
-                                   expr.name.lexeme if expr.name else None)
+                                   expr.name.lexeme if expr.name else None,
+                                   expr.is_generator)
             case Interpolation():
                 out = []
                 for part in expr.parts:
@@ -1256,6 +1823,14 @@ class Interpreter:
         """Invoke an MRT value with arguments. Shared by the `Call`
         expression and by the higher-order built-ins (map, filter, sort,
         ...), which need to call back into user code."""
+        if isinstance(callee, MRTStruct):
+            if not callee.accepts(len(arguments)):
+                raise MRTRuntimeError(
+                    f"Struct {callee.name} takes {callee.arity_description()} "
+                    f"field values but got {len(arguments)}.",
+                    line, kind="ArityError")
+            return callee.construct(self, arguments)
+
         if isinstance(callee, MRTFunction):
             if not callee.accepts(len(arguments)):
                 raise MRTRuntimeError(
@@ -1284,6 +1859,12 @@ class Interpreter:
         target = self.evaluate(expr.array)
         index = self.evaluate(expr.index)
 
+        if isinstance(target, MRTInstance):
+            if not isinstance(index, str):
+                raise MRTRuntimeError(
+                    "A struct field name must be a string.", kind="TypeError")
+            return target.get(index, self)
+
         if isinstance(target, dict):
             self._check_hashable_key(index)
             if index not in target:
@@ -1309,6 +1890,13 @@ class Interpreter:
         target = self.evaluate(expr.array)
         index = self.evaluate(expr.index)
         value = self.evaluate(expr.value)
+
+        if isinstance(target, MRTInstance):
+            if not isinstance(index, str):
+                raise MRTRuntimeError(
+                    "A struct field name must be a string.", kind="TypeError")
+            target.set(index, value)
+            return value
 
         if isinstance(target, dict):
             self._check_hashable_key(index)

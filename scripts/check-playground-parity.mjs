@@ -41,6 +41,14 @@ const REGRESSION_CASES = [
     src: 'func main() { print(type(5), type("s"), type(true), type([1]), type({"a":1})); }',
   },
   {
+    // round() used to differ: Python rounded half-to-even on the exact
+    // binary value while the Playground rounded half-up on the scaled one,
+    // so anything landing near a .5 boundary disagreed. Both now run the
+    // same explicit algorithm.
+    name: 'round() agrees on half-way values, negatives and digit counts',
+    src: 'func main() { print(round(3.14159 * 2500, 2)); print(round(2.5), round(-2.5), round(3.5), round(-3.5), round(0.5), round(-0.5)); print(round(1.005, 2), round(-1.005, 2), round(2.675, 2)); print(round(1234.5678, -2), round(1234.5678, 2), round(1234.5678)); print(round(0), round(-0.0), round(1e10, 2)); }',
+  },
+  {
     name: 'math builtins',
     src: 'func main() { print(abs(-5), min(3,1,2), max([3,9,1]), round(3.14159,2), floor(3.9), ceil(3.1), sqrt(16), pow(2,10)); }',
   },
@@ -225,6 +233,157 @@ const REGRESSION_CASES = [
     name: 'spreading a non-array is a type error',
     src: 'func f(...xs) { return len(xs); } func main() { var probes = [func(){ return f(...5); }, func(){ return f(..."ab"); }, func(){ return f(...{a:1}); }, func(){ return f(...null); }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } }',
   },
+  // --- Destructuring -------------------------------------------------------
+  {
+    name: 'array destructuring in var, with rest and defaults',
+    src: 'func main() { var [x, y] = [1, 2]; print(x, y); var [head, ...tail] = [1,2,3,4]; print(head, tail); var [p, q = 99] = [5]; print(p, q); var [only, ...none] = [7]; print(only, none); }',
+  },
+  {
+    name: 'object destructuring in var, with renaming, defaults and rest',
+    src: 'func main() { var {name, age} = {name: "Ada", age: 36}; print(name, age); var {name: who, missing = "n/a"} = {name: "Bob"}; print(who, missing); var {a, ...others} = {a: 1, b: 2, c: 3}; print(a, others); }',
+  },
+  {
+    name: 'nested patterns mixing arrays and objects',
+    src: 'func main() { var [{id}, [inner]] = [{id: 7}, [8]]; print(id, inner); var {items: [first, second], meta: {tag}} = {items: [1,2], meta: {tag: "t"}}; print(first, second, tag); }',
+  },
+  {
+    name: 'destructuring parameters, including defaults on the whole pattern',
+    src: 'func swap([a, b]) { return [b, a]; } func describe({name, age = 0, ...rest}) { return "${name}/${age}/${keys(rest)}"; } func opt({x} = {x: 5}) { return x; } func main() { print(swap([1,2])); print(describe({name: "Cy", extra: true})); print(opt()); print(opt({x: 9})); }',
+  },
+  {
+    name: 'destructuring in for-in and catch',
+    src: 'func main() { for ([k, v] in [["a",1],["b",2]]) { print(k, "=", v); } for ({name: n} in [{name:"x"},{name:"y"}]) { print(n); } try { var a = []; print(a[3]); } catch ({kind, message}) { print(kind, "|", message); } }',
+  },
+  {
+    name: 'destructuring failures are strict and classified',
+    src: 'func main() { var probes = [func(){ var [m, n] = [1]; return m; }, func(){ var {zz} = {}; return zz; }, func(){ var [w] = 5; return w; }, func(){ var {w} = [1]; return w; }, func(){ var [[q]] = [[]]; return q; }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } }',
+  },
+  {
+    name: 'destructured for-in still binds fresh per iteration',
+    src: 'func main() { var fns = []; for ([a, b] in [[1,2],[3,4]]) { push(fns, func() { return a + b; }); } print(map(fns, func(f){ return f(); })); }',
+  },
+
+  // --- Structs -------------------------------------------------------------
+  {
+    name: 'struct construction, fields, stringify and type()',
+    src: 'struct Point { x, y; } func main() { var p = Point(3, 4); print(p); print(p.x, p.y); print(type(p), type(Point)); print(toString(p)); }',
+  },
+  {
+    name: 'methods see `this`, and stay bound when pulled off the instance',
+    src: 'struct Point { x, y; func mag() { return sqrt(this.x*this.x + this.y*this.y); } func scaled(k) { return Point(this.x*k, this.y*k); } func label(prefix = "P") { return "${prefix}(${this.x},${this.y})"; } } func main() { var p = Point(3,4); print(p.mag()); print(p.scaled(2)); print(p.label(), p.label("Q")); var m = p.mag; print(m()); }',
+  },
+  {
+    name: 'field defaults, including ones referring to earlier fields',
+    src: 'struct Config { host, port = 8080, url = "http://${host}:${port}"; } func main() { print(Config("a")); print(Config("a", 99)); print(Config("a", 1, "custom")); }',
+  },
+  {
+    name: 'field assignment is restricted to declared fields',
+    src: 'struct P { x; } func main() { var p = P(1); p.x = 5; print(p.x); try { p.y = 1; } catch (e) { print(e.kind, "|", e.message); } try { print(p.z); } catch (e) { print(e.kind, "|", e.message); } }',
+  },
+  {
+    name: 'struct equality is structural and per-struct',
+    src: 'struct A { v; } struct B { v; } func main() { print(A(1) == A(1), A(1) == A(2), A(1) == B(1)); print(A([1,2]) == A([1,2])); print(A(1) == {v: 1}); print(indexOf([A(1), A(2)], A(2))); }',
+  },
+  {
+    name: 'structs answer keys/values/has/get/len and object destructuring',
+    src: 'struct Point { x, y; func mag() { return 0; } } func main() { var p = Point(3,4); print(keys(p), values(p), len(p)); print(has(p,"x"), has(p,"mag"), get(p,"x",0), get(p,"zz","d")); var {x, y} = p; print(x, y); var {x: a, ...rest} = p; print(a, rest); }',
+  },
+  {
+    name: 'struct constructor arity errors',
+    src: 'struct P { x, y; } struct Q { a, b = 2; } func main() { var probes = [func(){ return P(1); }, func(){ return P(1,2,3); }, func(){ return Q(); }]; for (f in probes) { try { f(); } catch (e) { print(e.kind, "|", e.message); } } }',
+  },
+  {
+    name: 'structs are hoisted, nest, and work with the collection pipeline',
+    src: 'func main() { var people = [Person("Ada", 36), Person("Bob", 17), Person("Cy", 44)]; var adults = filter(people, func(p) { return p.isAdult(); }); print(map(adults, func(p) { return p.name; })); print(sort(map(people, func(p){ return p.age; }))); var nested = Wrapper(Person("Zed", 1)); print(nested.inner.name); } struct Person { name, age; func isAdult() { return this.age >= 18; } } struct Wrapper { inner; }',
+  },
+  // --- Pattern matching ----------------------------------------------------
+  {
+    name: 'literal patterns, including negatives, booleans and null',
+    src: 'func classify(v) { match (v) { case 0: return "zero"; case -1: return "minus one"; case "hi": return "greeting"; case true: return "yes"; case null: return "nothing"; case n: return "other ${toString(n)}"; } } func main() { for (v in [0, -1, "hi", true, null, 7, "x"]) { print(classify(v)); } }',
+  },
+  {
+    name: 'array patterns match length exactly unless a rest is given',
+    src: 'func f(v) { match (v) { case []: return "empty"; case [a]: return "one ${a}"; case [a, b]: return "two ${a},${b}"; case [h, ...t]: return "many ${h}+${len(t)}"; case n: return "not an array"; } } func main() { print(f([])); print(f([1])); print(f([1,2])); print(f([1,2,3,4])); print(f("s")); }',
+  },
+  {
+    name: 'object patterns are partial and can nest',
+    src: 'func f(v) { match (v) { case {kind: "circle", radius: r}: return "circle ${r}"; case {kind: k, meta: {tag: t}}: return "${k}/${t}"; case {kind: k}: return "tagged ${k}"; case other: return "none"; } } func main() { print(f({kind: "circle", radius: 5, extra: 1})); print(f({kind: "sq", meta: {tag: "t"}})); print(f({kind: "sq"})); print(f({nope: 1})); print(f(5)); }',
+  },
+  {
+    name: 'struct patterns match the exact struct and bind fields in order',
+    src: 'struct Circle { radius; } struct Rect { w, h; } func area(s) { match (s) { case Circle(r): return round(3.14159 * r * r, 2); case Rect(w, h): return w * h; default: return -1; } } func main() { print(area(Circle(2)), area(Rect(3,4)), area("x"), area(5)); }',
+  },
+  {
+    name: 'case guards, tried in order, first match wins',
+    src: 'func size(n) { match (n) { case x if (x < 0): return "negative"; case 0: return "zero"; case x if (x > 100): return "big"; case x: return "small"; } } func main() { for (n in [-5, 0, 500, 7]) { print(size(n)); } }',
+  },
+  {
+    name: 'nested patterns combining arrays, objects and structs',
+    src: 'struct P { x, y; } func f(v) { match (v) { case [P(0, 0), rest]: return "origin then ${toString(rest)}"; case [P(x, y), ...more]: return "point ${x},${y} +${len(more)}"; case {items: [first, second]}: return "items ${first}/${second}"; default: return "no"; } } func main() { print(f([P(0,0), "tail"])); print(f([P(1,2), 9, 9])); print(f({items: [1,2]})); print(f(3)); }',
+  },
+  {
+    name: 'no matching case without a default is an error',
+    src: 'func main() { print("before"); match (99) { case 1: print("one"); } print("never"); }',
+  },
+  {
+    name: 'match bindings are scoped to their case',
+    src: 'func main() { var n = "outer"; match ([1, 2]) { case [n, m]: print("inside", n, m); default: print("no"); } print("after", n); }',
+  },
+  {
+    name: 'a struct pattern with the wrong field count is an error',
+    src: 'struct P { x, y; } func main() { try { match (P(1,2)) { case P(a): print("no"); default: print("d"); } } catch (e) { print(e.kind, "|", e.message); } try { var notStruct = 5; match (1) { case notStruct(a): print("no"); } } catch (e) { print(e.kind, "|", e.message); } }',
+  },
+
+  // --- Generators ----------------------------------------------------------
+  {
+    name: 'a generator function is lazy and yields in order',
+    src: 'func countdown(start) { var n = start; while (n > 0) { yield n; n -= 1; } yield "liftoff"; } func main() { print(type(countdown), type(countdown(1))); print(toString(countdown(1))); for (v in countdown(3)) { print(v); } }',
+  },
+  {
+    name: 'an endless generator is consumed only as far as asked',
+    src: 'func naturals() { var n = 0; while (true) { yield n; n += 1; } } func main() { print(take(naturals(), 5)); var out = []; for (n in naturals()) { if (n > 4) { break; } push(out, n); } print(out); }',
+  },
+  {
+    name: 'generators chain into streaming pipelines',
+    src: 'func naturals() { var n = 0; while (true) { yield n; n += 1; } } func squares(src) { for (x in src) { yield x * x; } } func takeWhile(src, pred) { for (x in src) { if (!pred(x)) { return; } yield x; } } func main() { print(toArray(takeWhile(squares(naturals()), func(v) { return v < 100; }))); print(take(squares(naturals()), 4)); }',
+  },
+  {
+    name: 'yield inside if, for, for-in, try and match',
+    src: 'func mixed() { for (var i = 0; i < 2; i += 1) { if (i == 0) { yield "if"; } else { yield "else"; } } for (c in "ab") { yield c; } try { yield "try"; throw "x"; } catch (e) { yield "catch ${e}"; } finally { yield "finally"; } match (2) { case 2: yield "match"; default: yield "no"; } } func main() { print(toArray(mixed())); }',
+  },
+  {
+    name: 'return ends a generator early',
+    src: 'func upTo(limit) { var n = 0; while (true) { if (n > limit) { return; } yield n; n += 1; } } func main() { print(toArray(upTo(3))); print(toArray(upTo(0))); }',
+  },
+  {
+    name: 'generators are single use',
+    src: 'func two() { yield 1; yield 2; } func main() { var g = two(); print(toArray(g)); try { print(toArray(g)); } catch (e) { print(e.kind, "|", e.message); } }',
+  },
+  {
+    name: 'a generator keeps its own scope across suspensions',
+    src: 'func counter() { var n = 0; while (n < 3) { n += 1; yield n; } } func main() { var g = counter(); var outside = 100; for (v in g) { outside += 1; print(v, outside); } }',
+  },
+  {
+    name: 'errors and throws propagate out of a generator with a frame',
+    src: 'func boom() { yield 1; var a = []; yield a[9]; } func thrower() { yield 1; throw "from generator"; } func main() { try { print(toArray(boom())); } catch (e) { print(e.kind, "|", e.message, "|", e.stack); } try { for (v in thrower()) { print(v); } } catch (e) { print("caught", e); } }',
+  },
+  {
+    name: 'closures capture a generator per call, independently',
+    src: 'func gen(tag) { var i = 0; while (i < 2) { yield "${tag}${i}"; i += 1; } } func main() { var a = gen("a"); var b = gen("b"); print(toArray(a), toArray(b)); }',
+  },
+  {
+    name: 'take and toArray work on every iterable, and reject the rest',
+    src: 'func main() { print(toArray([1,2]), toArray("ab"), toArray({x:1,y:2})); print(take([1,2,3], 2), take("hello", 3), take([1], 0)); var probes = [func(){ return toArray(5); }, func(){ return take(5, 1); }, func(){ return take([1], -1); }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } }',
+  },
+  {
+    name: 'a generator method on a struct sees this',
+    src: 'struct Bag { items; func each() { for (x in this.items) { yield x; } } } func main() { var b = Bag([1,2,3]); print(toArray(b.each())); print(take(b.each(), 2)); }',
+  },
+  {
+    name: 'yield outside a function is a syntax error',
+    src: 'yield 1;',
+  },
+
   {
     name: 'pipeline combining closures, for-in, interpolation and stdlib',
     src: 'func main() { var people = [{name: "Ada", age: 36}, {name: "Bob", age: 17}, {name: "Cy", age: 44}]; var adults = filter(people, func(p) { return p.age >= 18; }); var names = sort(map(adults, func(p) { return p.name; })); for (n in names) { print("adult: ${n}"); } print("total age ${ reduce(map(people, func(p){ return p.age; }), func(a,b){ return a+b; }) }"); }',
@@ -298,6 +457,43 @@ const MODULE_CASES = [
     },
   },
   {
+    name: 'namespace imports bind one object of every export',
+    files: {
+      'main.mrt': 'import * as math from "./lib/math.mrt";\nfunc main() { print(math.PI, math.square(4)); print(keys(math)); print(type(math)); try { print(math.helper); } catch (e) { print(e.kind, "|", e.message); } }\n',
+      'lib/math.mrt': 'export var PI = 3.14;\nexport func square(n) { return n * n; }\nfunc helper() { return 1; }\n',
+    },
+  },
+  {
+    name: 're-exports forward another module without binding locally',
+    files: {
+      'main.mrt': 'import { PI, sq, local } from "./lib/index.mrt";\nfunc main() { print(PI, sq(3), local); }\n',
+      'lib/index.mrt': 'export { PI, square as sq } from "./math.mrt";\nvar local = "mine";\nexport { local };\n',
+      'lib/math.mrt': 'export var PI = 3.14;\nexport func square(n) { return n * n; }\n',
+    },
+  },
+  {
+    name: 're-exporting a name the source module lacks',
+    files: {
+      'main.mrt': 'import { a } from "./mid.mrt";\nfunc main() { }\n',
+      'mid.mrt': 'export { nope } from "./base.mrt";\n',
+      'base.mrt': 'export var yes = 1;\n',
+    },
+  },
+  {
+    name: 'destructuring an imported object across module boundaries',
+    files: {
+      'main.mrt': 'import { config } from "./conf.mrt";\nvar {host, port = 80, ...extra} = config;\nfunc main() { print(host, port, extra); }\n',
+      'conf.mrt': 'export var config = {host: "example", debug: true, region: "eu"};\n',
+    },
+  },
+  {
+    name: 'a struct declared in one module is usable from another',
+    files: {
+      'main.mrt': 'import { Point, origin } from "./geo.mrt";\nfunc main() { var p = Point(1, 2); print(p, p.mag() > 2); print(origin); print(type(p)); }\n',
+      'geo.mrt': 'export struct Point { x, y; func mag() { return sqrt(this.x*this.x + this.y*this.y); } }\nexport var origin = Point(0, 0);\n',
+    },
+  },
+  {
     name: 'modules combine with defaults, rest, errors and interpolation',
     files: {
       'main.mrt': 'import { describe, tally } from "./util.mrt";\nfunc main() { print(describe("x")); print(describe("x", "!")); print(tally(1, 2, 3)); try { tally(); } catch (e) { print(e.kind); } }\n',
@@ -316,8 +512,22 @@ function runPython(src) {
 }
 
 // python3 -m src needs a *file*, not stdin, so write the snippet to a temp file.
+//
+// A syntax error makes the CLI exit 65 and write to stderr, which execFileSync
+// turns into a thrown error. That is still a result worth comparing -- the two
+// implementations each have their own parser -- so the failure is caught and
+// its stderr returned, letting syntax-error cases be checked for parity too.
 function runPythonFile(filePath) {
-  return execFileSync('python3', ['-m', 'src', filePath], { cwd: repoRoot, encoding: 'utf8' }).trimEnd()
+  try {
+    return execFileSync('python3', ['-m', 'src', filePath], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trimEnd()
+  } catch (err) {
+    if (err.stdout === undefined && err.stderr === undefined) throw err
+    return `${err.stdout ?? ''}${err.stderr ?? ''}`.trimEnd()
+  }
 }
 
 async function main() {
