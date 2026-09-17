@@ -144,7 +144,7 @@ def test_reduce_on_empty_array_needs_an_initial_value():
     ''')
     assert errors == []
     assert output[0] == "0"
-    assert any("empty array needs an initial value" in line for line in output)
+    assert any("empty sequence needs an initial value" in line for line in output)
 
 
 def test_find_some_every():

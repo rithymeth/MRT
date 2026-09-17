@@ -703,5 +703,111 @@ func main() {
 }
 ```
 
+## Coroutines and Lazy Pipelines
+
+### Feeding values into a generator
+```mrt
+func running() {
+    var total = 0;
+    while (true) {
+        var n = yield total;
+        if (n == null) { return; }
+        total += n;
+    }
+}
+
+func main() {
+    var totals = running();
+    next(totals);                       // start it; the first send is dropped
+    for (n in [5, 3, 12]) { print(send(totals, n).value); }
+    print(send(totals, null).done);
+}
+```
+
+### A lazy pipeline over an endless sequence
+```mrt
+func naturals() { var n = 0; while (true) { yield n; n += 1; } }
+
+func main() {
+    var squares = map(naturals(), func(n) { return n * n; });
+    print(take(squares, 5));
+    print(take(squares, 3));            // resumes where the last take stopped
+    print(take(filter(naturals(), func(n) { return n % 7 == 0; }), 4));
+}
+```
+
+### Delegating with `yield*`
+```mrt
+func header() { yield "id,name"; }
+func rows(people) { for (p in people) { yield "${p.id},${p.name}"; } }
+func csv(people) { yield* header(); yield* rows(people); }
+
+func main() {
+    for (line in csv([{id: 1, name: "Ada"}, {id: 2, name: "Bob"}])) { print(line); }
+}
+```
+
+### A type that knows how to iterate itself
+```mrt
+struct Grid {
+    rows;
+    func iter() {
+        for (row in this.rows) { for (cell in row) { yield cell; } }
+    }
+}
+
+func main() {
+    var g = Grid([[1, 2], [3, 4], [5, 6]]);
+    print(toArray(g));
+    print(reduce(g, func(a, b) { return a + b; }));
+    print(filter(g, func(n) { return n % 2 == 0; }));
+}
+```
+
+## Expressions That Used To Be Statements
+
+### Match as an expression
+```mrt
+struct Circle { radius; }
+struct Rect { w, h; }
+
+func area(shape) {
+    return match (shape) {
+        case Circle(r): round(3.14159 * r * r, 2),
+        case Rect(w, h): w * h,
+        default: 0
+    };
+}
+
+func main() {
+    print(area(Circle(2)), area(Rect(3, 4)), area("nope"));
+    print(map([1, 2, 3], func(n) {
+        return match (n % 2) { case 0: "even", default: "odd" };
+    }));
+}
+```
+
+### Destructuring assignment
+```mrt
+func main() {
+    var a = 0;
+    var b = 1;
+    var seq = [];
+    for (var i = 0; i < 10; i += 1) {
+        push(seq, a);
+        [a, b] = [b, a + b];
+    }
+    print(seq);
+
+    var x = 0;
+    var y = 0;
+    var rest = {};
+    {x, y, ...rest} = {x: 1, y: 2, label: "origin-ish"};
+    print(x, y, rest);
+}
+```
+
 Full programs: `examples/destructuring.mrt`, `examples/structs.mrt`,
-`examples/matching.mrt` and `examples/generators.mrt`.
+`examples/matching.mrt`, `examples/generators.mrt`,
+`examples/coroutines.mrt`, `examples/lazy.mrt` and
+`examples/expressions.mrt`.

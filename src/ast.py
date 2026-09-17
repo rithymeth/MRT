@@ -232,12 +232,34 @@ class ForIn(Stmt):
 
 @dataclass
 class Yield(Stmt):
-    """`yield expr;` inside a function makes that function a generator.
+    """`yield expr;` inside a function makes that function a generator, and
+    `yield* other;` delegates to another iterable, re-yielding every item.
 
-    `yield` is deliberately a *statement*, not an expression: only statement
-    execution then has to be suspendable, which is what makes lazy evaluation
-    implementable in a tree-walking interpreter without rewriting every
-    expression path."""
+    `yield` is deliberately a *statement*, not a general expression: only
+    statement execution then has to be suspendable, which is what makes lazy
+    evaluation implementable in a tree-walking interpreter without rewriting
+    every expression path. The one exception is `YieldExpr` below, which is
+    still confined to a whole statement."""
+    keyword: 'Token'
+    value: Expr
+    delegate: bool = False
+
+
+@dataclass
+class YieldExpr(Expr):
+    """`yield expr` in the one position where it produces a value: as the
+    entire right-hand side of a declaration or an assignment, i.e.
+
+        var x = yield 1;        x = yield 1;       [a, b] = yield 1;
+
+    Its value is whatever the consumer sends back in with `send()`, or
+    `null` when the generator is driven by `for`-`in` or `toArray`. Confining
+    it to those shapes is what keeps suspension a statement-level concern:
+    the interpreter never has to unwind a half-evaluated expression.
+
+    It is an `Expr` only so that `Var`/`Assign`/`DestructureAssign` can hold
+    one without a second set of nodes; evaluating it through the ordinary
+    expression path is a runtime error."""
     keyword: 'Token'
     value: Expr
 
@@ -372,6 +394,30 @@ class Match(Stmt):
 
 
 @dataclass
+class MatchArm:
+    """One arm of a `match` *expression*: a pattern and the expression its
+    value is."""
+    pattern: Optional[MatchPattern]  # None for `default:`
+    guard: Optional[Expr]
+    value: Expr
+    keyword: 'Token'
+
+
+@dataclass
+class MatchExpr(Expr):
+    """`match (subject) { case <pattern>: <expr>, default: <expr> }` used as
+    a value.
+
+    The same patterns and guards as the `Match` statement, but each arm is a
+    single expression and the whole thing evaluates to the matching arm's
+    value -- so a match can be assigned, returned or passed straight to a
+    call without a mutable temporary."""
+    subject: Expr
+    arms: List[MatchArm]
+    keyword: 'Token'
+
+
+@dataclass
 class StructDecl(Stmt):
     """`struct Point { x, y; func mag() { ... } }`.
 
@@ -392,6 +438,20 @@ class ExportNames(Stmt):
     names: List[Tuple['Token', 'Token']]
     specifier: Optional['Token']
     keyword: 'Token'
+
+
+@dataclass
+class DestructureAssign(Stmt):
+    """`[a, b] = pair;` / `{x, y} = point;` -- assignment through a pattern
+    to variables that already exist.
+
+    Deliberately a statement rather than an expression: `{...}` in expression
+    position is an object literal, and only at the start of a statement can
+    the parser tell the two apart without the parenthesis dance other
+    languages need (`({x} = o)`)."""
+    pattern: Pattern
+    value: Expr
+    token: 'Token'
 
 
 @dataclass

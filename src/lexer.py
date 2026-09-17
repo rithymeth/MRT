@@ -31,8 +31,6 @@ class TokenType(Enum):
     MATCH = auto()
     CASE = auto()
     DEFAULT = auto()
-    FROM = auto()
-    AS = auto()
 
     # Literals
     IDENTIFIER = auto()
@@ -122,8 +120,6 @@ class Lexer:
             "default": TokenType.DEFAULT,
             "import": TokenType.IMPORT,
             "export": TokenType.EXPORT,
-            "from": TokenType.FROM,
-            "as": TokenType.AS,
         }
 
     def scan_tokens(self) -> List[Token]:

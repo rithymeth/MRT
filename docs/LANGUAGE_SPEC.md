@@ -26,9 +26,10 @@ happens?*
 11. [Structs](#structs)
 12. [Pattern matching](#pattern-matching)
 13. [Generators](#generators)
-14. [Modules](#modules)
-15. [Known ambiguities (by design)](#known-ambiguities-by-design)
-16. [Future work / explicitly out of scope](#future-work--explicitly-out-of-scope)
+14. [The iterator protocol](#the-iterator-protocol)
+15. [Modules](#modules)
+16. [Known ambiguities (by design)](#known-ambiguities-by-design)
+17. [Future work / explicitly out of scope](#future-work--explicitly-out-of-scope)
 
 ## Design goals and non-goals
 
@@ -107,14 +108,23 @@ Reserved keywords (cannot be used as identifiers):
 func return if else while for print var
 true false break continue
 null try catch finally throw in
-import export from as
+import export
 struct match case default yield
 ```
 
-The last row is new in the current revision: `struct`, `match`, `case`,
-`default` and `yield` are now reserved, so a program that used any of them
-as a variable or function name no longer parses. (The row before it added
-`import`, `export`, `from` and `as` in the previous revision.)
+**Contextual keywords.** `from` and `as` are *not* reserved. They are
+recognised only in the positions an import or export clause puts them in, so
+a program is free to use them as a variable, a parameter, a struct field or
+a bareword object key:
+
+```mrt
+struct Trip { from, to }
+func fare(from, as) { return "${from} -> ${as}"; }
+var route = {from: "LHR", to: "JFK"};
+```
+
+They were reserved words up to the previous revision, which quietly made
+`{from: ...}` a syntax error; making them contextual is the fix.
 
 ### Operators and punctuation
 
@@ -196,7 +206,8 @@ field          = IDENTIFIER ( "=" expression )? ;
 importDecl     = "import" "{" importNames? "}" "from" STRING ";"? ;
 importNames    = importName ( "," importName )* ;
 importName     = IDENTIFIER ( "as" IDENTIFIER )? ;
-               (* only valid at the top level of a file *)
+               (* only valid at the top level of a file. "from" and "as" are
+                  contextual: they are ordinary IDENTIFIERs everywhere else *)
 
 exportDecl     = "export" ( funcDecl | varDecl ) ;
                (* only valid at the top level of a file *)
@@ -208,16 +219,22 @@ parameter      = pattern
                (* a rest parameter must come last; a required parameter may
                   not follow one with a default *)
 
-varDecl        = "var" pattern ( "=" expression )? ";"? ;
+varDecl        = "var" pattern ( "=" ( expression | yieldExpr ) )? ";"? ;
                (* an initializer is required unless the pattern is a
                   plain name *)
+
+destructAssign = pattern "=" ( expression | yieldExpr ) ";"? ;
+               (* only at the start of a statement, and only when `pattern`
+                  is an array or object pattern; the leaves name variables
+                  that already exist *)
 
 pattern        = IDENTIFIER ( "=" expression )?
                | "[" ( pattern ( "," pattern )* ( "," "..." IDENTIFIER )? )? "]" ( "=" expression )?
                | "{" ( objEntry ( "," objEntry )* ( "," "..." IDENTIFIER )? )? "}" ( "=" expression )? ;
 objEntry       = IDENTIFIER ( ":" pattern | ( "=" expression )? ) ;
 
-statement      = exprStmt
+statement      = destructAssign
+               | exprStmt
                | matchStmt
                | yieldStmt
                | forStmt
@@ -260,13 +277,22 @@ catchClause    = "catch" "(" pattern ")" ( "if" "(" expression ")" )? block ;
 
 throwStmt      = "throw" expression ";"? ;
 
-yieldStmt      = "yield" expression ";"? ;
+yieldStmt      = "yield" "*"? expression ";"? ;
                (* only inside a function; its presence makes that function
-                  a generator *)
+                  a generator. `yield*` re-yields another iterable's items *)
+
+yieldExpr      = "yield" expression ;
+               (* only as the whole right-hand side of a varDecl, a
+                  destructAssign, or an assignment; evaluates to the value
+                  sent in with send() *)
 
 matchStmt      = "match" "(" expression ")" "{" caseClause* defaultClause? "}" ;
 caseClause     = "case" matchPattern ( "if" "(" expression ")" )? ":" statement* ;
 defaultClause  = "default" ":" statement* ;
+
+matchExpr      = "match" "(" expression ")" "{" matchArm ( "," matchArm )* ","? "}" ;
+matchArm       = "case" matchPattern ( "if" "(" expression ")" )? ":" expression
+               | "default" ":" expression ;
 
 matchPattern   = NUMBER | STRING | "true" | "false" | "null" | "-" NUMBER
                | IDENTIFIER
@@ -279,8 +305,11 @@ block          = "{" declaration* "}" ;
 
 expression     = assignment ;
 
-assignment     = ( call "." )? IDENTIFIER ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) assignment
+assignment     = ( call "." )? IDENTIFIER "=" ( assignment | yieldExpr )
+               | ( call "." )? IDENTIFIER ( "+=" | "-=" | "*=" | "/=" | "%=" ) assignment
                | logic_or ;
+               (* yieldExpr only when this assignment is the whole
+                  expression of a statement *)
 
 logic_or       = logic_and ( "||" logic_and )* ;
 logic_and      = equality ( "&&" equality )* ;
@@ -299,6 +328,7 @@ argument       = "..." expression | expression ;
 primary        = NUMBER | STRING | TEMPLATE | "true" | "false" | "null"
                | IDENTIFIER
                | funcExpr
+               | matchExpr
                | "(" expression ")"
                | "[" ( argument ( "," argument )* )? "]"
                | "{" ( objectEntry ( "," objectEntry )* )? "}" ;
@@ -347,6 +377,22 @@ recursive-descent parser in `src/parser.py`):
   long; it rewinds if the `in` never arrives.
 - Whether a function is a generator is settled at parse time by whether a
   `yield` appeared directly in its body (not inside a nested function).
+- `destructAssign` is likewise speculative: the parser tries to read a
+  pattern followed by `=` and rewinds if either is missing, so `{ x = 1; }`
+  stays a block and `[1, 2][0];` stays an expression. The pattern's own
+  trailing-default slot is what captures the assigned value, which is why
+  one production covers both it and `varDecl`.
+- `from` and `as` are not tokens of their own: the parser matches an
+  IDENTIFIER with that exact spelling, only where an import or export
+  clause expects one.
+- `yieldExpr` is reachable from exactly three places (a `var` initializer,
+  a `destructAssign` value, and the right-hand side of a statement-level
+  assignment). The parser carries one flag, cleared on entry to every
+  nested expression, to enforce that — so `f(yield 1)` is a parse error
+  rather than something the interpreter has to reject at run time.
+- `matchExpr` is reached only from `primary`, and `matchStmt` only from
+  `statement`, so the two forms never compete: a statement cannot begin
+  inside an expression.
 
 ## Expressions and operator precedence
 
@@ -698,8 +744,10 @@ memory address on one side and JavaScript source text on the other.)
 | `count(arr, v)` | `(array, any) -> number` | structural equality |
 | `sum(arr)` | `(array) -> number` | error if any element isn't a number; `sum([])` is `0` |
 | `range(end)` / `range(start, end)` / `range(start, end, step)` | `(number, number?, number?) -> array` | half-open, like Python; `step` may be negative but not `0` |
-| `toArray(x)` | `(iterable) -> array` | materialises an array, string, object's keys, or a generator |
-| `take(x, n)` | `(iterable, number) -> array` | the first `n` items; safe on an endless generator |
+| `toArray(x)` | `(iterable) -> array` | materialises an array, string, object's keys, generator, or a struct with `iter()` |
+| `take(x, n)` | `(iterable, number) -> array` | the first `n` items, pulling exactly `n`; safe on an endless generator |
+| `next(g)` | `(generator) -> object` | one step, as `{done, value}` |
+| `send(g, v)` | `(generator, any) -> object` | one step, with `v` as the value of the `yield` it is suspended at |
 
 ### Higher-order
 
@@ -707,14 +755,20 @@ Each takes the function as its *last* argument and never mutates its
 input. The callback is called with one element at a time (two for
 `reduce` and `sort`).
 
+All of these except `sort` accept **any iterable** — an array, a string, an
+object (its keys), a generator, or a struct implementing `iter()`.
+
 | Function | Signature | Notes |
 |---|---|---|
-| `map(arr, f)` | `(array, function) -> array` | |
-| `filter(arr, f)` | `(array, function) -> array` | keeps elements where `f(x)` is truthy |
-| `reduce(arr, f, init?)` | `(array, function, any?) -> any` | without `init`, starts from `arr[0]`; an empty array without `init` is an error |
-| `find(arr, f)` | `(array, function) -> any` | first match, or `null` |
-| `some(arr, f)` / `every(arr, f)` | `(array, function) -> boolean` | |
-| `sort(arr, compare?)` | `(array, function?) -> array` | returns a **new** array. Without `compare`, the array must be all numbers or all strings. `compare(a, b)` returns negative / zero / positive. Stable in both implementations. |
+| `map(seq, f)` | `(iterable, function) -> array \| generator` | returns a **generator** when `seq` is one, so the pipeline stays lazy; an array otherwise |
+| `filter(seq, f)` | `(iterable, function) -> array \| generator` | keeps elements where `f(x)` is truthy; lazy on a generator, as `map` |
+| `reduce(seq, f, init?)` | `(iterable, function, any?) -> any` | without `init`, starts from the first item; an empty sequence without `init` is an error |
+| `find(seq, f)` | `(iterable, function) -> any` | first match, or `null` |
+| `some(seq, f)` / `every(seq, f)` | `(iterable, function) -> boolean` | |
+| `sort(arr, compare?)` | `(array, function?) -> array` | **array only** — sorting materialises its input anyway, so `sort(toArray(x))` says what it means. Returns a **new** array. Without `compare`, the array must be all numbers or all strings. `compare(a, b)` returns negative / zero / positive. Stable in both implementations. |
+
+Everything but `map` and `filter` is eager, so handing one of them an
+endless generator does not return.
 
 ### Strings
 
@@ -806,6 +860,32 @@ try { ... } catch ({kind, message}) { ... }
 - A missing key without a default is a `KeyError`.
 - The value may be a plain object **or a struct instance**, whose fields
   (not its methods) are what gets read.
+
+### Destructuring assignment
+
+The same patterns also *assign* to variables that already exist, which is
+what makes a swap one line:
+
+```mrt
+[a, b] = [b, a];
+{x, y} = point;
+[head, ...tail] = items;
+{name, ...extras} = person;
+```
+
+- It is a **statement**, not an expression. `{...}` in expression position
+  is an object literal, and only at the start of a statement can the parser
+  tell the two apart — which is why MRT needs none of the parenthesis dance
+  (`({x} = o)`) other languages do. A leading `{` is still a block and a
+  leading `[` still an array literal whenever no `=` follows the pattern.
+- Every leaf must name a variable **already in scope**; an unknown one is a
+  `NameError`. Nothing is declared, so the assignment reaches outward
+  through enclosing scopes exactly as `x = 1` does.
+- Leaves are plain names. `[obj.field, arr[0]] = pair;` is not a thing —
+  index and field assignment stay `obj.field = ...`.
+- Nesting, `...rest`, defaults and the error messages are all identical to
+  the declaration form, because it is literally the same code path with
+  `define` swapped for `assign`.
 
 ### Everywhere else
 
@@ -918,6 +998,30 @@ to match on one of them would be worse.
   `ArityError`, and a name that isn't a struct is a `TypeError` — both are
   program bugs rather than failed matches.
 
+### `match` as an expression
+
+In expression position, a `match` *is* its value: arms are separated by
+commas and each one is a single expression rather than a block.
+
+```mrt
+var label = match (code) {
+    case 200: "OK",
+    case n if (n >= 500): "Server Error (${n})",
+    default: "Unknown"
+};
+
+print("area: ${ match (shape) { case Circle(r): 3.14159 * r * r, default: 0 } }");
+```
+
+- Same patterns, same guards, same scoping, same "no match and no `default`
+  is a `ValueError`" rule — it shares the matching code with the statement
+  form, so the two can never disagree about what a pattern means.
+- A trailing comma after the last arm is allowed.
+- Which form you get is decided by **position**, not syntax: a `match` that
+  begins a statement is the statement form; one in expression position is
+  this. There is no ambiguity because a statement cannot start inside an
+  expression.
+
 ## Generators
 
 A function whose body contains `yield` is a **generator function**. Calling
@@ -932,10 +1036,6 @@ print(take(naturals(), 5));            // [0, 1, 2, 3, 4]
 print(take(squares(naturals()), 4));   // [0, 1, 4, 9]
 ```
 
-- **`yield` is a statement**, not an expression, and nothing is sent back
-  in. That restriction is what makes generators implementable in a
-  tree-walking interpreter without rewriting every expression path: only
-  statement execution has to be suspendable.
 - `yield` is legal inside `if`, `while`, `for`, `for`-`in`, `try`/`catch`/
   `finally`, `match` and nested blocks. It is a syntax error outside a
   function.
@@ -943,9 +1043,6 @@ print(take(squares(naturals()), 4));   // [0, 1, 4, 9]
   `yield` inside a *nested* function belongs to that inner function.
 - **`return` ends the sequence** (its value is discarded); falling off the
   end does the same.
-- A generator is **single use**. Iterating one a second time is an error
-  rather than an empty loop, matching what the host languages do and
-  turning a silent bug into a loud one.
 - `for`-`in` pulls lazily, so `break` simply stops asking. Errors and
   `throw`s propagate out to whatever is iterating, with the generator's
   name added to `e.stack`.
@@ -955,7 +1052,139 @@ print(take(squares(naturals()), 4));   // [0, 1, 4, 9]
 
 `toArray(x)` materialises any iterable into an array, and `take(x, n)`
 takes the first `n` — the latter being what makes an endless generator
-usable. Both also accept arrays, strings and objects.
+usable. Both also accept arrays, strings, objects and structs that
+implement `iter()`.
+
+### Resumable, but not restartable
+
+A generator is a *position* in a sequence, not a recipe for one. A consumer
+that stops early leaves it suspended, and the next consumer carries on from
+there:
+
+```mrt
+var g = naturals();
+print(take(g, 3));        // [0, 1, 2]
+print(take(g, 2));        // [3, 4]
+for (v in g) { if (v > 6) { break; } }
+print(next(g).value);     // 8
+```
+
+`take(g, n)` pulls exactly `n` items, never one more, precisely so that what
+is left over is predictable.
+
+Once the sequence has *run out* there is no way back to the start, so
+`for`-`in`, `toArray` and `take` over a finished generator raise a
+`ValueError` rather than looping zero times — that is nearly always a bug.
+`next`/`send` are the exception: they keep answering `{done: true}`, so the
+obvious drive loop needs no special case at the end.
+
+Resuming a generator from inside its own body is a `ValueError`.
+
+### Driving a generator by hand
+
+- `next(g)` advances one step and returns `{done, value}`.
+- `send(g, v)` does the same, and `v` becomes the value of the `yield` the
+  generator is suspended at.
+
+```mrt
+func echo() {
+    var got = yield "ready";
+    while (got != "stop") { got = yield "saw ${got}"; }
+}
+
+var g = echo();
+print(next(g).value);          // ready
+print(send(g, "a").value);     // saw a
+print(send(g, "stop").done);   // true
+```
+
+The value sent on the *first* step is discarded: the body has not reached a
+`yield` yet to receive it.
+
+### `yield` as a value
+
+`yield` is a **statement**, with one exception: as the *entire* right-hand
+side of a declaration or an assignment, it produces the value sent in.
+
+```mrt
+var x = yield 1;        // a new binding
+x = yield 2;            // an existing variable
+obj.field = yield 3;    // an index or field
+[a, b] = yield 4;       // a destructuring assignment
+```
+
+Anywhere else — `f(yield 1)`, `1 + yield 2`, `x += yield 3`, a nested
+pattern default — is a syntax error. Restricting it to those four shapes is
+what keeps suspension a statement-level concern: the interpreter never has
+to unwind a half-evaluated expression, which is what makes generators
+implementable in a tree-walking interpreter without rewriting every
+expression path.
+
+When nothing sends a value — a `for`-`in` loop, `toArray`, `take` — a
+`yield` expression evaluates to `null`, so a generator written for `send()`
+still works when it is merely iterated.
+
+### `yield*`
+
+`yield* other;` re-yields every item of another iterable as if it were this
+generator's own, and forwards anything sent in straight through to it, so a
+chain of delegating generators behaves as one.
+
+```mrt
+func inner() { yield 1; yield 2; }
+func outer() { yield 0; yield* inner(); yield* [8, 9]; yield 3; }
+print(toArray(outer()));       // [0, 1, 2, 8, 9, 3]
+```
+
+`yield*` is a statement only: it re-yields a whole sequence and has no value
+of its own, so `var x = yield* g;` is a syntax error.
+
+### Lazy `map` and `filter`
+
+`map` and `filter` return a **generator** when handed a generator, and an
+array for every other iterable. Laziness therefore tracks the input's, and
+a pipeline over an endless sequence computes only what is pulled out of the
+end of it:
+
+```mrt
+print(take(map(naturals(), func(n) { return n * n; }), 5));   // [0, 1, 4, 9, 16]
+print(take(filter(naturals(), isPrime), 4));                  // [2, 3, 5, 7]
+print(map([1, 2], func(n) { return n + 1; }));                // [2, 3] -- an array
+```
+
+A lazy `filter` over an endless generator only terminates if matches keep
+coming; filtering for something that never occurs runs forever, which is the
+bargain any lazy sequence makes.
+
+## The iterator protocol
+
+A struct becomes iterable by declaring a method named **`iter()`**. Anything
+that walks a sequence then accepts it: `for`-`in`, `toArray`, `take`, `map`,
+`filter`, `reduce`, `find`, `some` and `every`.
+
+```mrt
+struct Span {
+    lo, hi;
+    func iter() { var n = this.lo; while (n < this.hi) { yield n; n += 1; } }
+}
+
+for (n in Span(1, 4)) { print(n); }          // 1 2 3
+print(reduce(Span(1, 101), func(a, b) { return a + b; }));   // 5050
+print(take(Span(0, 1000000), 3));            // [0, 1, 2]
+```
+
+- `iter()` may return **any** iterable — a generator, an array, a string, an
+  object, or another struct that implements `iter()`.
+- It is called **afresh** on every iteration, so unlike a generator a struct
+  is not consumed by being iterated.
+- A struct *without* `iter()` iterates its field names, exactly as a plain
+  object does.
+- `iter()` returning the struct itself is a `ValueError` (it would iterate
+  forever); returning something non-iterable is a `TypeError` naming the
+  struct, since the mistake may be a long way from the loop that tripped
+  over it.
+- `sort` is deliberately **not** in the list: it takes an array, because
+  sorting has to materialise its input anyway and `sort(toArray(x))` says so.
 
 ## Modules
 
@@ -1092,9 +1321,11 @@ The parity checker exercises multi-file programs through both.
   (and `false`/`0`) identically, so `{1: "a"}[true]` returns `"a"` instead
   of raising a missing-key error. Avoid mixing boolean and numeric keys in
   the same object.
-- **`in` is now a reserved word.** `for (x in xs)` needs it, so a program
-  that used `in` as a variable or function name no longer parses. The same
-  applies to `null`, `try`, `catch`, `finally` and `throw`.
+- **`in` is a reserved word.** `for (x in xs)` needs it, so a program that
+  used `in` as a variable or function name does not parse. The same applies
+  to `null`, `try`, `catch`, `finally` and `throw`. `from` and `as` are
+  *not* on that list any more: they are contextual keywords, recognised
+  only inside an import or export clause.
 - **`${` inside a string always begins an interpolation.** A string that
   legitimately contains that character pair must escape it as `\${`. This
   is the one way an existing string literal's meaning can change under
@@ -1131,11 +1362,37 @@ The parity checker exercises multi-file programs through both.
   time**, so `struct C { a, b = a; }` works but `struct C { a = b, b; }`
   does not — and the latter is already rejected, since a field without a
   default cannot follow one that has one.
-- **A generator is single use, and `for`-`in` consumes it.** Iterating the
-  same generator value twice is an error; call the generator function again
-  to get a fresh sequence.
-- **`yield` cannot appear in an expression.** `var x = yield 1;` is a
-  syntax error. Generators produce values; they do not receive them.
+- **A generator is a position, not a recipe.** A consumer that stops early
+  leaves it suspended and the next one resumes from there, which is usually
+  what you want and occasionally a surprise: `take(g, 3)` twice gives items
+  0–2 then 3–5, not 0–2 twice. Call the generator function again for a fresh
+  sequence. Once exhausted it cannot restart, and `for`-`in`/`toArray`/
+  `take` raise rather than looping zero times.
+- **`next`/`send` tolerate an exhausted generator; `for`-`in` does not.**
+  The drive protocol keeps answering `{done: true}` so a loop can end on it,
+  but iterating a finished generator is almost always a bug and is reported
+  as one. The asymmetry is deliberate.
+- **`yield` produces a value in exactly four shapes.** `var x = yield 1;`,
+  `x = yield 1;`, `obj.f = yield 1;` and `[a, b] = yield 1;` — anything
+  else (`f(yield 1)`, `1 + yield 2`, `x += yield 3`) is a syntax error.
+  Suspension stays a statement-level concern so the interpreter never has
+  to unwind a half-evaluated expression.
+- **`yield*` does not forward values sent to a non-generator delegate.**
+  `yield* [1, 2]` re-yields an array's items, and an array has nowhere to
+  receive a sent value, so it is dropped. Delegating to a generator does
+  forward.
+- **A guard on a bare binding pattern runs for every subject.** `case n
+  if (n < 0):` binds `n` to *anything* and then evaluates the guard, so a
+  non-number subject makes `n < 0` raise rather than simply not match. Put
+  the shape patterns first, or test `type(n)` in the guard.
+- **`map`/`filter` change return type with their input.** A generator in
+  means a generator out; everything else gives an array. That is what makes
+  a lazy pipeline possible, but it means `len(map(g, f))` fails where
+  `len(map(arr, f))` works. Wrap in `toArray` when you need a value you can
+  index.
+- **`sort` is the one higher-order built-in that is array-only.** The rest
+  take any iterable. Sorting has to materialise its input anyway, so
+  `sort(toArray(x))` is required and says so.
 - **`sort()` without a comparator refuses mixed types.** JavaScript's
   default of coercing every element to a string and comparing
   lexicographically (so `[10, 9]` sorts to `[10, 9]`) is a well-known
@@ -1151,16 +1408,15 @@ was an oversight):
 - Inheritance, interfaces or traits between structs; a struct is a flat
   shape with methods and nothing more.
 - Integer vs. float distinction (everything numeric is a 64-bit float).
-- A user-implementable iterator protocol: `for`-`in` drives the built-in
-  containers and generators, and a struct cannot yet make itself iterable
-  except by exposing a generator method.
-- Two-way generators (`var x = yield v;`), generator delegation
-  (`yield*`), and lazy `map`/`filter` built-ins that return generators
-  rather than arrays.
-- Destructuring *assignment* to existing variables (`[a, b] = pair;`);
-  patterns only appear in declarations and bindings.
-- `match` as an expression rather than a statement, and exhaustiveness
-  checking.
+- Exhaustiveness checking for `match`. Nothing static knows a value's
+  possible shapes, so a missing case is caught when it is reached, not
+  when it is written.
+- Destructuring assignment to *index* targets: `[obj.a, arr[0]] = pair;`.
+  A pattern's leaves are plain names.
+- Throwing *into* a suspended generator (`throw(g, v)`), and closing one
+  early so its `finally` blocks run. `send` only sends values.
+- Lazy versions of the remaining sequence built-ins (`enumerate`, `zip`,
+  `unique`, `flatten`); today only `map` and `filter` stay lazy.
 - Default exports and `export * from "..."`.
 - File I/O and date/time. `random` is seeded and deterministic by design,
   so there is deliberately no entropy source either.

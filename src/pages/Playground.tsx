@@ -252,7 +252,7 @@ func naturals() {
 
 func fibonacci() {
     var a = 0; var b = 1;
-    while (true) { yield a; var next = a + b; a = b; b = next; }
+    while (true) { yield a; var following = a + b; a = b; b = following; }
 }
 
 // Generators consuming generators: nothing in between is materialised.
@@ -277,6 +277,192 @@ func main() {
         push(seen, n * 10);
     }
     print("stopped early:", seen);
+}`
+    },
+    {
+      name: 'Coroutines',
+      code: `// \`yield\` is normally a statement, but as the whole right-hand side of a
+// declaration or an assignment it produces whatever \`send()\` hands back --
+// which turns a generator into a small coroutine.
+
+func running() {
+    var total = 0;
+    var count = 0;
+    while (true) {
+        var n = yield {total: total, count: count};
+        if (n == null) { return; }
+        total += n;
+        count += 1;
+    }
+}
+
+func door() {
+    var state = "closed";
+    while (true) {
+        var command = yield state;
+        state = match (command) {
+            case "open": "open",
+            case "close": "closed",
+            case "lock": match (state) { case "open": "open", default: "locked" },
+            default: state
+        };
+    }
+}
+
+// \`yield*\` re-yields another sequence as if it were ours, and forwards
+// anything sent in straight through to it.
+func prelude() { yield "ready"; }
+func greeter() {
+    yield* prelude();
+    var name = yield "name?";
+    yield "hello \${name}";
+}
+
+func main() {
+    print("-- a running total --");
+    var totals = running();
+    next(totals);                     // start it; the first sent value is dropped
+    for (n in [5, 3, 12]) {
+        var step = send(totals, n);
+        print("after \${n}: \${step.value.total} over \${step.value.count}");
+    }
+    print("finished:", send(totals, null).done);
+
+    print("-- a state machine --");
+    var d = door();
+    print(next(d).value);
+    for (command in ["open", "lock", "close", "lock", "wiggle"]) {
+        print("\${command} -> \${send(d, command).value}");
+    }
+
+    print("-- delegation --");
+    var g = greeter();
+    print(next(g).value);
+    print(send(g, null).value);
+    print(send(g, "Ada").value);
+}`
+    },
+    {
+      name: 'Lazy Pipelines',
+      code: `// \`map\` and \`filter\` hand back a generator when given one, so a pipeline
+// over an endless sequence computes only what is pulled out of the end.
+
+func naturals() {
+    var n = 0;
+    while (true) { yield n; n += 1; }
+}
+
+func isPrime(n) {
+    if (n < 2) { return false; }
+    var d = 2;
+    while (d * d <= n) {
+        if (n % d == 0) { return false; }
+        d += 1;
+    }
+    return true;
+}
+
+// A struct with an \`iter()\` method is iterable everywhere an array is.
+struct Span {
+    lo, hi;
+    func iter() {
+        var n = this.lo;
+        while (n < this.hi) { yield n; n += 1; }
+    }
+}
+
+struct Deck {
+    cards;
+    func iter() { return this.cards; }   // any iterable will do
+}
+
+func main() {
+    print("-- lazy --");
+    var squares = map(naturals(), func(n) { return n * n; });
+    print(take(squares, 6));
+    print(take(squares, 3));             // resumes where the last take stopped
+    print(take(filter(naturals(), isPrime), 8));
+
+    var calls = 0;
+    var watched = map(naturals(), func(n) { calls += 1; return n; });
+    take(watched, 4);
+    print("pulled 4, called \${calls} times");
+
+    print("-- eager on everything else --");
+    print(map([1, 2, 3], func(n) { return n * 10; }));
+    print(map("abc", toUpper));
+    print(filter({a: 1, bb: 2, ccc: 3}, func(k) { return len(k) > 1; }));
+
+    print("-- structs that iterate themselves --");
+    for (n in Span(1, 5)) { print(n); }
+    print(reduce(Span(1, 101), func(a, b) { return a + b; }));
+    print(toArray(Deck(["A", "K", "Q"])), take(Span(0, 1000000), 3));
+}`
+    },
+    {
+      name: 'Expressions',
+      code: `// \`match\` in expression position *is* its value, and a pattern can assign
+// to variables that already exist.
+
+struct Circle { radius; }
+struct Rect { w, h; }
+
+func area(shape) {
+    return match (shape) {
+        case Circle(r): round(3.14159 * r * r, 2),
+        case Rect(w, h): w * h,
+        default: 0
+    };
+}
+
+func httpMessage(code) {
+    return match (code) {
+        case 200: "OK",
+        case 404: "Not Found",
+        case n if (n >= 500): "Server Error (\${n})",
+        case n if (n >= 400): "Client Error (\${n})",
+        default: "Unknown (\${code})"
+    };
+}
+
+func main() {
+    print("-- match as an expression --");
+    print(area(Circle(2)), area(Rect(3, 4)), area("nope"));
+    for (code in [200, 404, 503, 418]) { print("\${code}: \${httpMessage(code)}"); }
+    print(map([1, 2, 3], func(n) {
+        return match (n % 2) { case 0: "even", default: "odd" };
+    }));
+
+    print("-- destructuring assignment --");
+    var a = 1;
+    var b = 2;
+    [a, b] = [b, a];
+    print(a, b);
+
+    var x = 0;
+    var y = 0;
+    var rest = {};
+    {x, y, ...rest} = {x: 10, y: 20, label: "origin-ish"};
+    print(x, y, rest);
+
+    var head = 0;
+    var tail = [];
+    [head, ...tail] = [1, 2, 3, 4];
+    print(head, tail);
+
+    // Fibonacci with no temporary.
+    var p = 0;
+    var q = 1;
+    var seq = [];
+    for (var i = 0; i < 10; i += 1) {
+        push(seq, p);
+        [p, q] = [q, p + q];
+    }
+    print(seq);
+
+    // \`from\` and \`as\` are contextual keywords, so they are usable as names.
+    var trip = {from: "LHR", as: "economy", to: "JFK"};
+    print(trip.from, trip.as, trip.to);
 }`
     },
     {

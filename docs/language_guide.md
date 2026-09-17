@@ -16,7 +16,11 @@
 13. [Structs](#structs)
 14. [Pattern Matching](#pattern-matching)
 15. [Generators](#generators)
-16. [Modules](#modules)
+16. [Making your own types iterable](#making-your-own-types-iterable)
+17. [Destructuring assignment](#destructuring-assignment)
+18. [Match as an expression](#match-as-an-expression)
+19. [`from` and `as` are not reserved](#from-and-as-are-not-reserved)
+20. [Modules](#modules)
 
 See also the [Operators](#operators) reference, [Break and Continue](#break-and-continue),
 and the [full language specification](LANGUAGE_SPEC.md) for precise grammar and semantics.
@@ -284,6 +288,17 @@ print(find(nums, func(x) { return x > 4; }));          // 5
 print(some(nums, func(x) { return x > 7; }));          // true
 print(every(nums, func(x) { return x > 0; }));         // true
 ```
+
+All of these except `sort` take **any iterable** — an array, a string, an
+object's keys, a generator, or a struct with an `iter()` method:
+
+```mrt
+print(map("abc", toUpper));                            // [A, B, C]
+print(filter({a: 1, bb: 2}, func(k) { return len(k) > 1; }));   // [bb]
+```
+
+`map` and `filter` hand back a **generator** when given one, so a pipeline
+over an endless sequence stays lazy — see Generators, below.
 
 `sort(arr)` returns a **new** sorted array and leaves the original alone.
 Without a comparator the array must be all numbers or all strings; with one,
@@ -819,13 +834,163 @@ for (n in naturals()) {
 }
 ```
 
+`map` and `filter` do the same thing with less typing: given a generator
+they return a generator, so the pipeline above is just
+
+```mrt
+print(take(map(naturals(), func(n) { return n * n; }), 5));   // [0, 1, 4, 9, 16]
+print(take(filter(naturals(), func(n) { return n % 2 == 0; }), 4));  // [0, 2, 4, 6]
+```
+
+On an array — or a string, or an object — they stay eager and give you an
+array back.
+
+### Resuming a generator
+
+A generator is a *position* in a sequence. A consumer that stops early
+leaves it suspended, and the next one picks up from there:
+
+```mrt
+var g = naturals();
+print(take(g, 3));      // [0, 1, 2]
+print(take(g, 2));      // [3, 4]
+```
+
+Once it has run out, iterating it again is an error rather than an empty
+loop — call the generator function for a fresh sequence.
+
+### Sending values back in
+
+`yield` is a statement, with one exception: as the *whole* right-hand side
+of a declaration or an assignment, it produces whatever the consumer sends
+in. `next(g)` advances one step and returns `{done, value}`; `send(g, v)`
+does the same and hands `v` to the waiting `yield`.
+
+```mrt
+func echo() {
+    var got = yield "ready";
+    while (got != "stop") { got = yield "saw ${got}"; }
+}
+
+var g = echo();
+print(next(g).value);          // ready
+print(send(g, "a").value);     // saw a
+print(send(g, "stop").done);   // true
+```
+
+The value sent on the first step is dropped — the body hasn't reached a
+`yield` yet to catch it. When nothing sends anything (a `for`-`in` loop,
+`toArray`), a `yield` expression is `null`.
+
+### `yield*`
+
+`yield* other;` re-yields everything in another iterable as if it were
+yours, and forwards sent values into it:
+
+```mrt
+func inner() { yield 1; yield 2; }
+func outer() { yield 0; yield* inner(); yield* [8, 9]; }
+print(toArray(outer()));       // [0, 1, 2, 8, 9]
+```
+
 Notes:
 
-- `yield` is a **statement** — `var x = yield 1;` is not valid. Generators
-  produce values; they don't receive them.
 - `return` ends the sequence early.
-- A generator is **single use**; call the function again for a fresh one.
-- `toArray(x)` materialises any iterable; `take(x, n)` takes the first `n`.
+- `toArray(x)` materialises any iterable; `take(x, n)` takes the first `n`,
+  pulling exactly `n`.
 - Struct methods can be generators too.
+- `yield` outside the four assignment shapes (`f(yield 1)`, `1 + yield 2`)
+  is a syntax error, and `yield*` is a statement only.
 
-See `examples/generators.mrt`.
+See `examples/generators.mrt` and `examples/coroutines.mrt`.
+
+## Making your own types iterable
+
+A struct with a method named `iter()` is iterable everywhere an array is —
+`for`-`in`, `toArray`, `take`, `map`, `filter`, `reduce`, `find`, `some`,
+`every`:
+
+```mrt
+struct Span {
+    lo, hi;
+    func iter() { var n = this.lo; while (n < this.hi) { yield n; n += 1; } }
+}
+
+for (n in Span(1, 4)) { print(n); }                          // 1 2 3
+print(reduce(Span(1, 101), func(a, b) { return a + b; }));   // 5050
+print(take(Span(0, 1000000), 3));                            // [0, 1, 2]
+```
+
+`iter()` may return anything iterable, not only a generator:
+
+```mrt
+struct Deck { cards; func iter() { return this.cards; } }
+print(toArray(Deck(["A", "K"])));    // [A, K]
+```
+
+It is called afresh each time, so unlike a generator a struct isn't used up
+by being iterated. A struct *without* `iter()` iterates its field names,
+just as a plain object does.
+
+See `examples/lazy.mrt`.
+
+## Destructuring assignment
+
+The patterns from the Destructuring section also assign to variables that
+already exist, which makes a swap one line and needs no temporary:
+
+```mrt
+var a = 1;
+var b = 2;
+[a, b] = [b, a];
+print(a, b);                    // 2 1
+
+var x = 0; var y = 0;
+{x, y} = {x: 10, y: 20};
+print(x, y);                    // 10 20
+
+var head = 0; var tail = [];
+[head, ...tail] = [1, 2, 3];
+print(head, tail);              // 1 [2, 3]
+```
+
+Every name in the pattern must already be declared — nothing new is
+created, so the assignment reaches outward through enclosing scopes exactly
+as `x = 1` does. The leaves are plain names: `[obj.field] = pair;` is not a
+thing.
+
+A leading `{` is still a block and a leading `[` still an array literal
+whenever no `=` follows, so nothing that used to parse changed meaning.
+
+## Match as an expression
+
+In expression position a `match` *is* its value. Arms are separated by
+commas and each is a single expression:
+
+```mrt
+var label = match (code) {
+    case 200: "OK",
+    case 404: "Not Found",
+    case n if (n >= 500): "Server Error (${n})",
+    default: "Unknown (${code})"
+};
+
+print("area: ${ match (shape) { case Circle(r): 3.14159 * r * r, default: 0 } }");
+```
+
+Same patterns, same guards, same "no match and no `default` is an error"
+rule as the statement form. Which one you get depends only on position: a
+`match` that starts a statement is the statement form.
+
+See `examples/expressions.mrt`.
+
+## `from` and `as` are not reserved
+
+They mean something only inside an `import` or `export` clause, so you can
+use them freely as names:
+
+```mrt
+struct Trip { from, to }
+var route = {from: "LHR", to: "JFK"};
+func fare(from, as) { return "${from} -> ${as}"; }
+```

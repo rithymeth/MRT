@@ -9,9 +9,13 @@ MRT is a modern, expressive programming language designed for simplicity and rea
 - First-class functions: anonymous `func(...)` values, lexical closures, and
   a `map`/`filter`/`reduce`/`sort` pipeline
 - Default and rest parameters, plus `...` spread, and destructuring patterns
-- `struct` types with fields, defaults and methods
-- `match` / `case` pattern matching on shape
-- Generators: `yield` makes a function a lazy, composable sequence
+  in declarations, bindings and assignments (`[a, b] = [b, a];`)
+- `struct` types with fields, defaults and methods, and an `iter()` method
+  that makes one iterable everywhere an array is
+- `match` / `case` pattern matching on shape, as a statement or an expression
+- Generators: `yield` makes a function a lazy, composable sequence, with
+  `send`/`next` to drive one by hand, `yield*` delegation, and lazy
+  `map`/`filter`
 - A module system: `export` / `import` across files, namespace imports and
   re-exports
 - Recoverable errors with `throw` and `try`/`catch`/`finally`, classified by
@@ -192,10 +196,41 @@ match (shape) {
 
 ```mrt
 func naturals() { var n = 0; while (true) { yield n; n += 1; } }
-func squares(src) { for (x in src) { yield x * x; } }
 
-print(take(naturals(), 5));                             // [0, 1, 2, 3, 4]
-print(take(squares(naturals()), 4));                    // [0, 1, 4, 9]
+print(take(naturals(), 5));                                   // [0, 1, 2, 3, 4]
+print(take(map(naturals(), func(n) { return n * n; }), 4));   // [0, 1, 4, 9]
+
+// Two-way: `yield` produces whatever send() hands back.
+func echo() { var got = yield "ready"; yield "saw ${got}"; }
+var g = echo();
+print(next(g).value);                                         // ready
+print(send(g, "hi").value);                                   // saw hi
+```
+
+### Iterable structs
+
+```mrt
+struct Span {
+    lo, hi;
+    func iter() { var n = this.lo; while (n < this.hi) { yield n; n += 1; } }
+}
+
+for (n in Span(1, 4)) { print(n); }                           // 1 2 3
+print(reduce(Span(1, 101), func(a, b) { return a + b; }));    // 5050
+```
+
+### Match as an expression, destructuring assignment
+
+```mrt
+var label = match (code) {
+    case 200: "OK",
+    case n if (n >= 500): "Server Error (${n})",
+    default: "Unknown"
+};
+
+var a = 1;
+var b = 2;
+[a, b] = [b, a];                                              // 2 1
 ```
 
 ### Modules
@@ -258,11 +293,16 @@ case default yield`.
 ### Generators and Iteration
 - `toArray(x)`: Materialises any iterable into an array
 - `take(x, n)`: The first `n` items; safe on an endless generator
+- `next(g)`: One step of a generator, as `{done, value}`
+- `send(g, v)`: One step, with `v` as the value of the waiting `yield`
 
 ### Higher-Order Functions
-- `map(arr, f)` / `filter(arr, f)` / `reduce(arr, f, init)`
-- `find(arr, f)` / `some(arr, f)` / `every(arr, f)`
-- `sort(arr, compare)`: Returns a new sorted array (stable; never mutates)
+All but `sort` take any iterable: an array, string, object, generator, or a
+struct with `iter()`.
+- `map(seq, f)` / `filter(seq, f)`: lazy (a generator) when `seq` is a
+  generator, an array otherwise
+- `reduce(seq, f, init)` / `find(seq, f)` / `some(seq, f)` / `every(seq, f)`
+- `sort(arr, compare)`: array only; returns a new sorted array (stable; never mutates)
 
 ### Object Operations
 - `keys(obj)` / `values(obj)`: Arrays of an object's keys/values

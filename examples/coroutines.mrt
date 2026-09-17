@@ -1,0 +1,65 @@
+// Two-way generators. `yield` is normally a statement, but as the whole
+// right-hand side of a declaration or an assignment it produces a value --
+// whatever the consumer sends back in with `send()`. That turns a generator
+// into a small coroutine: it runs, pauses, receives, and carries on.
+
+// A running total that is fed one number at a time and reports back after
+// each one.
+func running() {
+    var total = 0;
+    var count = 0;
+    while (true) {
+        var n = yield {total: total, count: count};
+        if (n == null) { return; }
+        total += n;
+        count += 1;
+    }
+}
+
+// A tiny state machine. Each step decides what to do with what it is handed.
+func door() {
+    var state = "closed";
+    while (true) {
+        var command = yield state;
+        match (command) {
+            case "open":   state = "open";
+            case "close":  state = "closed";
+            case "lock":   state = match (state) { case "open": "open", default: "locked" };
+            default:       state = "${state} (ignored ${toString(command)})";
+        }
+    }
+}
+
+// `yield*` re-yields another sequence as if it were ours -- and passes
+// anything sent in straight through to it, so a chain still behaves as one.
+func prelude() { yield "ready"; }
+func greeter() {
+    yield* prelude();
+    var name = yield "name?";
+    yield "hello ${name}";
+}
+
+func main() {
+    print("-- a running total --");
+    var totals = running();
+    next(totals);                      // start it; the first sent value is dropped
+    for (n in [5, 3, 12]) {
+        var step = send(totals, n);
+        print("after ${n}: ${step.value.total} over ${step.value.count}");
+    }
+    print(send(totals, null));
+
+    print("-- a state machine --");
+    var d = door();
+    print(next(d).value);
+    for (command in ["open", "lock", "close", "lock", "wiggle"]) {
+        print("${command} -> ${send(d, command).value}");
+    }
+
+    print("-- delegation --");
+    var g = greeter();
+    print(next(g).value);
+    print(send(g, null).value);
+    print(send(g, "Ada").value);
+    print(next(g).done);
+}
