@@ -45,8 +45,14 @@ const REGRESSION_CASES = [
     // binary value while the Playground rounded half-up on the scaled one,
     // so anything landing near a .5 boundary disagreed. Both now run the
     // same explicit algorithm.
+    //
+    // Keep every literal here in a form MRT can actually lex. This case
+    // once contained `1e10`, and MRT has no exponent notation -- it lexes
+    // as `1` followed by the identifier `e10`, which made the whole
+    // snippet a syntax error. Both interpreters then "agreed" on that
+    // error and the case silently tested nothing at all.
     name: 'round() agrees on half-way values, negatives and digit counts',
-    src: 'func main() { print(round(3.14159 * 2500, 2)); print(round(2.5), round(-2.5), round(3.5), round(-3.5), round(0.5), round(-0.5)); print(round(1.005, 2), round(-1.005, 2), round(2.675, 2)); print(round(1234.5678, -2), round(1234.5678, 2), round(1234.5678)); print(round(0), round(-0.0), round(1e10, 2)); }',
+    src: 'func main() { print(round(3.14159 * 2500, 2)); print(round(2.5), round(-2.5), round(3.5), round(-3.5), round(0.5), round(-0.5)); print(round(1.005, 2), round(-1.005, 2), round(2.675, 2)); print(round(1234.5678, -2), round(1234.5678, 2), round(1234.5678)); print(round(0), round(-0.0), round(10000000000, 2)); }',
   },
   {
     name: 'math builtins',
