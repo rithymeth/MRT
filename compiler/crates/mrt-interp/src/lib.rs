@@ -31,6 +31,8 @@
 //! execution *is* an explicit instruction pointer over a flat program, so the
 //! feature that is hardest to port is also the one that argues hardest for
 //! the VM. Calling a generator function raises a clear error meanwhile.
+//!
+//! Everything else the language has is here, modules included.
 
 pub mod builtins;
 pub mod env;
@@ -38,6 +40,8 @@ pub mod error;
 pub mod value;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use mrt_ast::*;
@@ -53,6 +57,37 @@ pub struct Interpreter {
     pub globals: Env,
     pub env: Env,
     pub output: Vec<String>,
+
+    /// The file currently being evaluated. `import` specifiers resolve
+    /// against its directory, so this is swapped while a module runs and
+    /// restored afterwards. `None` means the program did not come from a
+    /// file, and any `import` is an error rather than a guess.
+    module_path: Option<PathBuf>,
+    /// Every module evaluated so far, by resolved path. A module's top-level
+    /// code can have side effects, so importing one file from two places has
+    /// to run it once and share the result.
+    module_exports: HashMap<PathBuf, Rc<Exports>>,
+    /// The modules currently part-way through evaluation, outermost first.
+    /// A specifier that resolves to one of these is a cycle.
+    module_loading: Vec<PathBuf>,
+    /// What the file being evaluated has exported so far. Ordered, because a
+    /// namespace import turns it into an object and `keys()` on that object
+    /// is observable.
+    current_exports: Exports,
+}
+
+/// A module's export table: names in the order they were exported.
+///
+/// A `Vec` rather than a map because the order is part of the language --
+/// `import * as m` binds an object and `keys(m)` reports it -- and an export
+/// table is small enough that a linear lookup is not worth avoiding.
+pub type Exports = Vec<(String, Value)>;
+
+fn exports_get(exports: &Exports, name: &str) -> Option<Value> {
+    exports
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v.clone())
 }
 
 /// What running a program produced.
@@ -78,7 +113,9 @@ pub fn run(file: &SourceFile) -> Outcome {
             ),
         };
     }
-    let mut interp = Interpreter::new();
+    // The SourceFile's name is the path the program was loaded from, which
+    // is what `import "./x.mrt"` resolves against.
+    let mut interp = Interpreter::with_module_path(Some(PathBuf::from(file.name())));
     let error = interp.interpret(&parsed.program);
     Outcome {
         output: interp.output,
@@ -105,34 +142,35 @@ impl Default for Interpreter {
 
 impl Interpreter {
     pub fn new() -> Interpreter {
+        Interpreter::with_module_path(None)
+    }
+
+    /// An interpreter whose `import`s resolve against `path`.
+    ///
+    /// Without one, importing is an error rather than a resolution against
+    /// the process's working directory -- which would make the same program
+    /// mean different things depending on where it was run from.
+    pub fn with_module_path(path: Option<PathBuf>) -> Interpreter {
         let globals = Env::new();
         builtins::install(&globals);
         Interpreter {
             env: globals.clone(),
             globals,
             output: Vec::new(),
+            module_path: path.map(|p| absolute(&p)),
+            module_exports: HashMap::new(),
+            module_loading: Vec::new(),
+            current_exports: Vec::new(),
         }
     }
 
     /// Run a whole program. Returns the error text if it stopped early.
     pub fn interpret(&mut self, program: &Program) -> Option<String> {
-        // Functions and structs are hoisted so a top-level `main` can call
-        // anything declared below it; everything else runs in source order.
-        let hoisted = |s: &Stmt| {
-            let inner = match &s.kind {
-                StmtKind::Export { declaration, .. } => &declaration.kind,
-                other => other,
-            };
-            matches!(inner, StmtKind::Function { .. } | StmtKind::Struct { .. })
-        };
-
         let result = (|| -> Exec {
-            for stmt in program.statements.iter().filter(|s| hoisted(s)) {
-                self.execute(stmt)?;
-            }
-            for stmt in program.statements.iter().filter(|s| !hoisted(s)) {
-                self.execute(stmt)?;
-            }
+            // The entry file runs by the same rules as any module: functions
+            // and structs hoisted so a top-level `main` can call anything
+            // declared below it, then everything else in source order.
+            self.run_top_level(&program.statements)?;
             // A `main` is called if one was declared, matching the reference
             // implementation's entry convention.
             if let Ok(main) = self.globals.get("main", None) {
@@ -364,12 +402,23 @@ impl Interpreter {
                 self.env.define(&name.text, Value::Struct(struct_type));
                 Ok(())
             }
-            StmtKind::Export { declaration, .. } => self.execute(declaration),
-            StmtKind::Import { .. } | StmtKind::ExportNames { .. } => Err(Signal::error(
-                Kind::RuntimeError,
-                "Modules are not implemented in this interpreter yet.",
-            )
-            .at(Some(stmt.line))),
+            StmtKind::Export { declaration, name } => {
+                self.execute(declaration)?;
+                // Read the value back out of the environment rather than
+                // capturing it during the declaration: `export var x = f();`
+                // must export whatever `x` ended up bound to.
+                let value = self.env.get(&name.text, Some(name.line))?;
+                self.record_export(&name.text, value);
+                Ok(())
+            }
+            StmtKind::Import {
+                names,
+                namespace,
+                specifier,
+            } => self.execute_import(names, namespace.as_ref(), specifier, stmt.line),
+            StmtKind::ExportNames { names, specifier } => {
+                self.execute_export_names(names, specifier.as_deref(), stmt.line)
+            }
         }
     }
 
@@ -836,6 +885,236 @@ pub fn error_value(error: &RuntimeError) -> Value {
         Value::array(error.stack.iter().map(|f| Value::str(f.as_str())).collect()),
     );
     Value::object(map)
+}
+
+// -- modules -----------------------------------------------------------------
+
+/// `std::path::absolute` without the MSRV bump: make `path` absolute by
+/// joining it onto the working directory, without touching the filesystem.
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+/// Resolve `.` and `..` lexically, the way `os.path.normpath` does.
+///
+/// Deliberately not `canonicalize`: that resolves symlinks and requires the
+/// file to exist, so a missing module would fail with the OS's error instead
+/// of MRT's own "Cannot find module", and two importers reaching one file by
+/// different symlinked paths would get two evaluations instead of the cache
+/// hit the language promises.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+impl Interpreter {
+    fn record_export(&mut self, name: &str, value: Value) {
+        // Re-exporting a name replaces the earlier entry in place, so the
+        // table keeps first-export order rather than last.
+        if let Some(slot) = self.current_exports.iter_mut().find(|(n, _)| n == name) {
+            slot.1 = value;
+        } else {
+            self.current_exports.push((name.to_string(), value));
+        }
+    }
+
+    /// Turn an import specifier into an absolute, normalized path.
+    ///
+    /// Only explicitly relative specifiers resolve: there is no search path,
+    /// no implicit extension and no package directory, so an `import` always
+    /// names exactly one file and reading the source tells you which.
+    fn resolve_module(&self, specifier: &str, line: u32) -> Result<PathBuf, Signal> {
+        if !(specifier.starts_with("./") || specifier.starts_with("../")) {
+            return Err(value_error(format!(
+                "Module path {} must start with './' or '../'.",
+                json_quote(specifier)
+            ))
+            .at(Some(line)));
+        }
+        let Some(base) = self.module_path.as_ref().and_then(|p| p.parent()) else {
+            return Err(Signal::error(
+                Kind::RuntimeError,
+                "Imports need a file to resolve against; run this program from a file.",
+            )
+            .at(Some(line)));
+        };
+        Ok(normalize(&base.join(specifier)))
+    }
+
+    /// Evaluate a module once and return its export table.
+    fn load_module(&mut self, specifier: &str, line: u32) -> Result<Rc<Exports>, Signal> {
+        let path = self.resolve_module(specifier, line)?;
+
+        if let Some(exports) = self.module_exports.get(&path) {
+            return Ok(exports.clone());
+        }
+
+        if self.module_loading.contains(&path) {
+            // Named by basename, innermost path first, the way the reference
+            // implementation reports it: the file names are what a reader
+            // needs, and absolute paths would bury them.
+            let cycle: Vec<String> = self
+                .module_loading
+                .iter()
+                .chain(std::iter::once(&path))
+                .map(|p| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| p.to_string_lossy().into_owned())
+                })
+                .collect();
+            return Err(Signal::error(
+                Kind::RuntimeError,
+                format!("Circular import: {}.", cycle.join(" -> ")),
+            )
+            .at(Some(line)));
+        }
+
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            return Err(
+                value_error(format!("Cannot find module {}.", json_quote(specifier)))
+                    .at(Some(line)),
+            );
+        };
+
+        let file = SourceFile::new(path.to_string_lossy(), &source);
+        let parsed = mrt_parser::parse(&file);
+        if let Some(first) = parsed.errors.first() {
+            return Err(Signal::error(
+                Kind::RuntimeError,
+                format!(
+                    "Module {} has syntax errors: {}",
+                    json_quote(specifier),
+                    first.message
+                ),
+            )
+            .at(Some(line)));
+        }
+
+        // A module gets a fresh scope off globals -- not off the importer's
+        // scope, which would leak the importer's locals into it -- and its
+        // own export table and path while it runs.
+        let previous_env = std::mem::replace(&mut self.env, self.globals.child());
+        let previous_path = self.module_path.replace(path.clone());
+        let previous_exports = std::mem::take(&mut self.current_exports);
+        self.module_loading.push(path.clone());
+
+        let result = self.run_top_level(&parsed.program.statements);
+
+        self.module_loading.pop();
+        let exports = std::mem::replace(&mut self.current_exports, previous_exports);
+        self.module_path = previous_path;
+        self.env = previous_env;
+        result?;
+
+        let exports = Rc::new(exports);
+        self.module_exports.insert(path, exports.clone());
+        Ok(exports)
+    }
+
+    /// Run a file's top-level statements: declarations first so they can
+    /// refer to each other regardless of order, then everything else in
+    /// source order.
+    pub fn run_top_level(&mut self, statements: &[Stmt]) -> Exec {
+        let hoisted = |s: &Stmt| {
+            let inner = match &s.kind {
+                StmtKind::Export { declaration, .. } => &declaration.kind,
+                other => other,
+            };
+            matches!(inner, StmtKind::Function { .. } | StmtKind::Struct { .. })
+        };
+        for stmt in statements.iter().filter(|s| hoisted(s)) {
+            self.execute(stmt)?;
+        }
+        for stmt in statements.iter().filter(|s| !hoisted(s)) {
+            self.execute(stmt)?;
+        }
+        Ok(())
+    }
+
+    fn execute_import(
+        &mut self,
+        names: &[(Name, Name)],
+        namespace: Option<&Name>,
+        specifier: &str,
+        line: u32,
+    ) -> Exec {
+        let exports = self.load_module(specifier, line)?;
+
+        if let Some(namespace) = namespace {
+            // A namespace import binds one ordinary MRT object, so dot access
+            // and `keys()` work on it with no new machinery.
+            let mut map = ObjMap::new();
+            for (name, value) in exports.iter() {
+                map.insert(ObjKey::Str(name.as_str().into()), value.clone());
+            }
+            self.env.define(&namespace.text, Value::object(map));
+            return Ok(());
+        }
+
+        for (exported, local) in names {
+            let Some(value) = exports_get(&exports, &exported.text) else {
+                return Err(self.no_such_export(specifier, &exported.text, exported.line));
+            };
+            self.env.define(&local.text, value);
+        }
+        Ok(())
+    }
+
+    /// `export { a };` re-exports a local name; `export { a } from "./m.mrt";`
+    /// forwards another module's export without binding it here.
+    fn execute_export_names(
+        &mut self,
+        names: &[(Name, Name)],
+        specifier: Option<&str>,
+        line: u32,
+    ) -> Exec {
+        if let Some(specifier) = specifier {
+            let source = self.load_module(specifier, line)?;
+            for (local, exported) in names {
+                let Some(value) = exports_get(&source, &local.text) else {
+                    return Err(self.no_such_export(specifier, &local.text, local.line));
+                };
+                self.record_export(&exported.text, value);
+            }
+            return Ok(());
+        }
+
+        for (local, exported) in names {
+            let value = self.env.get(&local.text, Some(local.line))?;
+            self.record_export(&exported.text, value);
+        }
+        Ok(())
+    }
+
+    fn no_such_export(&self, specifier: &str, name: &str, line: u32) -> Signal {
+        Signal::error(
+            Kind::NameError,
+            format!(
+                "Module {} has no export named '{}'.",
+                json_quote(specifier),
+                name
+            ),
+        )
+        .at(Some(line))
+    }
 }
 
 // -- operators, indexing, iteration, patterns --------------------------------
@@ -1527,6 +1806,138 @@ mod tests {
         assert_eq!(
             go("func g() { yield 1; }\nfunc main() { print(g()); }"),
             "Runtime Error: Generators are not implemented in this interpreter yet. [line 2]"
+        );
+    }
+
+    // -- modules ---------------------------------------------------------
+
+    /// Write a file tree into a temp directory and run `main.mrt` from it.
+    fn go_files(label: &str, files: &[(&str, &str)]) -> String {
+        let root = std::env::temp_dir().join(format!("mrt-interp-test-{label}"));
+        let _ = std::fs::remove_dir_all(&root);
+        for (relative, contents) in files {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, contents).unwrap();
+        }
+        let entry = root.join("main.mrt");
+        let source = std::fs::read_to_string(&entry).unwrap();
+        let file = SourceFile::new(entry.to_string_lossy(), &source);
+        let outcome = run(&file);
+        let mut lines = outcome.output;
+        if let Some(error) = outcome.error {
+            lines.push(error);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        lines.join("\n")
+    }
+
+    #[test]
+    fn importing_without_a_file_to_resolve_against_says_so() {
+        // Only reachable through the library API -- the CLI always has a
+        // path -- so the conformance harness cannot cover it.
+        let file = SourceFile::new("<stdin>", "import { x } from \"./m.mrt\";\nfunc main() { }");
+        let parsed = mrt_parser::parse(&file);
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            interp.interpret(&parsed.program),
+            Some(
+                "Runtime Error: Imports need a file to resolve against; \
+                 run this program from a file. [line 1]"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_module_is_evaluated_once_however_many_specifiers_reach_it() {
+        assert_eq!(
+            go_files(
+                "cache",
+                &[
+                    (
+                        "main.mrt",
+                        "import { A } from \"./a.mrt\";\n\
+                         import { A as B } from \"./lib/../a.mrt\";\n\
+                         func main() { print(A, B); }\n"
+                    ),
+                    ("a.mrt", "print(\"evaluated\");\nexport var A = 1;\n"),
+                    ("lib/keep.mrt", "export var unused = 1;\n"),
+                ]
+            ),
+            "evaluated\n1 1"
+        );
+    }
+
+    #[test]
+    fn a_modules_locals_stay_in_the_module_but_globals_reach_in() {
+        assert_eq!(
+            go_files(
+                "scope",
+                &[
+                    (
+                        "main.mrt",
+                        "var shared = \"global\";\n\
+                         import { peek, look } from \"./m.mrt\";\n\
+                         func main() { print(peek(), look()); \
+                         try { print(secret); } catch (e) { print(e.kind); } }\n"
+                    ),
+                    (
+                        "m.mrt",
+                        "var secret = \"hidden\";\n\
+                         export func peek() { return secret; }\n\
+                         export func look() { return shared; }\n"
+                    ),
+                ]
+            ),
+            "hidden global\nNameError"
+        );
+    }
+
+    #[test]
+    fn a_cycle_is_named_by_basename_innermost_last() {
+        assert_eq!(
+            go_files(
+                "cycle",
+                &[
+                    (
+                        "main.mrt",
+                        "import { a } from \"./a.mrt\";\nfunc main() { }\n"
+                    ),
+                    (
+                        "a.mrt",
+                        "import { b } from \"./b.mrt\";\nexport var a = 1;\n"
+                    ),
+                    (
+                        "b.mrt",
+                        "import { a } from \"./a.mrt\";\nexport var b = 2;\n"
+                    ),
+                ]
+            ),
+            "Runtime Error: Circular import: a.mrt -> b.mrt -> a.mrt. [line 1]"
+        );
+    }
+
+    #[test]
+    fn a_namespace_import_is_an_ordinary_object_in_export_order() {
+        // Declarations hoist, so `square` is exported before `PI` even though
+        // `PI` is written first -- and `keys()` on the namespace shows it.
+        assert_eq!(
+            go_files(
+                "namespace",
+                &[
+                    (
+                        "main.mrt",
+                        "import * as m from \"./m.mrt\";\n\
+                         func main() { print(type(m), keys(m), m.square(4)); }\n"
+                    ),
+                    (
+                        "m.mrt",
+                        "export var PI = 3;\nexport func square(n) { return n * n; }\n"
+                    ),
+                ]
+            ),
+            "object [square, PI] 16"
         );
     }
 
