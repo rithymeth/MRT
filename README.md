@@ -263,7 +263,7 @@ for (ch in "hi") { print(ch); }
 ## Operators
 
 ```mrt
-+  -  *  /  %              // arithmetic (% is modulo)
++  -  *  /  %              // arithmetic (% takes the sign of the dividend)
 == !=  <  >  <=  >=        // comparison
 &&  ||  !                   // logical AND / OR / NOT
 =  += -= *= /= %=           // assignment and compound assignment

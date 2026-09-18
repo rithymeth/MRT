@@ -50,7 +50,7 @@ MRT is a modern, expressive programming language designed for simplicity and rea
 
 ### Operators
 ```mrt
-+  -  *  /  %              // arithmetic (% is modulo/remainder)
++  -  *  /  %              // arithmetic (% takes the sign of the dividend)
 == !=  <  >  <=  >=        // comparison (numbers or strings)
 &&  ||  !                   // logical AND / OR (short-circuiting) / NOT
 =  += -= *= /= %=           // assignment and compound assignment
