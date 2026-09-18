@@ -30,6 +30,10 @@ pub enum Value {
     Array(Rc<RefCell<Vec<Value>>>),
     Object(Rc<RefCell<ObjMap>>),
     Function(Rc<Function>),
+    /// A closure over a compiled chunk. The same MRT value as `Function` --
+    /// `type()` says "function" for both -- differing only in which engine
+    /// knows how to run its body.
+    Compiled(Rc<Compiled>),
     Builtin(Rc<Builtin>),
     Struct(Rc<StructType>),
     Instance(Rc<Instance>),
@@ -79,7 +83,7 @@ pub fn type_name(value: &Value) -> String {
         Value::Str(_) => "string".into(),
         Value::Array(_) => "array".into(),
         Value::Object(_) => "object".into(),
-        Value::Function(_) | Value::Builtin(_) => "function".into(),
+        Value::Function(_) | Value::Compiled(_) | Value::Builtin(_) => "function".into(),
         Value::Struct(_) => "struct".into(),
         // An instance reports its own struct's name, so `type(p) == "Point"`.
         Value::Instance(i) => i.struct_type.name.clone(),
@@ -106,6 +110,12 @@ pub fn stringify(value: &Value) -> String {
             format!("{{{}}}", rendered.join(", "))
         }
         Value::Function(f) => match &f.name {
+            Some(name) => format!("<function {name}>"),
+            None => "<function>".into(),
+        },
+        // Identical to the above on purpose: which engine runs a function's
+        // body is not something a program is allowed to notice.
+        Value::Compiled(f) => match &f.proto.name {
             Some(name) => format!("<function {name}>"),
             None => "<function>".into(),
         },
@@ -200,6 +210,7 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
                 .all(|((ka, va), (kb, vb))| ka == kb && values_equal(va, vb))
         }
         (Value::Function(x), Value::Function(y)) => Rc::ptr_eq(x, y),
+        (Value::Compiled(x), Value::Compiled(y)) => Rc::ptr_eq(x, y),
         (Value::Builtin(x), Value::Builtin(y)) => Rc::ptr_eq(x, y),
         (Value::Struct(x), Value::Struct(y)) => Rc::ptr_eq(x, y),
         _ => false,
@@ -324,30 +335,47 @@ pub struct Function {
 impl Function {
     /// How this function's accepted argument count reads in an error.
     pub fn arity_description(&self) -> String {
-        let positional = self.params.iter().filter(|p| !p.rest).count();
-        let required = self
-            .params
-            .iter()
-            .filter(|p| !p.rest && p.pattern.default().is_none())
-            .count();
-        if self.params.iter().any(|p| p.rest) {
-            return format!("at least {required}");
-        }
-        if required == positional {
-            return required.to_string();
-        }
-        format!("between {required} and {positional}")
+        arity_description(&self.params)
     }
 
     pub fn accepts(&self, count: usize) -> bool {
-        let positional = self.params.iter().filter(|p| !p.rest).count();
-        let required = self
-            .params
-            .iter()
-            .filter(|p| !p.rest && p.pattern.default().is_none())
-            .count();
-        count >= required && (self.params.iter().any(|p| p.rest) || count <= positional)
+        accepts(&self.params, count)
     }
+}
+
+/// How a parameter list's accepted argument count reads in an error.
+///
+/// Free functions over `&[Param]` rather than methods, because both engines'
+/// callables have to answer these the same way and there is no reason for the
+/// answer to live on one of them.
+pub fn arity_description(params: &[Param]) -> String {
+    let positional = params.iter().filter(|p| !p.rest).count();
+    let required = params
+        .iter()
+        .filter(|p| !p.rest && p.pattern.default().is_none())
+        .count();
+    if params.iter().any(|p| p.rest) {
+        return format!("at least {required}");
+    }
+    if required == positional {
+        return required.to_string();
+    }
+    format!("between {required} and {positional}")
+}
+
+pub fn accepts(params: &[Param], count: usize) -> bool {
+    let positional = params.iter().filter(|p| !p.rest).count();
+    let required = params
+        .iter()
+        .filter(|p| !p.rest && p.pattern.default().is_none())
+        .count();
+    count >= required && (params.iter().any(|p| p.rest) || count <= positional)
+}
+
+/// A closure whose body is bytecode.
+pub struct Compiled {
+    pub proto: Rc<crate::vm::chunk::Proto>,
+    pub closure: Env,
 }
 
 pub struct Builtin {
@@ -453,6 +481,10 @@ impl fmt::Debug for Value {
             Value::Function(func) => match &func.name {
                 Some(name) => write!(f, "<fn {name}>"),
                 None => write!(f, "<fn>"),
+            },
+            Value::Compiled(func) => match &func.proto.name {
+                Some(name) => write!(f, "<fn {name} (compiled)>"),
+                None => write!(f, "<fn (compiled)>"),
             },
             Value::Builtin(b) => write!(f, "<builtin {}>", b.name),
             Value::Struct(s) => write!(f, "<struct {}>", s.name),

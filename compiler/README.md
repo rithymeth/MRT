@@ -102,7 +102,7 @@ compiler/
 │   ├── mrt-ast/           the tree, and its canonical dump format
 │   ├── mrt-parser/        recursive descent, with error recovery
 │   ├── mrt-resolver/      names to frame slots, captures and globals
-│   └── mrt-interp/        values, environments, and the tree-walker
+│   └── mrt-interp/        values, environments, the tree-walker, and the VM
 └── cli/                   mrt-check (frontend driver), mrt-run (runtime)
 ```
 
@@ -127,7 +127,8 @@ mrt-check --dump-ast FILE      # canonical AST
 mrt-check --dump-scopes FILE   # resolved frame layout
 mrt-check --compat FILE        # MRT 1.x error text, byte for byte
 
-mrt-run FILE                   # run a program
+mrt-run FILE                   # run a program on the tree-walker
+mrt-run --vm FILE              # run it on the bytecode VM
 mrt-run --bench 5 FILE         # time 5 in-process runs, as JSON
 ```
 
@@ -245,6 +246,52 @@ version: **24x faster than Python overall, and 2.2x faster than TypeScript** —
 but that second number splits sharply by workload, from 8x on recursion down
 to 0.9x on a tight numeric loop, where V8's JIT beats an unoptimised Rust
 tree-walker.
+
+## The bytecode VM
+
+`mrt-interp/src/vm` is a stack machine: a compiler from AST to a flat
+instruction vector, and a loop that steps it. It runs a subset of the
+language today and refuses the rest **by name**, so the conformance harness
+can tell "does not compile this yet" apart from "compiles it wrongly".
+
+```bash
+node scripts/check-vm-conformance.mjs   # or: npm run check:vm
+```
+
+### Why it exists, and why that is not speed
+
+A generator has to suspend mid-body and resume later. A tree-walker cannot:
+its state *is* the Rust call stack, and there is no way to park that in a
+value. Python and JavaScript each borrow a coroutine from their host; stable
+Rust has none to borrow. A machine whose frame is an `ip`, an environment and
+a slice of an operand stack can park one by copying a struct.
+
+So the VM is built for resumability first. The speed question was worth
+asking separately, and the answer was not what the earlier profiling
+predicted — see [`benchmarks/README.md`](../benchmarks/README.md). On the
+seven benchmarks it can run it is **0.95x the tree-walker**: a fraction
+slower, not faster.
+
+That is a real result rather than a disappointment. The Python profile put
+AST dispatch at ~66% of run time and name lookup at ~10%, and bytecode is
+precisely a way to remove dispatch — but in Rust, walking a tree is a match
+on an enum, and removing it buys almost nothing. What is left is `Env`'s
+name-keyed chain, which both engines pay equally. **The conclusion drawn
+from profiling the Python interpreter did not transfer.**
+
+The speed case for bytecode therefore rests on the thing this VM
+deliberately does not do yet: resolving variables to frame slots. The
+resolver already computes them. That makes it the next measurable step, with
+a number to beat rather than a projection.
+
+### What it deliberately does not own
+
+The language. Arithmetic, indexing, iteration, parameter binding, printing
+and the whole builtin library are delegated to the tree-walking
+`Interpreter`, so `+` has one meaning and the engines cannot drift. Either
+engine can call a closure the other made — `map(xs, func(x){..})` under the
+VM calls back through the shared builtin library, so a value is never
+uncallable because of which engine built it.
 
 ## What is not here yet
 

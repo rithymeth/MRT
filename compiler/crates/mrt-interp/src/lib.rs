@@ -38,6 +38,7 @@ pub mod builtins;
 pub mod env;
 pub mod error;
 pub mod value;
+pub mod vm;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -117,6 +118,68 @@ pub fn run(file: &SourceFile) -> Outcome {
     // is what `import "./x.mrt"` resolves against.
     let mut interp = Interpreter::with_module_path(Some(PathBuf::from(file.name())));
     let error = interp.interpret(&parsed.program);
+    Outcome {
+        output: interp.output,
+        error,
+    }
+}
+
+/// Run a program on the bytecode VM instead of the tree-walker.
+///
+/// A program the compiler cannot yet handle comes back as an error naming the
+/// construct, not as a wrong answer -- which is what lets the VM conformance
+/// harness tell "not implemented" apart from "implemented wrongly".
+pub fn run_vm(file: &SourceFile) -> Outcome {
+    let parsed = mrt_parser::parse(file);
+    if !parsed.errors.is_empty() {
+        return Outcome {
+            output: Vec::new(),
+            error: Some(
+                parsed
+                    .errors
+                    .iter()
+                    .map(|e| format!("Syntax Error: {}", strip_prefix(&e.render_compat())))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        };
+    }
+
+    let chunk = match vm::compile_program(&parsed.program.statements) {
+        Ok(chunk) => chunk,
+        Err(vm::Unsupported(what)) => {
+            return Outcome {
+                output: Vec::new(),
+                error: Some(format!("Runtime Error: {what}")),
+            }
+        }
+    };
+
+    let mut interp = Interpreter::with_module_path(Some(std::path::PathBuf::from(file.name())));
+    let result = (|| -> Exec {
+        let mut machine = vm::Vm::new(&mut interp);
+        machine.run(chunk)?;
+        // `main` is called if one was declared, exactly as the tree-walker
+        // does it.
+        let main = interp.globals.get("main", None);
+        if let Ok(main) = main {
+            if matches!(main, Value::Function(_) | Value::Compiled(_)) {
+                let mut machine = vm::Vm::new(&mut interp);
+                machine.call_and_run(main, Vec::new())?;
+            }
+        }
+        Ok(())
+    })();
+
+    let error = match result {
+        Ok(()) => None,
+        Err(Signal::Error(e)) => Some(e.render()),
+        Err(Signal::Throw(t)) => Some(format!("Runtime Error: Uncaught {}", stringify(&t.value))),
+        Err(Signal::Break) => Some(fail("'break' outside a loop.")),
+        Err(Signal::Continue) => Some(fail("'continue' outside a loop.")),
+        Err(Signal::Return(_)) => Some(fail("'return' outside a function.")),
+    };
+
     Outcome {
         output: interp.output,
         error,
@@ -725,6 +788,15 @@ impl Interpreter {
                 }
                 self.call_function(&function, args, line)
             }
+            // A compiled closure handed to a builtin -- `map(xs, func(x){..})`
+            // under the VM -- comes back here, because the builtin library is
+            // shared. Running it means starting a machine, so that a value
+            // never becomes uncallable merely by having been made by the
+            // other engine.
+            Value::Compiled(_) => {
+                let mut machine = vm::Vm::new(self);
+                machine.call_and_run(callee, args).map_err(|e| e.at(line))
+            }
             Value::Builtin(builtin) => match &builtin.rng {
                 // A value handed back by `random(seed)` is a closure over
                 // PRNG state, not a named builtin, so it never reaches the
@@ -771,7 +843,7 @@ impl Interpreter {
         result
     }
 
-    fn bind_params(
+    pub(crate) fn bind_params(
         &mut self,
         params: &[Param],
         args: Vec<Value>,
@@ -1120,7 +1192,7 @@ impl Interpreter {
 // -- operators, indexing, iteration, patterns --------------------------------
 
 impl Interpreter {
-    fn binary(&mut self, left: Value, op: BinOp, right: Value, line: u32) -> Eval {
+    pub(crate) fn binary(&mut self, left: Value, op: BinOp, right: Value, line: u32) -> Eval {
         let line = Some(line);
         match op {
             BinOp::Add => {
@@ -1170,7 +1242,7 @@ impl Interpreter {
         }
     }
 
-    fn index_get(&mut self, target: &Value, index: &Value, line: Option<u32>) -> Eval {
+    pub(crate) fn index_get(&mut self, target: &Value, index: &Value, line: Option<u32>) -> Eval {
         match target {
             Value::Instance(instance) => {
                 let Some(name) = index.as_str() else {
@@ -1222,7 +1294,7 @@ impl Interpreter {
         }
     }
 
-    fn index_set(
+    pub(crate) fn index_set(
         &mut self,
         target: &Value,
         index: &Value,

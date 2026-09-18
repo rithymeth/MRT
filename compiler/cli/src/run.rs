@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use mrt_diagnostics::SourceFile;
 
-const USAGE: &str = "usage: mrt-run [--bench RUNS] FILE";
+const USAGE: &str = "usage: mrt-run [--vm] [--bench RUNS] FILE";
 
 /// Exit code MRT uses for a source error, inherited from `sysexits.h`.
 const EX_DATAERR: u8 = 65;
@@ -19,10 +19,12 @@ const EX_SOFTWARE: u8 = 70;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut runs: Option<u32> = None;
+    let mut vm = false;
     let mut path: Option<&str> = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
+            "--vm" => vm = true,
             "--bench" => match rest.next().and_then(|n| n.parse().ok()) {
                 Some(n) => runs = Some(n),
                 None => {
@@ -52,11 +54,19 @@ fn main() -> ExitCode {
 
     let file = SourceFile::new(path, &text);
 
+    // One function, chosen once: everything below is engine-agnostic, so
+    // the two paths cannot drift in how they report a result.
+    let engine: fn(&SourceFile) -> mrt_interp::Outcome = if vm {
+        mrt_interp::run_vm
+    } else {
+        mrt_interp::run
+    };
+
     if let Some(runs) = runs {
-        return bench(&file, runs);
+        return bench(&file, runs, engine);
     }
 
-    let outcome = mrt_interp::run(&file);
+    let outcome = engine(&file);
     for line in &outcome.output {
         println!("{line}");
     }
@@ -76,16 +86,16 @@ fn main() -> ExitCode {
 /// the interpreter, and the Python and TypeScript sides of the comparison are
 /// both measured in-process. This exists so all three are measured the same
 /// way.
-fn bench(file: &SourceFile, runs: u32) -> ExitCode {
+fn bench(file: &SourceFile, runs: u32, engine: fn(&SourceFile) -> mrt_interp::Outcome) -> ExitCode {
     // One untimed warm-up, matching the JavaScript runner -- not for a JIT
     // here, but so page faults on first touch land outside the measurement.
-    let _ = mrt_interp::run(file);
+    let _ = engine(file);
 
     let mut times = Vec::new();
     let mut out = String::new();
     for _ in 0..runs {
         let start = std::time::Instant::now();
-        let outcome = mrt_interp::run(file);
+        let outcome = engine(file);
         times.push(start.elapsed().as_secs_f64());
         out = match outcome.error {
             Some(error) => error,
