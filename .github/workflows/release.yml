@@ -1,0 +1,104 @@
+# Publish mrt-lang to PyPI when a version tag is pushed.
+#
+# Uses PyPI Trusted Publishing (OIDC), so there is no API token stored in the
+# repository: PyPI is configured to trust this workflow, in this repository,
+# and mints a short-lived credential for the one upload. A leaked secret is
+# not a risk that has to be managed because there is no secret.
+#
+# One-time setup on PyPI, under the project's "Publishing" settings (or, for
+# the very first release, "Pending publishers"):
+#
+#   Owner:            rithymeth
+#   Repository:       MRT
+#   Workflow name:    release.yml
+#   Environment:      pypi
+#
+# To cut a release:
+#
+#   1. bump `version` in pyproject.toml and merge it
+#   2. git tag v0.3.0 && git push origin v0.3.0
+#
+# The tag must match the version in pyproject.toml -- the build job checks
+# this and fails loudly rather than publishing something mislabelled.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Allows a dry run: builds and checks the artifacts without publishing.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+
+      # A tag that disagrees with pyproject.toml publishes a version nobody
+      # can reproduce from the repository. Cheaper to catch here.
+      - name: Check the tag matches the packaged version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          packaged="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          if [ "$tag" != "$packaged" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject.toml version $packaged"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches pyproject.toml version $packaged"
+
+      - name: Run the test suite
+        run: |
+          python -m pip install -e . -r requirements-dev.txt
+          python -m pytest tests/ -q
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check metadata and long description render
+        run: python -m twine check dist/*
+
+      # Proves the artifact that is about to be published actually installs
+      # and runs, from a clean environment, rather than only building.
+      - name: Install the wheel in a clean venv and run a program
+        run: |
+          python -m venv /tmp/check
+          /tmp/check/bin/pip install dist/*.whl
+          printf 'func main() { print("ok"); }\n' > /tmp/smoke.mrt
+          test "$(/tmp/check/bin/mrt /tmp/smoke.mrt)" = "ok"
+          /tmp/check/bin/python -c "import mrt, sys; sys.exit(0)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    # Only a real version tag publishes; workflow_dispatch stops at `build`.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mrt-lang
+    permissions:
+      id-token: write   # the OIDC token Trusted Publishing exchanges
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
