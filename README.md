@@ -26,6 +26,10 @@ MRT is a modern, expressive programming language designed for simplicity and rea
 - A browser Playground running a second interpreter kept byte-identical to
   the reference one by an automated parity check
 
+Everything above is enough to write real libraries in the language itself:
+`examples/lib/json.mrt` is a complete JSON parser and writer, structs and
+all, with no help from the host.
+
 ## Installation
 
 You can install MRT using pip:
@@ -341,8 +345,9 @@ struct with `iter()`.
   - `getting_started.md`: Installation and quick start
 - `examples/`: Example MRT programs (`functions.mrt`, `errors.mrt`,
   `modern_syntax.mrt`, `stdlib.mrt`, `modules.mrt`, `destructuring.mrt`,
-  `structs.mrt`, `matching.mrt`, `generators.mrt`, and more)
-  - `examples/lib/`: library modules imported by `modules.mrt`
+  `structs.mrt`, `matching.mrt`, `generators.mrt`, `json.mrt`, and more)
+  - `examples/lib/`: library modules the programs above import, including
+    `json.mrt` -- a JSON parser and writer written in MRT itself
 - `tests/`: Test suite
 
 ## Documentation

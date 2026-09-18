@@ -1,0 +1,306 @@
+// A JSON reader and writer, written in MRT itself.
+//
+//   parse(text)               -> the MRT value the document denotes
+//   stringify(value, indent)  -> JSON text; indent > 0 pretty-prints
+//
+// The mapping is the obvious one: a JSON object is an MRT object, an array
+// an array, and string/number/true/false/null their MRT equivalents. A
+// struct writes itself out as an object of its fields, so a value that came
+// from `Point(3, 4)` stringifies as {"x": 3, "y": 4}.
+//
+// Anything malformed throws {kind: "JsonError", message, line, column},
+// where line and column point at the character that gave up.
+//
+// Two limits come from MRT's own strings, which have no escape for
+// arbitrary code points: `\b` and `\f` are rejected, and `\uXXXX` is
+// supported through U+007F. Both say so rather than guessing.
+
+var WHITESPACE = [" ", "\t", "\n", "\r"];
+var DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+
+// The characters an escape stands for. `\b` and `\f` are absent on purpose:
+// MRT string literals cannot spell those characters, so a document using
+// them is rejected instead of silently losing them.
+var ESCAPES = {"\"": "\"", "\\": "\\", "/": "/", n: "\n", t: "\t", r: "\r"};
+
+var HEX = {
+    "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7,
+    "8": 8, "9": 9,
+    a: 10, b: 11, c: 12, d: 13, e: 14, f: 15,
+    A: 10, B: 11, C: 12, D: 13, E: 14, F: 15
+};
+
+// ASCII U+0020 through U+007E, in order, so that PRINTABLE[n - 32] is the
+// character with code point n. It is how `\uXXXX` is turned back into text.
+var PRINTABLE = " !\"#\$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+
+// A cursor over the source text that tracks where it is, so that every
+// failure can name a line and a column.
+struct Reader {
+    text, pos = 0, line = 1, column = 1;
+
+    func done() { return this.pos >= len(this.text); }
+
+    func peek() {
+        if (this.done()) { return ""; }
+        return this.text[this.pos];
+    }
+
+    func bump() {
+        var c = this.peek();
+        this.pos += 1;
+        if (c == "\n") {
+            this.line += 1;
+            this.column = 1;
+        } else {
+            this.column += 1;
+        }
+        return c;
+    }
+
+    // What the cursor is looking at, phrased for an error message.
+    func here() {
+        if (this.done()) { return "end of input"; }
+        var c = this.peek();
+        if (c == "\n") { return "a line break"; }
+        return "'${c}'";
+    }
+
+    func fail(message) {
+        throw {
+            kind: "JsonError",
+            message: message,
+            line: this.line,
+            column: this.column
+        };
+    }
+
+    func skipSpace() {
+        while (!this.done() && has(WHITESPACE, this.peek())) { this.bump(); }
+    }
+
+    func expect(c, what) {
+        if (this.peek() != c) { this.fail("expected ${what}, found ${this.here()}"); }
+        return this.bump();
+    }
+}
+
+export func parse(text) {
+    var r = Reader(text);
+    var value = parseValue(r);
+    r.skipSpace();
+    if (!r.done()) { r.fail("unexpected ${r.here()} after the document"); }
+    return value;
+}
+
+func parseValue(r) {
+    r.skipSpace();
+    var c = r.peek();
+    if (c == "{") { return parseObject(r); }
+    if (c == "[") { return parseArray(r); }
+    if (c == "\"") { return parseString(r); }
+    if (c == "t" || c == "f" || c == "n") { return parseKeyword(r); }
+    if (c == "-" || has(DIGITS, c)) { return parseNumber(r); }
+    r.fail("expected a value, found ${r.here()}");
+}
+
+func parseObject(r) {
+    r.bump();                                   // the '{'
+    var out = {};
+    r.skipSpace();
+    if (r.peek() == "}") { r.bump(); return out; }
+
+    while (true) {
+        r.skipSpace();
+        if (r.peek() != "\"") { r.fail("expected a key, found ${r.here()}"); }
+        var key = parseString(r);
+        r.skipSpace();
+        r.expect(":", "':' after the key \"${key}\"");
+        out[key] = parseValue(r);
+
+        r.skipSpace();
+        if (r.peek() == "}") { r.bump(); return out; }
+        r.expect(",", "',' or '}' in the object");
+    }
+}
+
+func parseArray(r) {
+    r.bump();                                   // the '['
+    var out = [];
+    r.skipSpace();
+    if (r.peek() == "]") { r.bump(); return out; }
+
+    while (true) {
+        push(out, parseValue(r));
+        r.skipSpace();
+        if (r.peek() == "]") { r.bump(); return out; }
+        r.expect(",", "',' or ']' in the array");
+    }
+}
+
+func parseString(r) {
+    r.bump();                                   // the opening quote
+    var out = "";
+    while (true) {
+        if (r.done()) { r.fail("unterminated string"); }
+        var c = r.bump();
+        if (c == "\"") { return out; }
+        if (c == "\\") { out += parseEscape(r); continue; }
+        if (has(WHITESPACE, c) && c != " ") {
+            r.fail("a control character must be escaped inside a string");
+        }
+        out += c;
+    }
+}
+
+func parseEscape(r) {
+    if (r.done()) { r.fail("unterminated escape"); }
+    var c = r.bump();
+    if (has(ESCAPES, c)) { return get(ESCAPES, c); }
+    if (c == "u") { return parseUnicodeEscape(r); }
+    if (c == "b" || c == "f") {
+        r.fail("\\${c} is valid JSON, but MRT strings cannot hold that character");
+    }
+    r.fail("unknown escape \\${c}");
+}
+
+func parseUnicodeEscape(r) {
+    var code = 0;
+    var seen = 0;
+    while (seen < 4) {
+        if (r.done()) { r.fail("\\u needs four hex digits"); }
+        var c = r.bump();
+        if (!has(HEX, c)) { r.fail("'${c}' is not a hex digit"); }
+        code = code * 16 + get(HEX, c);
+        seen += 1;
+    }
+
+    if (code == 9) { return "\t"; }
+    if (code == 10) { return "\n"; }
+    if (code == 13) { return "\r"; }
+    if (code >= 32 && code <= 126) { return PRINTABLE[code - 32]; }
+    r.fail("\\u escapes are supported through U+007F; this one is above it");
+}
+
+func parseKeyword(r) {
+    if (readWord(r, "true")) { return true; }
+    if (readWord(r, "false")) { return false; }
+    if (readWord(r, "null")) { return null; }
+    r.fail("expected true, false or null, found ${r.here()}");
+}
+
+// Consumes `word` if the cursor is sitting on it, and reports whether it did.
+func readWord(r, word) {
+    if (substring(r.text, r.pos, r.pos + len(word)) != word) { return false; }
+    var taken = 0;
+    while (taken < len(word)) {
+        r.bump();
+        taken += 1;
+    }
+    return true;
+}
+
+// JSON numbers are a strict subset of what toNumber() accepts, so the shape
+// is checked here and the text itself is handed over once it is known good.
+func parseNumber(r) {
+    var start = r.pos;
+
+    if (r.peek() == "-") { r.bump(); }
+    readInt(r, "a digit after the minus sign");
+
+    if (r.peek() == ".") {
+        r.bump();
+        readDigits(r, "a digit after the decimal point");
+    }
+
+    if (r.peek() == "e" || r.peek() == "E") {
+        r.bump();
+        if (r.peek() == "+" || r.peek() == "-") { r.bump(); }
+        readDigits(r, "a digit in the exponent");
+    }
+
+    return toNumber(substring(r.text, start, r.pos));
+}
+
+// The integer part: either a single 0, or digits that do not start with
+// one. JSON rejects "01", and so does this.
+func readInt(r, what) {
+    if (!has(DIGITS, r.peek())) { r.fail("expected ${what}, found ${r.here()}"); }
+    if (r.bump() == "0") {
+        if (has(DIGITS, r.peek())) { r.fail("a number may not have a leading zero"); }
+        return;
+    }
+    while (!r.done() && has(DIGITS, r.peek())) { r.bump(); }
+}
+
+func readDigits(r, what) {
+    if (!has(DIGITS, r.peek())) { r.fail("expected ${what}, found ${r.here()}"); }
+    while (!r.done() && has(DIGITS, r.peek())) { r.bump(); }
+}
+
+// `indent` is the number of spaces one level of nesting adds. 0, the
+// default, writes the document on a single line with no padding.
+export func stringify(value, indent = 0) {
+    return write(value, indent, "");
+}
+
+func write(value, indent, pad) {
+    var kind = type(value);
+    if (kind == "null") { return "null"; }
+    if (kind == "boolean") { return toString(value); }
+    if (kind == "number") { return toString(value); }
+    if (kind == "string") { return quote(value); }
+    if (kind == "array") { return writeArray(value, indent, pad); }
+    if (kind == "function") {
+        // Nothing was being read, so there is no position to report.
+        throw {
+            kind: "JsonError",
+            message: "a function has no JSON form",
+            line: null,
+            column: null
+        };
+    }
+    return writeObject(value, indent, pad);
+}
+
+// Objects and structs both answer keys()/get(), so both write out this way.
+func writeObject(value, indent, pad) {
+    var inner = pad + spaces(indent);
+    var parts = map(keys(value), func(key) {
+        return quote(toString(key)) + ":" + gap(indent) + write(get(value, key), indent, inner);
+    });
+    return wrap(parts, indent, pad, "{", "}");
+}
+
+func writeArray(items, indent, pad) {
+    var inner = pad + spaces(indent);
+    var parts = map(items, func(item) { return write(item, indent, inner); });
+    return wrap(parts, indent, pad, "[", "]");
+}
+
+func wrap(parts, indent, pad, open, close) {
+    if (len(parts) == 0) { return open + close; }
+    if (indent <= 0) { return open + join(parts, ",") + close; }
+
+    var inner = pad + spaces(indent);
+    return open + "\n" + inner + join(parts, ",\n" + inner) + "\n" + pad + close;
+}
+
+func spaces(n) {
+    if (n <= 0) { return ""; }
+    return repeat(" ", n);
+}
+
+func gap(indent) {
+    if (indent <= 0) { return ""; }
+    return " ";
+}
+
+func quote(text) {
+    var out = replace(text, "\\", "\\\\");
+    out = replace(out, "\"", "\\\"");
+    out = replace(out, "\n", "\\n");
+    out = replace(out, "\t", "\\t");
+    out = replace(out, "\r", "\\r");
+    return "\"" + out + "\"";
+}
