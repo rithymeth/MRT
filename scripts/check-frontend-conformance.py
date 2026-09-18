@@ -198,6 +198,12 @@ def corpus():
     for path in sorted(REPO.glob("examples/**/*.mrt")):
         yield f"example: {path.relative_to(REPO)}", path.read_text()
 
+    # The benchmarks are ordinary MRT programs, and this pass only lexes,
+    # parses and resolves them -- so they are free corpus coverage of shapes
+    # the examples do not have (deep nesting, very long loops).
+    for path in sorted(REPO.glob("benchmarks/*.mrt")):
+        yield f"benchmark: {path.relative_to(REPO)}", path.read_text()
+
     parity = (REPO / "scripts" / "check-playground-parity.mjs").read_text()
     for name, src in re.findall(r"name: '([^']*)',\n\s*src: '(.*)',\n", parity):
         yield f"parity snippet: {name}", src.replace("\\'", "'").replace("\\\\", "\\")

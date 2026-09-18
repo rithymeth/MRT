@@ -1,0 +1,20 @@
+// Closure creation and calls through a captured variable -- the case the
+// resolver turns from a chain walk into a capture-slot read.
+func makeAdder(n) {
+    return func(x) { return x + n; };
+}
+
+func main() {
+    var total = 0;
+    var i = 0;
+    while (i < 2000) {
+        var add = makeAdder(i);
+        var j = 0;
+        while (j < 25) {
+            total += add(j);
+            j += 1;
+        }
+        i += 1;
+    }
+    print("checksum", total);
+}

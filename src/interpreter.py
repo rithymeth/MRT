@@ -397,6 +397,41 @@ class _Missing:
 MISSING = _Missing()
 
 
+class GeneratorScope:
+    """Manages the interpreter's current scope for a block inside a generator
+    body, and does nothing when that generator is being *closed*.
+
+    A suspended generator that nothing holds a reference to any more is
+    garbage; CPython disposes of it by throwing `GeneratorExit` at whatever
+    `yield` it stopped at. That happens at a collection point -- an arbitrary
+    moment during completely unrelated execution -- so ordinary
+    `try`/`finally` cleanup inside a generator body does not run "when the
+    generator finishes", it runs *in the middle of someone else's work*.
+    Restoring `interpreter.environment` there silently replaces the live scope
+    with a stale one, and the program fails later with a nonsense error such
+    as an undefined variable that is plainly in scope.
+
+    So the previous scope is restored on normal completion and on a real
+    error, and deliberately not on `GeneratorExit`. JavaScript never closes an
+    abandoned generator at all, which is the other half of the reason: this is
+    what keeps the two implementations agreeing about a program that drops a
+    generator on the floor.
+    """
+
+    def __init__(self, interpreter: 'Interpreter', environment: 'Environment'):
+        self.interpreter = interpreter
+        self.previous = interpreter.environment
+        interpreter.environment = environment
+
+    def __enter__(self) -> 'GeneratorScope':
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is not GeneratorExit:
+            self.interpreter.environment = self.previous
+        return False
+
+
 class BreakSignal(Exception):
     pass
 
@@ -1489,13 +1524,9 @@ class Interpreter:
     # everything else straight to the ordinary `execute`.
 
     def execute_block_gen(self, statements: List[Stmt], environment: 'Environment'):
-        previous = self.environment
-        try:
-            self.environment = environment
+        with GeneratorScope(self, environment):
             for statement in statements:
                 yield from self.execute_gen(statement)
-        finally:
-            self.environment = previous
 
     def execute_gen(self, stmt: Stmt):
         match stmt:
@@ -1538,9 +1569,7 @@ class Interpreter:
                     except ContinueSignal:
                         continue
             case For():
-                previous = self.environment
-                self.environment = Environment(previous)
-                try:
+                with GeneratorScope(self, Environment(self.environment)):
                     if stmt.initializer:
                         self.execute(stmt.initializer)
                     while stmt.condition is None or self.is_truthy(self.evaluate(stmt.condition)):
@@ -1552,13 +1581,10 @@ class Interpreter:
                             pass
                         if stmt.increment is not None:
                             self.evaluate(stmt.increment)
-                finally:
-                    self.environment = previous
             case ForIn():
-                previous = self.environment
-                try:
+                with GeneratorScope(self, self.environment) as scope:
                     for item in self.iterate(self.evaluate(stmt.iterable), stmt.keyword.line):
-                        self.environment = Environment(previous)
+                        self.environment = Environment(scope.previous)
                         self.bind_pattern(stmt.pattern, item, self.environment, stmt.keyword.line)
                         try:
                             yield from self.execute_gen(stmt.body)
@@ -1566,8 +1592,6 @@ class Interpreter:
                             break
                         except ContinueSignal:
                             continue
-                finally:
-                    self.environment = previous
             case Try():
                 yield from self.execute_try_gen(stmt)
             case Match():
@@ -1619,9 +1643,19 @@ class Interpreter:
         return sent
 
     def execute_try_gen(self, stmt: Try):
+        # `closing` distinguishes "this try block finished" from "this
+        # generator was abandoned and is being disposed of". A `finally` runs
+        # in the first case and not the second: see GeneratorScope for why
+        # running user code at a garbage-collection point is not something a
+        # program can rely on, and not something the JavaScript
+        # implementation can do at all.
+        closing = False
         try:
             try:
                 yield from self.execute_gen(stmt.try_block)
+            except GeneratorExit:
+                closing = True
+                raise
             except MRTThrow as thrown:
                 handled = yield from self.run_catch_gen(stmt, thrown.value)
                 if not handled:
@@ -1631,7 +1665,7 @@ class Interpreter:
                 if not handled:
                     raise
         finally:
-            if stmt.finally_block is not None:
+            if not closing and stmt.finally_block is not None:
                 yield from self.execute_gen(stmt.finally_block)
 
     def run_catch_gen(self, stmt: Try, value: Any):

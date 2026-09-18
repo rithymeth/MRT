@@ -1,0 +1,14 @@
+// Function call and return overhead. Naive recursion is the standard way to
+// measure it because almost nothing else happens per call.
+func fib(n) {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+func main() {
+    var total = 0;
+    for (var i = 0; i < 5; i += 1) {
+        total += fib(19);
+    }
+    print("checksum", total);
+}

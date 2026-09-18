@@ -1,0 +1,23 @@
+// Index reads and writes, push, and array growth.
+func main() {
+    var data = [];
+    var i = 0;
+    while (i < 30000) {
+        push(data, i % 251);
+        i += 1;
+    }
+
+    var total = 0;
+    var pass = 0;
+    while (pass < 2) {
+        var j = 0;
+        while (j < len(data)) {
+            total += data[j];
+            j += 1;
+        }
+        pass += 1;
+    }
+
+    data[0] = 1;
+    print("checksum", total);
+}

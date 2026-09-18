@@ -1,0 +1,29 @@
+// `match` dispatch over shapes, including struct patterns.
+struct Circle { radius; }
+struct Rect { w, h; }
+
+func area(shape) {
+    return match (shape) {
+        case Circle(r): r * r * 3,
+        case Rect(w, h): w * h,
+        case [a, b]: a + b,
+        case {kind: "point"}: 0,
+        case n if (type(n) == "number"): n,
+        default: -1
+    };
+}
+
+func main() {
+    var shapes = [Circle(2), Rect(3, 4), [5, 6], {kind: "point"}, 7, "other"];
+    var total = 0;
+    var i = 0;
+    while (i < 6000) {
+        var j = 0;
+        while (j < len(shapes)) {
+            total += area(shapes[j]);
+            j += 1;
+        }
+        i += 1;
+    }
+    print("checksum", total);
+}

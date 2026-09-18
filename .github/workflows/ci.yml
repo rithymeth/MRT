@@ -43,6 +43,12 @@ jobs:
             mrt "$f"
           done
 
+      # Not a performance gate -- CI timings are too noisy to assert on. This
+      # only proves every benchmark still runs and still produces its
+      # checksum, so one that quietly stops doing its work is visible.
+      - name: Run the benchmarks once as a smoke check
+        run: python3 scripts/bench.py --runs 1 --python-only
+
   playground:
     name: Playground (build, lint, and check parity with the Python interpreter)
     runs-on: ubuntu-latest

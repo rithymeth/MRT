@@ -1368,6 +1368,14 @@ The parity checker exercises multi-file programs through both.
   0–2 then 3–5, not 0–2 twice. Call the generator function again for a fresh
   sequence. Once exhausted it cannot restart, and `for`-`in`/`toArray`/
   `take` raise rather than looping zero times.
+- **Dropping a generator runs nothing.** A suspended generator that the
+  program stops referring to is simply abandoned: its remaining body never
+  runs, and neither does any `finally` it was suspended inside. There is no
+  point in the program at which that cleanup could be said to happen — the
+  reference implementation's host language would run it at a garbage
+  collection, the Playground's would never run it at all — so "invisible" is
+  the only behaviour both implementations can agree on. Use `try`/`finally`
+  around the *consumer* when cleanup must be guaranteed.
 - **`next`/`send` tolerate an exhausted generator; `for`-`in` does not.**
   The drive protocol keeps answering `{done: true}` so a loop can end on it,
   but iterating a finished generator is almost always a bug and is reported
@@ -1414,7 +1422,9 @@ was an oversight):
 - Destructuring assignment to *index* targets: `[obj.a, arr[0]] = pair;`.
   A pattern's leaves are plain names.
 - Throwing *into* a suspended generator (`throw(g, v)`), and closing one
-  early so its `finally` blocks run. `send` only sends values.
+  early so its `finally` blocks run. `send` only sends values, and dropping a
+  generator deliberately runs nothing — an explicit `close(g)` is what would
+  give deterministic cleanup.
 - Lazy versions of the remaining sequence built-ins (`enumerate`, `zip`,
   `unique`, `flatten`); today only `map` and `filter` stay lazy.
 - Default exports and `export * from "..."`.
