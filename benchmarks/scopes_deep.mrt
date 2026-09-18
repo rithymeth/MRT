@@ -1,0 +1,18 @@
+// Identical work to `scopes_shallow`, performed from the bottom of a nest of
+// eight blocks. `target` and `step` are now eight scopes away, and MRT 1.x
+// resolves a name by walking one dictionary per enclosing scope.
+//
+// The gap between the two is the price of resolving names at run time, and
+// therefore the ceiling on what a resolver could win back.
+func main() {
+    var target = 0;
+    var step = 1;
+    { { { { { { { {
+        var i = 0;
+        while (i < 200000) {
+            target += step;
+            i += 1;
+        }
+    } } } } } } } }
+    print("checksum", target);
+}

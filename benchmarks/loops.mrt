@@ -1,0 +1,11 @@
+// Raw dispatch: how much it costs to execute a statement and evaluate a small
+// expression, with no calls, allocation or lookups beyond one scope.
+func main() {
+    var total = 0;
+    var i = 0;
+    while (i < 120000) {
+        total += i % 7;
+        i += 1;
+    }
+    print("checksum", total);
+}

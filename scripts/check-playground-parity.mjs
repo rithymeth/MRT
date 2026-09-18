@@ -511,6 +511,28 @@ const REGRESSION_CASES = [
     src: 'struct Trip { from, to } func main() { var from = "here"; var as = "now"; print(from, as); var o = {from: 1, as: 2, to: 3}; print(o, o.from, o.as); var t = Trip("A", "B"); print(t, t.from); var {from: f} = o; print(f); for (from in [1, 2]) { print(from); } func as2(from, as) { return from + as; } print(as2(1, 2)); }',
   },
 
+  // --- Abandoned generators ------------------------------------------------
+  // Found by a benchmark, not a test. A suspended generator that nothing
+  // refers to is garbage; CPython disposes of one by throwing GeneratorExit
+  // at its `yield`, at a collection point in the middle of unrelated work.
+  // The interpreter's `try`/`finally` cleanup then restored a stale scope
+  // into the live interpreter. JavaScript never closes an abandoned
+  // generator at all, so the two implementations disagreed -- and because
+  // the failure depends on collection timing, nothing here caught it until a
+  // benchmark ran the same loop a few hundred times.
+  {
+    name: 'abandoning many generators does not corrupt the interpreter',
+    src: 'func naturals() { var n = 0; while (true) { yield n; n += 1; } } func main() { var total = 0; var rounds = 0; while (rounds < 300) { var g = naturals(); total += len(take(g, 3)); rounds += 1; } print(total); }',
+  },
+  {
+    name: 'an abandoned generator runs no finally, a finished one does',
+    src: 'func g() { try { yield 1; yield 2; } finally { print("cleanup"); } } func main() { var rounds = 0; while (rounds < 300) { take(g(), 1); rounds += 1; } print("dropped 300"); print(toArray(g())); }',
+  },
+  {
+    name: 'abandoning a generator mid-loop leaves the caller intact',
+    src: 'func naturals() { var n = 0; while (true) { yield n; n += 1; } } func main() { var sum = 0; var i = 0; while (i < 300) { var local = i * 2; for (v in naturals()) { if (v > 1) { break; } } sum += local; i += 1; } print(sum); }',
+  },
+
   {
     name: 'pipeline combining closures, for-in, interpolation and stdlib',
     src: 'func main() { var people = [{name: "Ada", age: 36}, {name: "Bob", age: 17}, {name: "Cy", age: 44}]; var adults = filter(people, func(p) { return p.age >= 18; }); var names = sort(map(adults, func(p) { return p.name; })); for (n in names) { print("adult: ${n}"); } print("total age ${ reduce(map(people, func(p){ return p.age; }), func(a,b){ return a+b; }) }"); }',

@@ -1,0 +1,23 @@
+// String building and the built-in string functions.
+func main() {
+    var parts = [];
+    var i = 0;
+    while (i < 20000) {
+        push(parts, "item-${i}");
+        i += 1;
+    }
+
+    var joined = join(parts, ",");
+    var pieces = split(joined, ",");
+
+    var total = 0;
+    var j = 0;
+    while (j < len(pieces)) {
+        var piece = pieces[j];
+        if (startsWith(piece, "item-")) {
+            total += len(toUpper(piece));
+        }
+        j += 1;
+    }
+    print("checksum", total);
+}

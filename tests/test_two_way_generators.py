@@ -272,3 +272,89 @@ def test_the_eager_higher_order_builtins_reject_non_iterables():
         "TypeError map() needs something iterable, not number.",
         "TypeError reduce() needs something iterable, not number.",
     ]
+
+
+# -- Abandoned generators ----------------------------------------------------
+#
+# A suspended generator that nothing refers to any more is garbage. CPython
+# disposes of one by throwing GeneratorExit at its `yield`, which happens at a
+# collection point -- an arbitrary moment during unrelated execution. Cleanup
+# written as `try`/`finally` inside the interpreter therefore ran in the middle
+# of someone else's work, and quietly replaced the live scope with a stale one.
+#
+# These tests exist because a benchmark, not a test, found it: the failure
+# needed a few hundred abandoned generators before a collection happened at an
+# unlucky moment.
+
+
+def test_abandoning_many_generators_does_not_corrupt_the_interpreter():
+    output, errors = run_mrt('''
+        func naturals() { var n = 0; while (true) { yield n; n += 1; } }
+        func main() {
+            var total = 0;
+            var rounds = 0;
+            while (rounds < 300) {
+                var g = naturals();
+                total += len(take(g, 3));
+                rounds += 1;
+            }
+            print(total);
+        }
+    ''')
+    assert errors == []
+    # Before the fix this failed with "Undefined variable 'n'", pointing at a
+    # variable plainly in scope, after however many rounds it took for the
+    # garbage collector to run.
+    assert output == ["900"]
+
+
+def test_an_abandoned_generator_does_not_run_its_finally():
+    output, errors = run_mrt('''
+        func g() {
+            try { yield 1; yield 2; }
+            finally { print("cleanup"); }
+        }
+        func main() {
+            var rounds = 0;
+            while (rounds < 300) { take(g(), 1); rounds += 1; }
+            print("done");
+        }
+    ''')
+    assert errors == []
+    # Dropping a generator runs nothing. There is no point in the program at
+    # which the cleanup could be said to happen, and the JavaScript
+    # implementation cannot run it at all, so "invisible" is the only
+    # behaviour both implementations can agree on.
+    assert output == ["done"]
+
+
+def test_a_finally_still_runs_when_the_generator_actually_finishes():
+    output, errors = run_mrt('''
+        func g() {
+            try { yield 1; yield 2; }
+            finally { print("cleanup"); }
+        }
+        func main() { print(toArray(g())); }
+    ''')
+    assert errors == []
+    assert output == ["cleanup", "[1, 2]"]
+
+
+def test_abandoning_a_generator_mid_loop_leaves_the_caller_intact():
+    output, errors = run_mrt('''
+        func naturals() { var n = 0; while (true) { yield n; n += 1; } }
+        func main() {
+            var sum = 0;
+            var i = 0;
+            while (i < 300) {
+                var local = i * 2;
+                for (v in naturals()) { if (v > 1) { break; } }
+                sum += local;
+                i += 1;
+            }
+            print(sum);
+        }
+    ''')
+    assert errors == []
+    # `local` must still be readable after each abandoned for-in.
+    assert output == ["89700"]

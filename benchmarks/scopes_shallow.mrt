@@ -1,0 +1,12 @@
+// Control for `scopes_deep`: the same loop, the same number of iterations,
+// with every name it touches in the immediately enclosing scope.
+func main() {
+    var target = 0;
+    var step = 1;
+    var i = 0;
+    while (i < 200000) {
+        target += step;
+        i += 1;
+    }
+    print("checksum", target);
+}

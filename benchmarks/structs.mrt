@@ -1,0 +1,18 @@
+// Instance construction and method dispatch.
+struct Point {
+    x, y;
+    func lengthSquared() { return this.x * this.x + this.y * this.y; }
+    func shifted(dx, dy) { return Point(this.x + dx, this.y + dy); }
+}
+
+func main() {
+    var total = 0;
+    var i = 0;
+    while (i < 20000) {
+        var p = Point(i % 23, i % 17);
+        var q = p.shifted(1, 2);
+        total += q.lengthSquared() % 1000;
+        i += 1;
+    }
+    print("checksum", total);
+}

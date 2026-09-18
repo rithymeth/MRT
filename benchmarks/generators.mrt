@@ -1,0 +1,22 @@
+// Suspension and resumption, plus a lazy pipeline.
+func naturals() {
+    var n = 0;
+    while (true) { yield n; n += 1; }
+}
+
+func main() {
+    var squares = map(naturals(), func(n) { return n * n; });
+    var kept = filter(squares, func(n) { return n % 3 == 0; });
+    var taken = take(kept, 9000);
+
+    var total = 0;
+    for (v in taken) { total += v % 1000; }
+
+    var rounds = 0;
+    while (rounds < 120) {
+        var g = naturals();
+        total += len(take(g, 50));
+        rounds += 1;
+    }
+    print("checksum", total);
+}
