@@ -1,7 +1,7 @@
 # The MRT 2.0 compiler frontend
 
-A new frontend for MRT, written in Rust. This is **Phase 1**: lexer, AST and
-parser, with the resolver next. There is no evaluator here yet, and the MRT 1.x
+A new frontend for MRT, written in Rust. **Phase 1 is complete**: diagnostics,
+lexer, AST, parser and resolver. There is no evaluator here yet, and the MRT 1.x
 Python and TypeScript interpreters remain the implementations that actually run
 programs.
 
@@ -68,6 +68,15 @@ cannot fail is not a harness:
 | A leading `{` never opens a pattern | 18 |
 | The generator flag is never set | 32 |
 | `a.b` not desugared to `a["b"]` | 57 |
+| Parent locals never flagged captured | 14 |
+| Slot counter advanced twice | 147 |
+| Captures never deduplicated | 7 |
+
+That last row is there because the first attempt at it was **not** caught:
+duplicate captures are individually well-formed — each names a real parent
+local — so nothing noticed. A backend would have allocated one cell per entry
+and closures sharing a variable would have quietly stopped sharing it. The
+missing invariant was added because the mutation escaped.
 
 Three inherited behaviours are deliberate, and each looks like a bug until you
 try to change it:
@@ -87,7 +96,8 @@ compiler/
 │   ├── mrt-diagnostics/   spans, source maps, two error renderers
 │   ├── mrt-lexer/         tokens and the scanner
 │   ├── mrt-ast/           the tree, and its canonical dump format
-│   └── mrt-parser/        recursive descent, with error recovery
+│   ├── mrt-parser/        recursive descent, with error recovery
+│   └── mrt-resolver/      names to frame slots, captures and globals
 └── cli/                   mrt-check, the frontend driver
 ```
 
@@ -109,12 +119,54 @@ cargo fmt --manifest-path compiler/Cargo.toml --all --check
 mrt-check FILE                 # rich diagnostics
 mrt-check --dump-tokens FILE   # canonical token stream
 mrt-check --dump-ast FILE      # canonical AST
+mrt-check --dump-scopes FILE   # resolved frame layout
 mrt-check --compat FILE        # MRT 1.x error text, byte for byte
 ```
 
 `--compat` selects the *error format* and composes with either dump, which is
 how the harness gets a machine-comparable tree and comparable error text in
 one run.
+
+## The resolver
+
+Every name becomes a numbered slot in the current frame, an index into that
+frame's capture list, or a global looked up by name. MRT 1.x does this work at
+run time by walking a chain of dictionaries, once per read.
+
+```
+$ mrt-check --dump-scopes counter.mrt
+module
+  function "makeCounter" slots=2 captures=0
+    slot 0 "start"
+    slot 1 "count" captured
+    function "<anonymous>" slots=0 captures=1
+      capture 0 "count" <- parent local 1
+      use "count" 6:9 -> capture 0
+```
+
+It **reports no errors, on purpose.** MRT's semantics are dynamic: a name the
+resolver cannot find is not a mistake, it is a global, and whether it exists is
+decided when the program runs. Reporting "undefined variable" here would reject
+programs the reference implementation accepts, which is the exact divergence
+the conformance harness exists to prevent.
+
+The behaviours it has to mirror:
+
+* **The module scope is global, not a frame.** A top-level `var` is stored in
+  the interpreter's `globals`, so it resolves as a global even from the same
+  file.
+* **Blocks are scopes but not frames.** A `{ }` block, a `for` header, a
+  `catch` clause and each `match` case introduce a scope; all draw slots from
+  the enclosing *function's* single slot space.
+* **`for`-`in` binds afresh on each iteration**, so its loop variable is
+  flagged `per-iteration`: a backend must give each turn its own cell rather
+  than reusing one slot. A C-style `for` variable is not.
+* **A method's `this`** is modelled as a local of the method.
+
+Since there is no Python counterpart, the resolver cannot be compared — only
+exercised. The harness runs it over every corpus program that parses, with its
+internal invariants checked, which is how a broken capture chain fails across a
+hundred real programs rather than only in unit tests.
 
 ## Spans are the part conformance cannot check
 

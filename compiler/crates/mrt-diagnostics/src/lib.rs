@@ -17,7 +17,7 @@
 use std::fmt;
 
 /// A half-open range of source, `[start, end)`, in `char` offsets.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Span {
     pub start: u32,
     pub end: u32,

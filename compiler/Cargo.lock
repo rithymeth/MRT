@@ -18,6 +18,7 @@ dependencies = [
  "mrt-diagnostics",
  "mrt-lexer",
  "mrt-parser",
+ "mrt-resolver",
 ]
 
 [[package]]
@@ -38,4 +39,13 @@ dependencies = [
  "mrt-ast",
  "mrt-diagnostics",
  "mrt-lexer",
+]
+
+[[package]]
+name = "mrt-resolver"
+version = "0.1.0"
+dependencies = [
+ "mrt-ast",
+ "mrt-diagnostics",
+ "mrt-parser",
 ]

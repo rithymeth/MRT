@@ -7,6 +7,8 @@
 //! ```text
 //! mrt-check FILE                 rich diagnostics (default)
 //! mrt-check --dump-tokens FILE   canonical token stream
+//! mrt-check --dump-ast FILE      canonical AST
+//! mrt-check --dump-scopes FILE   resolved frame layout
 //! mrt-check --compat FILE        render errors as MRT 1.x does, byte for
 //!                                byte. Independent of what is dumped, so
 //!                                the conformance harness can ask for a
@@ -34,6 +36,7 @@ fn main() -> ExitCode {
             "--compat" => compat = true,
             "--dump-tokens" => mode = Mode::DumpTokens,
             "--dump-ast" => mode = Mode::DumpAst,
+            "--dump-scopes" => mode = Mode::DumpScopes,
             "-h" | "--help" => {
                 eprintln!("{USAGE}");
                 return ExitCode::SUCCESS;
@@ -89,7 +92,7 @@ fn main() -> ExitCode {
             }
             print!("{out}");
         }
-        Mode::DumpAst | Mode::Diagnose => {
+        Mode::DumpAst | Mode::DumpScopes | Mode::Diagnose => {
             let parsed = mrt_parser::Parser::new(tokens).parse();
             if !parsed.errors.is_empty() {
                 for diagnostic in &parsed.errors {
@@ -101,8 +104,21 @@ fn main() -> ExitCode {
                 }
                 return ExitCode::from(EX_DATAERR);
             }
-            if mode == Mode::DumpAst {
-                print!("{}", dump_program(&parsed.program));
+            match mode {
+                Mode::DumpAst => print!("{}", dump_program(&parsed.program)),
+                Mode::DumpScopes => {
+                    let resolved = mrt_resolver::resolve(&parsed.program);
+                    // Checked on every dump rather than only in tests: the
+                    // conformance harness runs this over the whole corpus, so
+                    // a broken capture chain fails there rather than silently
+                    // printing nonsense.
+                    if let Err(problem) = mrt_resolver::validate(&resolved) {
+                        eprintln!("resolver invariant violated: {problem}");
+                        return ExitCode::from(EX_DATAERR);
+                    }
+                    print!("{}", mrt_resolver::dump(&resolved, &file));
+                }
+                _ => {}
             }
         }
     }
@@ -110,13 +126,14 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-const USAGE: &str = "usage: mrt-check [--dump-tokens | --dump-ast] [--compat] FILE";
+const USAGE: &str = "usage: mrt-check [--dump-tokens | --dump-ast | --dump-scopes] [--compat] FILE";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Diagnose,
     DumpTokens,
     DumpAst,
+    DumpScopes,
 }
 
 /// A literal in the canonical dump format shared with the Python dumper.

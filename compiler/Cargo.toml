@@ -11,6 +11,7 @@ members = [
     "crates/mrt-lexer",
     "crates/mrt-ast",
     "crates/mrt-parser",
+    "crates/mrt-resolver",
     "cli",
 ]
 

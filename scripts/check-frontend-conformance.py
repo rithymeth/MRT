@@ -10,6 +10,11 @@ Every input is checked at both levels. Tokens catch lexer divergence; ASTs
 catch the far larger class of parser divergence, where two frontends tokenise
 a program identically and then disagree about what it means.
 
+The resolver has no Python counterpart, so it cannot be compared -- only
+exercised. Every input that parses is run through it with its internal
+invariants checked, which is what catches a slot or capture index pointing at
+nothing across a hundred real programs rather than only in unit tests.
+
 The corpus is every .mrt file in the repository, every inline snippet in the
 parity checker, every Playground example, and a set of edge cases written
 here specifically to pin down lexer behaviour that the ordinary programs never
@@ -221,6 +226,18 @@ def main() -> int:
 
     checked = failures = 0
     for name, source in corpus():
+        # The resolver is exercised, not compared: it runs over anything that
+        # parses and must report no invariant violation.
+        py_parses, _ = python_ast(source)
+        if py_parses:
+            checked += 1
+            ok, out = rust_dump(source, "--dump-scopes")
+            if ok:
+                print(f"\u2713 {name} [resolver]")
+            else:
+                failures += 1
+                print(f"\n\u2717 RESOLVER: {name}\n  {out}")
+
         for level, py_fn, flag in levels:
             checked += 1
             label = f"{name} [{level}]"

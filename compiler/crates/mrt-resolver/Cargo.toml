@@ -1,0 +1,16 @@
+[package]
+name = "mrt-resolver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mrt-diagnostics = { path = "../mrt-diagnostics" }
+mrt-ast = { path = "../mrt-ast" }
+
+[dev-dependencies]
+mrt-parser = { path = "../mrt-parser" }
+
+[lints]
+workspace = true
