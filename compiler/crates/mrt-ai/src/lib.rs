@@ -9,24 +9,37 @@ pub struct Tensor {
 
 impl Tensor {
     pub fn zeros(rows: usize, cols: usize) -> Self {
-        Self { data: vec![0.0; rows * cols], rows, cols }
+        Self {
+            data: vec![0.0; rows * cols],
+            rows,
+            cols,
+        }
     }
 
     pub fn from_vec(rows: usize, cols: usize, data: Vec<f64>) -> Result<Self, AiError> {
         if rows * cols != data.len() {
             return Err(AiError::Shape(format!(
                 "expected {} values for shape ({rows}, {cols}), got {}",
-                rows * cols, data.len()
+                rows * cols,
+                data.len()
             )));
         }
         Ok(Self { data, rows, cols })
     }
 
-    pub fn get(&self, row: usize, col: usize) -> f64 { self.data[row * self.cols + col] }
-    pub fn set(&mut self, row: usize, col: usize, value: f64) { self.data[row * self.cols + col] = value; }
+    pub fn get(&self, row: usize, col: usize) -> f64 {
+        self.data[row * self.cols + col]
+    }
+    pub fn set(&mut self, row: usize, col: usize, value: f64) {
+        self.data[row * self.cols + col] = value;
+    }
 
     pub fn map(&self, f: impl Fn(f64) -> f64) -> Self {
-        Self { data: self.data.iter().copied().map(f).collect(), rows: self.rows, cols: self.cols }
+        Self {
+            data: self.data.iter().copied().map(f).collect(),
+            rows: self.rows,
+            cols: self.cols,
+        }
     }
 
     pub fn add(&self, other: &Self) -> Result<Self, AiError> {
@@ -42,8 +55,14 @@ impl Tensor {
             return Err(AiError::Shape("tensor shapes must match".into()));
         }
         Ok(Self {
-            data: self.data.iter().zip(&other.data).map(|(a,b)| f(*a,*b)).collect(),
-            rows: self.rows, cols: self.cols,
+            data: self
+                .data
+                .iter()
+                .zip(&other.data)
+                .map(|(a, b)| f(*a, *b))
+                .collect(),
+            rows: self.rows,
+            cols: self.cols,
         })
     }
 
@@ -68,12 +87,20 @@ impl Tensor {
 
     pub fn transpose(&self) -> Self {
         let mut out = Self::zeros(self.cols, self.rows);
-        for r in 0..self.rows { for c in 0..self.cols { out.set(c, r, self.get(r, c)); } }
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                out.set(c, r, self.get(r, c));
+            }
+        }
         out
     }
 
-    pub fn scale(&self, value: f64) -> Self { self.map(|x| x * value) }
-    fn mul(&self, other: &Self) -> Result<Self, AiError> { self.binary(other, |a,b| a*b) }
+    pub fn scale(&self, value: f64) -> Self {
+        self.map(|x| x * value)
+    }
+    fn mul(&self, other: &Self) -> Result<Self, AiError> {
+        self.binary(other, |a, b| a * b)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,7 +141,8 @@ impl Dense {
             data: (0..input * output)
                 .map(|_| (rng.next_f64() * 2.0 - 1.0) * scale)
                 .collect(),
-            rows: input, cols: output,
+            rows: input,
+            cols: output,
         };
         Self {
             weights,
@@ -130,24 +158,30 @@ impl Layer for Dense {
     fn forward(&mut self, input: &Tensor) -> Result<Tensor, AiError> {
         if input.cols != self.weights.rows {
             return Err(AiError::Shape(format!(
-                "Dense expected {} features, got {}", self.weights.rows, input.cols
+                "Dense expected {} features, got {}",
+                self.weights.rows, input.cols
             )));
         }
         self.input = Some(input.clone());
         let mut out = input.matmul(&self.weights)?;
         for r in 0..out.rows {
-            for c in 0..out.cols { out.set(r, c, out.get(r,c) + self.bias.get(0,c)); }
+            for c in 0..out.cols {
+                out.set(r, c, out.get(r, c) + self.bias.get(0, c));
+            }
         }
         Ok(out)
     }
 
     fn backward(&mut self, grad: &Tensor) -> Result<Tensor, AiError> {
-        let input = self.input.as_ref()
+        let input = self
+            .input
+            .as_ref()
             .ok_or_else(|| AiError::Training("backward called before forward".into()))?;
         self.grad_w = input.transpose().matmul(grad)?;
         self.grad_b = Tensor::zeros(1, grad.cols);
         for c in 0..grad.cols {
-            self.grad_b.set(0, c, (0..grad.rows).map(|r| grad.get(r,c)).sum());
+            self.grad_b
+                .set(0, c, (0..grad.rows).map(|r| grad.get(r, c)).sum());
         }
         grad.matmul(&self.weights.transpose())
     }
@@ -158,9 +192,19 @@ impl Layer for Dense {
     }
 }
 
-pub struct Relu { mask: Option<Tensor> }
-impl Relu { pub fn new() -> Self { Self { mask: None } } }
-impl Default for Relu { fn default() -> Self { Self::new() } }
+pub struct Relu {
+    mask: Option<Tensor>,
+}
+impl Relu {
+    pub fn new() -> Self {
+        Self { mask: None }
+    }
+}
+impl Default for Relu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Layer for Relu {
     fn forward(&mut self, input: &Tensor) -> Result<Tensor, AiError> {
@@ -168,60 +212,93 @@ impl Layer for Relu {
         Ok(input.map(|x| x.max(0.0)))
     }
     fn backward(&mut self, grad: &Tensor) -> Result<Tensor, AiError> {
-        let mask = self.mask.as_ref()
+        let mask = self
+            .mask
+            .as_ref()
             .ok_or_else(|| AiError::Training("backward called before forward".into()))?;
         grad.mul(mask)
     }
     fn update(&mut self, _optimizer: &mut Sgd) {}
 }
 
-pub struct Sequential { layers: Vec<Box<dyn Layer>> }
+pub struct Sequential {
+    layers: Vec<Box<dyn Layer>>,
+}
 impl Sequential {
-    pub fn new() -> Self { Self { layers: Vec::new() } }
-    pub fn add<L: Layer + 'static>(&mut self, layer: L) { self.layers.push(Box::new(layer)); }
+    pub fn new() -> Self {
+        Self { layers: Vec::new() }
+    }
+    pub fn add<L: Layer + 'static>(&mut self, layer: L) {
+        self.layers.push(Box::new(layer));
+    }
     pub fn forward(&mut self, input: &Tensor) -> Result<Tensor, AiError> {
         let mut x = input.clone();
-        for layer in &mut self.layers { x = layer.forward(&x)?; }
+        for layer in &mut self.layers {
+            x = layer.forward(&x)?;
+        }
         Ok(x)
     }
     pub fn backward(&mut self, grad: &Tensor) -> Result<Tensor, AiError> {
         let mut g = grad.clone();
-        for layer in self.layers.iter_mut().rev() { g = layer.backward(&g)?; }
+        for layer in self.layers.iter_mut().rev() {
+            g = layer.backward(&g)?;
+        }
         Ok(g)
     }
     pub fn update(&mut self, optimizer: &mut Sgd) {
-        for layer in &mut self.layers { layer.update(optimizer); }
+        for layer in &mut self.layers {
+            layer.update(optimizer);
+        }
     }
 }
-impl Default for Sequential { fn default() -> Self { Self::new() } }
+impl Default for Sequential {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub fn mse(prediction: &Tensor, target: &Tensor) -> Result<(f64, Tensor), AiError> {
     let diff = prediction.sub(target)?;
     let n = diff.data.len() as f64;
-    let loss = diff.data.iter().map(|x| x*x).sum::<f64>() / n;
+    let loss = diff.data.iter().map(|x| x * x).sum::<f64>() / n;
     Ok((loss, diff.scale(2.0 / n)))
 }
 
-pub struct Sgd { pub learning_rate: f64 }
+pub struct Sgd {
+    pub learning_rate: f64,
+}
 impl Sgd {
-    pub fn new(learning_rate: f64) -> Self { Self { learning_rate } }
+    pub fn new(learning_rate: f64) -> Self {
+        Self { learning_rate }
+    }
     fn update(&self, parameter: &mut Tensor, gradient: &Tensor) {
-        for (p,g) in parameter.data.iter_mut().zip(&gradient.data) {
+        for (p, g) in parameter.data.iter_mut().zip(&gradient.data) {
             *p -= self.learning_rate * g;
         }
     }
 }
 
-pub struct Trainer { pub epochs: usize, pub optimizer: Sgd }
+pub struct Trainer {
+    pub epochs: usize,
+    pub optimizer: Sgd,
+}
 impl Trainer {
     pub fn new(epochs: usize, learning_rate: f64) -> Self {
-        Self { epochs, optimizer: Sgd::new(learning_rate) }
+        Self {
+            epochs,
+            optimizer: Sgd::new(learning_rate),
+        }
     }
     pub fn train(
-        &mut self, model: &mut Sequential, inputs: &Tensor, targets: &Tensor
+        &mut self,
+        model: &mut Sequential,
+        inputs: &Tensor,
+        targets: &Tensor,
     ) -> Result<Vec<f64>, AiError> {
         if inputs.rows != targets.rows {
-            return Err(AiError::Training("inputs and targets must have the same number of rows".into()));
+            return Err(AiError::Training(
+                "inputs and targets must have the same number of rows".into(),
+            ));
         }
         let mut history = Vec::with_capacity(self.epochs);
         for _ in 0..self.epochs {
@@ -235,17 +312,26 @@ impl Trainer {
     }
 }
 
-struct XorShift64 { state: u64 }
+struct XorShift64 {
+    state: u64,
+}
 impl XorShift64 {
     fn new(seed: u64) -> Self {
-        Self { state: if seed == 0 { 0x9e3779b97f4a7c15 } else { seed } }
+        Self {
+            state: if seed == 0 { 0x9e3779b97f4a7c15 } else { seed },
+        }
     }
     fn next(&mut self) -> u64 {
         let mut x = self.state;
-        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
-        self.state = x; x
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
     }
-    fn next_f64(&mut self) -> f64 { self.next() as f64 / u64::MAX as f64 }
+    fn next_f64(&mut self) -> f64 {
+        self.next() as f64 / u64::MAX as f64
+    }
 }
 
 #[cfg(test)]
@@ -254,26 +340,26 @@ mod tests {
 
     #[test]
     fn matmul_works() {
-        let a = Tensor::from_vec(2,2,vec![1.0,2.0,3.0,4.0]).unwrap();
-        let b = Tensor::from_vec(2,1,vec![5.0,6.0]).unwrap();
-        assert_eq!(a.matmul(&b).unwrap().data, vec![17.0,39.0]);
+        let a = Tensor::from_vec(2, 2, vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let b = Tensor::from_vec(2, 1, vec![5.0, 6.0]).unwrap();
+        assert_eq!(a.matmul(&b).unwrap().data, vec![17.0, 39.0]);
     }
 
     #[test]
     fn dense_learns_simple_function() {
-        let x = Tensor::from_vec(4,1,vec![0.0,1.0,2.0,3.0]).unwrap();
-        let y = Tensor::from_vec(4,1,vec![1.0,3.0,5.0,7.0]).unwrap();
+        let x = Tensor::from_vec(4, 1, vec![0.0, 1.0, 2.0, 3.0]).unwrap();
+        let y = Tensor::from_vec(4, 1, vec![1.0, 3.0, 5.0, 7.0]).unwrap();
         let mut model = Sequential::new();
-        model.add(Dense::new(1,1,42));
-        let mut trainer = Trainer::new(500,0.05);
-        let history = trainer.train(&mut model,&x,&y).unwrap();
+        model.add(Dense::new(1, 1, 42));
+        let mut trainer = Trainer::new(500, 0.05);
+        let history = trainer.train(&mut model, &x, &y).unwrap();
         assert!(history.last().unwrap() < history.first().unwrap());
     }
 
     #[test]
     fn relu_blocks_negative_values() {
-        let x = Tensor::from_vec(1,3,vec![-2.0,0.0,3.0]).unwrap();
+        let x = Tensor::from_vec(1, 3, vec![-2.0, 0.0, 3.0]).unwrap();
         let mut relu = Relu::new();
-        assert_eq!(relu.forward(&x).unwrap().data, vec![0.0,0.0,3.0]);
+        assert_eq!(relu.forward(&x).unwrap().data, vec![0.0, 0.0, 3.0]);
     }
 }
