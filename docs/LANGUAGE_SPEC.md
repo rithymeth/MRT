@@ -640,6 +640,12 @@ try {
     | `kind` | string | a coarse category — see below |
     | `stack` | array of strings | the MRT call stack, innermost first |
 
+    `line` is `null` only where the interpreter genuinely has no source
+    position to attach — a failure inside a built-in called from another
+    built-in, for instance. It is not `null` for ordinary mistakes: indexing,
+    key lookup and bad object keys all report the line of the `[` or `.` they
+    were written with.
+
 ### Error kinds
 
 `e.kind` is one of a small, closed set, so that catching "any bad index"
