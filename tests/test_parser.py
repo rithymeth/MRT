@@ -1,6 +1,6 @@
-from src.ast import Binary, Break, Continue, For, Logical, Return
-from src.lexer import Lexer
-from src.parser import Parser
+from mrt.ast import Binary, Break, Continue, For, Logical, Return
+from mrt.lexer import Lexer
+from mrt.parser import Parser
 
 
 def parse(source: str):

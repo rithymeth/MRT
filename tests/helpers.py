@@ -1,10 +1,10 @@
 import os
 from typing import Dict, List, Tuple
 
-from src.errors import MRTSyntaxError
-from src.interpreter import Interpreter
-from src.lexer import Lexer
-from src.parser import Parser
+from mrt.errors import MRTSyntaxError
+from mrt.interpreter import Interpreter
+from mrt.lexer import Lexer
+from mrt.parser import Parser
 
 
 def run_mrt(source: str) -> Tuple[List[str], List[MRTSyntaxError]]:

@@ -17,10 +17,10 @@ of the output never depends on whether an optional part happens to be present.
 import struct
 import sys
 
-from src import ast as A
-from src.errors import MRTError
-from src.lexer import Lexer
-from src.parser import Parser
+from mrt import ast as A
+from mrt.errors import MRTError
+from mrt.lexer import Lexer
+from mrt.parser import Parser
 from scripts.dump_tokens import quote
 
 

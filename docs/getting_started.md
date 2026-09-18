@@ -44,7 +44,7 @@ mrt your_program.mrt
 
 2. Using Python directly:
 ```bash
-python -m src your_program.mrt
+python -m mrt your_program.mrt
 ```
 
 ## Creating Your First Program
@@ -67,11 +67,14 @@ MRT files use the `.mrt` extension. Any text editor can be used for MRT developm
 
 ## Project Structure
 
-- `src/`: Source code for the MRT interpreter
+- `mrt/`: Source code for the reference interpreter — what `pip install
+  mrt-lang` installs
   - `lexer.py`: Tokenizes source code
   - `parser.py`: Parses tokens into AST
   - `interpreter.py`: Executes MRT programs
   - `ast.py`: Abstract Syntax Tree definitions
+- `compiler/`: The MRT 2.0 compiler and interpreter, in Rust
+- `src/`: The browser Playground (React) and its TypeScript interpreter
 - `examples/`: Example MRT programs
 - `docs/`: Documentation
 - `tests/`: Test suite

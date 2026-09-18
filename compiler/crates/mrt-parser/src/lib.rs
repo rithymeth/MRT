@@ -1,4 +1,4 @@
-//! The MRT parser: a recursive-descent parser mirroring `src/parser.py`.
+//! The MRT parser: a recursive-descent parser mirroring `mrt/parser.py`.
 //!
 //! Like the reference implementation it recovers from errors rather than
 //! stopping at the first one -- a file with three mistakes reports three --

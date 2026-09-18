@@ -26,10 +26,10 @@ Source = "https://github.com/rithymeth/MRT"
 Issues = "https://github.com/rithymeth/MRT/issues"
 
 [project.scripts]
-mrt = "src.__main__:main"
+mrt = "mrt.__main__:main"
 
 [tool.setuptools]
-packages = ["src"]
+packages = ["mrt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

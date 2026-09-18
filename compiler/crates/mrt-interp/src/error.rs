@@ -68,7 +68,7 @@ impl RuntimeError {
         self
     }
 
-    /// The text `python -m src` prints for this error.
+    /// The text `python -m mrt` prints for this error.
     pub fn render(&self) -> String {
         match self.line {
             Some(line) => format!("Runtime Error: {} [line {line}]", self.message),

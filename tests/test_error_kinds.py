@@ -1,7 +1,7 @@
 """Tests for error classification (`e.kind`), call-stack traces (`e.stack`),
 and guarded `catch (e) if (...)` clauses."""
 
-from src.errors import ERROR_KINDS
+from mrt.errors import ERROR_KINDS
 from tests.helpers import run_mrt
 
 
