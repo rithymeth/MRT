@@ -56,9 +56,14 @@ class Array(Expr):
 class ArrayAccess(Expr):
     """Indexing get: `target[index]`, and also `target.name` (desugared to
     `target["name"]` by the parser). `target` may evaluate to an array, a
-    dict, or (read-only) a string."""
+    dict, or (read-only) a string.
+
+    `line` is the bracket (or dot) the access was written with. Indexing is
+    the one place a runtime error is raised from a helper several frames
+    below the expression, so without it a bad index reports no line at all."""
     array: Expr
     index: Expr
+    line: int = 0
 
 @dataclass
 class ArrayAssign(Expr):
@@ -67,6 +72,7 @@ class ArrayAssign(Expr):
     array: Expr
     index: Expr
     value: Expr
+    line: int = 0
 
 # -- Binding patterns --------------------------------------------------------
 #
@@ -170,6 +176,7 @@ class DictLiteral(Expr):
     make every `return` statement in this interpreter a no-op -- see
     interpreter.py's history)."""
     pairs: List[Tuple[Expr, Expr]]
+    line: int = 0
 
 # Statement nodes
 @dataclass

@@ -1592,7 +1592,7 @@ class Interpreter:
                 # Re-enter the ordinary index-assignment path with the
                 # received value standing in for the `yield`, so the index
                 # checks and error messages stay in exactly one place.
-                self.evaluate(ArrayAssign(target.array, target.index, Literal(sent)))
+                self.evaluate(ArrayAssign(target.array, target.index, Literal(sent), target.line))
             case Block():
                 yield from self.execute_block_gen(stmt.statements, Environment(self.environment))
             case If():
@@ -2103,7 +2103,7 @@ class Interpreter:
                 result: Dict[Any, Any] = {}
                 for key_expr, value_expr in expr.pairs:
                     key = self.evaluate(key_expr)
-                    self._check_hashable_key(key)
+                    self._check_hashable_key(key, expr.line)
                     result[store_key(key)] = self.evaluate(value_expr)
                 return result
             case Call():
@@ -2218,15 +2218,16 @@ class Interpreter:
     def evaluate_index_get(self, expr: ArrayAccess) -> Any:
         target = self.evaluate(expr.array)
         index = self.evaluate(expr.index)
+        line = expr.line
 
         if isinstance(target, MRTInstance):
             if not isinstance(index, str):
                 raise MRTRuntimeError(
-                    "A struct field name must be a string.", kind="TypeError")
+                    "A struct field name must be a string.", line, kind="TypeError")
             return target.get(index, self)
 
         if isinstance(target, dict):
-            self._check_hashable_key(index)
+            self._check_hashable_key(index, line)
             key = store_key(index)
             if key not in target:
                 # json.dumps, not !r: the Playground formats this message with
@@ -2234,57 +2235,62 @@ class Interpreter:
                 # apostrophes (and escape differently), so a program that
                 # prints a caught e.message would see two different texts.
                 raise MRTRuntimeError(
-                    f"Key {json.dumps(stringify(index))} not found in object.", kind="KeyError")
+                    f"Key {json.dumps(stringify(index))} not found in object.", line, kind="KeyError")
             return target[key]
 
         if isinstance(target, list):
-            i = self._require_array_index(index, len(target))
+            i = self._require_array_index(index, len(target), line)
             return target[i]
 
         if isinstance(target, str):
-            i = self._require_array_index(index, len(target))
+            i = self._require_array_index(index, len(target), line)
             return target[i]
 
-        raise MRTRuntimeError("Can only index into arrays, objects, or strings.", kind="TypeError")
+        raise MRTRuntimeError("Can only index into arrays, objects, or strings.", line, kind="TypeError")
 
     def evaluate_index_set(self, expr: ArrayAssign) -> Any:
         target = self.evaluate(expr.array)
         index = self.evaluate(expr.index)
         value = self.evaluate(expr.value)
 
+        line = expr.line
+
         if isinstance(target, MRTInstance):
             if not isinstance(index, str):
                 raise MRTRuntimeError(
-                    "A struct field name must be a string.", kind="TypeError")
+                    "A struct field name must be a string.", line, kind="TypeError")
             target.set(index, value)
             return value
 
         if isinstance(target, dict):
-            self._check_hashable_key(index)
+            self._check_hashable_key(index, line)
             target[store_key(index)] = value
             return value
 
         if isinstance(target, list):
-            i = self._require_array_index(index, len(target))
+            i = self._require_array_index(index, len(target), line)
             target[i] = value
             return value
 
         if isinstance(target, str):
-            raise MRTRuntimeError("Strings are immutable; cannot assign to a character index.", kind="TypeError")
+            raise MRTRuntimeError("Strings are immutable; cannot assign to a character index.", line, kind="TypeError")
 
-        raise MRTRuntimeError("Can only assign into arrays or objects.", kind="TypeError")
+        raise MRTRuntimeError("Can only assign into arrays or objects.", line, kind="TypeError")
 
-    def _require_array_index(self, index: Any, length: int) -> int:
+    def _require_array_index(self, index: Any, length: int, line: int) -> int:
         if not isinstance(index, (int, float)) or isinstance(index, bool):
-            raise MRTRuntimeError("Array index must be a number.", kind="IndexError")
+            raise MRTRuntimeError("Array index must be a number.", line, kind="IndexError")
         i = int(index)
         if i < 0 or i >= length:
-            raise MRTRuntimeError(f"Array index {i} out of bounds for array of length {length}.", kind="IndexError")
+            raise MRTRuntimeError(
+                f"Array index {i} out of bounds for array of length {length}.", line, kind="IndexError")
         return i
 
-    def _check_hashable_key(self, key: Any):
+    def _check_hashable_key(self, key: Any, line: int):
         if isinstance(key, (list, dict)):
-            raise MRTRuntimeError("Object keys must be numbers, strings, or booleans (not arrays or objects).", kind="TypeError")
+            raise MRTRuntimeError(
+                "Object keys must be numbers, strings, or booleans (not arrays or objects).",
+                line, kind="TypeError")
 
     def evaluate_binary(self, expr: Binary) -> Any:
         left = self.evaluate(expr.left)

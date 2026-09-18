@@ -321,9 +321,12 @@ type Expr =
   | { kind: 'Assign'; name: Token; value: Expr }
   | { kind: 'Call'; callee: Expr; paren: Token; arguments: Expr[] }
   | { kind: 'Array'; elements: Expr[] }
-  | { kind: 'ArrayAccess'; array: Expr; index: Expr }
-  | { kind: 'ArrayAssign'; array: Expr; index: Expr; value: Expr }
-  | { kind: 'DictLiteral'; pairs: [Expr, Expr][] }
+  // `line` is the bracket (or dot, or brace) the expression was written
+  // with. Indexing raises from a helper several frames below the expression,
+  // so without it a bad index reports no line at all.
+  | { kind: 'ArrayAccess'; array: Expr; index: Expr; line: number }
+  | { kind: 'ArrayAssign'; array: Expr; index: Expr; value: Expr; line: number }
+  | { kind: 'DictLiteral'; pairs: [Expr, Expr][]; line: number }
   | { kind: 'FunctionExpr'; params: Param[]; body: Stmt[]; name: Token | null; isGenerator: boolean }
   | { kind: 'Spread'; value: Expr; token: Token }
   | { kind: 'Interpolation'; parts: (string | Expr)[] }
@@ -1212,7 +1215,7 @@ class Parser {
 
   private makeAssignTarget(target: Expr, errorToken: Token, value: Expr): Expr {
     if (target.kind === 'Variable') return { kind: 'Assign', name: target.name, value }
-    if (target.kind === 'ArrayAccess') return { kind: 'ArrayAssign', array: target.array, index: target.index, value }
+    if (target.kind === 'ArrayAccess') return { kind: 'ArrayAssign', array: target.array, index: target.index, value, line: target.line }
     throw this.error(errorToken, 'Invalid assignment target.')
   }
 
@@ -1282,11 +1285,11 @@ class Parser {
     let expr = this.primary()
     for (;;) {
       if (this.match('LPAREN')) expr = this.finishCall(expr)
-      else if (this.match('LBRACKET')) expr = this.arrayAccess(expr)
+      else if (this.match('LBRACKET')) expr = this.arrayAccess(expr, this.previous().line)
       else if (this.match('DOT')) {
         const name = this.consume('IDENTIFIER', "Expect property name after '.'.")
         // `obj.name` is sugar for `obj["name"]`.
-        expr = { kind: 'ArrayAccess', array: expr, index: { kind: 'Literal', value: name.lexeme } }
+        expr = { kind: 'ArrayAccess', array: expr, index: { kind: 'Literal', value: name.lexeme }, line: name.line }
       } else break
     }
     return expr
@@ -1301,10 +1304,10 @@ class Parser {
     return { kind: 'Call', callee, paren, arguments: args }
   }
 
-  private arrayAccess(expr: Expr): Expr {
+  private arrayAccess(expr: Expr, line: number): Expr {
     const index = this.expression()
     this.consume('RBRACKET', "Expect ']' after array index.")
-    return { kind: 'ArrayAccess', array: expr, index }
+    return { kind: 'ArrayAccess', array: expr, index, line }
   }
 
   private primary(): Expr {
@@ -1330,6 +1333,7 @@ class Parser {
       return { kind: 'Array', elements }
     }
     if (this.match('LBRACE')) {
+      const brace = this.previous().line
       const pairs: [Expr, Expr][] = []
       if (!this.check('RBRACE')) {
         do {
@@ -1345,7 +1349,7 @@ class Parser {
         } while (this.match('COMMA'))
       }
       this.consume('RBRACE', "Expect '}' after dictionary literal.")
-      return { kind: 'DictLiteral', pairs }
+      return { kind: 'DictLiteral', pairs, line: brace }
     }
     throw this.error(this.peek(), 'Expect expression.')
   }
@@ -2974,6 +2978,7 @@ class Interpreter {
             array: target.array,
             index: target.index,
             value: { kind: 'Literal', value: sent },
+            line: target.line,
           })
           return
         }
@@ -3330,7 +3335,7 @@ class Interpreter {
         const result = new Map<unknown, unknown>()
         for (const [keyExpr, valueExpr] of expr.pairs) {
           const key = this.evaluate(keyExpr)
-          this.checkHashableKey(key)
+          this.checkHashableKey(key, expr.line)
           result.set(key, this.evaluate(valueExpr))
         }
         return result
@@ -3389,67 +3394,69 @@ class Interpreter {
   private evaluateIndexGet(expr: Extract<Expr, { kind: 'ArrayAccess' }>): unknown {
     const target = this.evaluate(expr.array)
     const index = this.evaluate(expr.index)
+    const line = expr.line
 
     if (target instanceof MRTInstance) {
       if (typeof index !== 'string') {
-        throw new MRTError('A struct field name must be a string.', undefined, 'TypeError')
+        throw new MRTError('A struct field name must be a string.', line, 'TypeError')
       }
       return target.get(index)
     }
     if (target instanceof Map) {
-      this.checkHashableKey(index)
-      if (!target.has(index)) throw new MRTError(`Key ${JSON.stringify(stringify(index))} not found in object.`, undefined, 'KeyError')
+      this.checkHashableKey(index, line)
+      if (!target.has(index)) throw new MRTError(`Key ${JSON.stringify(stringify(index))} not found in object.`, line, 'KeyError')
       return target.get(index)
     }
     if (Array.isArray(target)) {
-      const i = this.requireArrayIndex(index, target.length)
+      const i = this.requireArrayIndex(index, target.length, line)
       return target[i]
     }
     if (typeof target === 'string') {
-      const i = this.requireArrayIndex(index, target.length)
+      const i = this.requireArrayIndex(index, target.length, line)
       return target[i]
     }
-    throw new MRTError('Can only index into arrays, objects, or strings.', undefined, 'TypeError')
+    throw new MRTError('Can only index into arrays, objects, or strings.', line, 'TypeError')
   }
 
   private evaluateIndexSet(expr: Extract<Expr, { kind: 'ArrayAssign' }>): unknown {
     const target = this.evaluate(expr.array)
     const index = this.evaluate(expr.index)
     const value = this.evaluate(expr.value)
+    const line = expr.line
 
     if (target instanceof MRTInstance) {
       if (typeof index !== 'string') {
-        throw new MRTError('A struct field name must be a string.', undefined, 'TypeError')
+        throw new MRTError('A struct field name must be a string.', line, 'TypeError')
       }
       target.set(index, value)
       return value
     }
     if (target instanceof Map) {
-      this.checkHashableKey(index)
+      this.checkHashableKey(index, line)
       target.set(index, value)
       return value
     }
     if (Array.isArray(target)) {
-      const i = this.requireArrayIndex(index, target.length)
+      const i = this.requireArrayIndex(index, target.length, line)
       target[i] = value
       return value
     }
     if (typeof target === 'string') {
-      throw new MRTError('Strings are immutable; cannot assign to a character index.', undefined, 'TypeError')
+      throw new MRTError('Strings are immutable; cannot assign to a character index.', line, 'TypeError')
     }
-    throw new MRTError('Can only assign into arrays or objects.', undefined, 'TypeError')
+    throw new MRTError('Can only assign into arrays or objects.', line, 'TypeError')
   }
 
-  private requireArrayIndex(index: unknown, length: number): number {
-    if (typeof index !== 'number') throw new MRTError('Array index must be a number.', undefined, 'IndexError')
+  private requireArrayIndex(index: unknown, length: number, line: number): number {
+    if (typeof index !== 'number') throw new MRTError('Array index must be a number.', line, 'IndexError')
     const i = Math.trunc(index)
-    if (i < 0 || i >= length) throw new MRTError(`Array index ${i} out of bounds for array of length ${length}.`, undefined, 'IndexError')
+    if (i < 0 || i >= length) throw new MRTError(`Array index ${i} out of bounds for array of length ${length}.`, line, 'IndexError')
     return i
   }
 
-  private checkHashableKey(key: unknown) {
+  private checkHashableKey(key: unknown, line: number) {
     if (Array.isArray(key) || key instanceof Map) {
-      throw new MRTError('Object keys must be numbers, strings, or booleans (not arrays or objects).', undefined, 'TypeError')
+      throw new MRTError('Object keys must be numbers, strings, or booleans (not arrays or objects).', line, 'TypeError')
     }
   }
 
