@@ -1,6 +1,6 @@
 //! The MRT lexer.
 //!
-//! A hand-written scanner mirroring `src/lexer.py`, the MRT 1.x reference
+//! A hand-written scanner mirroring `mrt/lexer.py`, the MRT 1.x reference
 //! implementation, token for token. Where the two could differ they must not:
 //! the conformance harness feeds every example, test source and parity
 //! snippet through both and diffs the result, so a "tidier" decision here is

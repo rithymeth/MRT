@@ -16,8 +16,8 @@ comparison is about lexing, not float printing.
 import struct
 import sys
 
-from src.errors import MRTError
-from src.lexer import Lexer
+from mrt.errors import MRTError
+from mrt.lexer import Lexer
 
 
 def quote(s: str) -> str:
@@ -84,7 +84,7 @@ def main() -> int:
     try:
         sys.stdout.write(dump(source))
     except MRTError as e:
-        # Same shape as `python -m src`, so an error case can be compared too.
+        # Same shape as `python -m mrt`, so an error case can be compared too.
         print(f"Syntax Error: {e}", file=sys.stderr)
         return 65
     return 0

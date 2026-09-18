@@ -330,28 +330,38 @@ struct with `iter()`.
 
 ## Project Structure
 
-- `src/`: Source code for the MRT interpreter
-  - `lexer.py`: Tokenizes source code
-  - `parser.py`: Parses tokens into AST
-  - `interpreter.py`: Executes MRT programs
-  - `ast.py`: Abstract Syntax Tree definitions
-- `docs/`: Comprehensive documentation
-  - `language_guide.md`: Complete language reference
-  - `examples.md`: Example programs and tutorials
-  - `getting_started.md`: Installation and quick start
-- `examples/`: Example MRT programs (`functions.mrt`, `errors.mrt`,
-  `modern_syntax.mrt`, `stdlib.mrt`, `modules.mrt`, `destructuring.mrt`,
-  `structs.mrt`, `matching.mrt`, `generators.mrt`, and more)
+MRT has three independent implementations of one language, held to a single
+conformance corpus and required to produce byte-identical output.
+
+- `mrt/`: the **reference interpreter** in Python -- what `pip install
+  mrt-lang` ships, and the answer every other implementation is checked against
+  - `lexer.py`: tokenizes source code
+  - `parser.py`: parses tokens into an AST
+  - `interpreter.py`: executes MRT programs
+  - `ast.py`: abstract syntax tree definitions
+- `compiler/`: the **MRT 2.0 compiler** in Rust -- lexer, parser, resolver with
+  real source spans, and a tree-walking interpreter (`mrt-run`). See
+  [`compiler/README.md`](https://github.com/rithymeth/MRT/blob/main/compiler/README.md)
+- `src/`: the **Playground** -- a React app and the TypeScript interpreter
+  (`src/lib/mrtInterpreter.ts`) that runs MRT in a browser
+- `scripts/`: the conformance harnesses that hold the three together, plus the
+  benchmark runner
+- `docs/`: language specification, guide, examples and getting started
+- `examples/`: example MRT programs
   - `examples/lib/`: library modules imported by `modules.mrt`
-- `tests/`: Test suite
+- `benchmarks/`: ten programs and a three-way timing comparison
+- `tests/`: test suite
 
 ## Documentation
 
 For more detailed information, check out:
-- [Language Specification](docs/LANGUAGE_SPEC.md): Formal grammar, types, and semantics -- the precise reference
-- [Language Guide](docs/language_guide.md): Friendlier, example-driven reference
-- [Examples](docs/examples.md): Example programs and tutorials
-- [Getting Started](docs/getting_started.md): Installation and quick start
+- [Language Specification](https://github.com/rithymeth/MRT/blob/main/docs/LANGUAGE_SPEC.md): Formal grammar, types, and semantics -- the precise reference
+- [Language Guide](https://github.com/rithymeth/MRT/blob/main/docs/language_guide.md): Friendlier, example-driven reference
+- [Examples](https://github.com/rithymeth/MRT/blob/main/docs/examples.md): Example programs and tutorials
+- [Getting Started](https://github.com/rithymeth/MRT/blob/main/docs/getting_started.md): Installation and quick start
+
+Links are absolute so they resolve on the PyPI project page as well as on
+GitHub.
 
 ## Development
 

@@ -1,35 +1,44 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mrt-lang"
-version = "0.2.0"
-description = "MRT Programming Language - A modern, expressive programming language"
+version = "0.3.0"
+description = "The MRT programming language: reference interpreter and CLI"
 readme = "README.md"
 requires-python = ">=3.10"  # uses `match` statements, which require Python 3.10+
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE.txt"]
 authors = [{ name = "MRT Team" }]
-keywords = ["programming language", "interpreter", "compiler"]
+keywords = ["programming language", "interpreter", "compiler", "mrt"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Interpreters",
 ]
 
 [project.urls]
+Homepage = "https://github.com/rithymeth/MRT"
 Source = "https://github.com/rithymeth/MRT"
 Issues = "https://github.com/rithymeth/MRT/issues"
+Documentation = "https://github.com/rithymeth/MRT/blob/main/docs/LANGUAGE_SPEC.md"
+Changelog = "https://github.com/rithymeth/MRT/releases"
 
 [project.scripts]
-mrt = "src.__main__:main"
+mrt = "mrt.__main__:main"
 
+# Only the interpreter ships. `src/` next door is the Playground's React app
+# and the TypeScript interpreter, which are not part of this distribution.
 [tool.setuptools]
-packages = ["src"]
+packages = ["mrt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

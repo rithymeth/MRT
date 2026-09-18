@@ -4,8 +4,8 @@ the `null` literal, string interpolation, bareword object keys, and
 
 import pytest
 
-from src.errors import MRTSyntaxError
-from src.lexer import Lexer
+from mrt.errors import MRTSyntaxError
+from mrt.lexer import Lexer
 from tests.helpers import run_mrt
 
 

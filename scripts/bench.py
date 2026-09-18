@@ -36,9 +36,9 @@ sys.path.insert(0, str(REPO))
 def run_python(path: pathlib.Path) -> tuple[float, str]:
     """Time one run in-process, so the measurement is the interpreter rather
     than Python's start-up."""
-    from src.interpreter import Interpreter
-    from src.lexer import Lexer
-    from src.parser import Parser
+    from mrt.interpreter import Interpreter
+    from mrt.lexer import Lexer
+    from mrt.parser import Parser
 
     source = path.read_text()
     statements = Parser(Lexer(source).scan_tokens()).parse()
@@ -274,9 +274,9 @@ def profile(names: list[str]) -> int:
     VM are worth their cost: if name lookup dominates, resolving to slots is
     the win; if dispatch dominates, only a different execution model helps.
     """
-    from src.interpreter import Interpreter
-    from src.lexer import Lexer
-    from src.parser import Parser
+    from mrt.interpreter import Interpreter
+    from mrt.lexer import Lexer
+    from mrt.parser import Parser
 
     for name in names:
         path = BENCH_DIR / f"{name}.mrt"

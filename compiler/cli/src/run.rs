@@ -1,6 +1,6 @@
 //! `mrt-run` -- execute an MRT program with the Rust interpreter.
 //!
-//! Output and error text are meant to be byte-identical to `python -m src
+//! Output and error text are meant to be byte-identical to `python -m mrt
 //! FILE` and to the TypeScript interpreter, so this binary deliberately does
 //! no formatting of its own: it prints what the interpreter produced and
 //! exits with the reference implementation's codes.

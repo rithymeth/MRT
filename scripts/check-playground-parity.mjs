@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Bundles the browser Playground's TypeScript interpreter (src/lib/mrtInterpreter.ts)
 // with esbuild and checks that it produces byte-identical output to the Python
-// reference interpreter (src/interpreter.py) for:
+// reference interpreter (mrt/interpreter.py) for:
 //   1. every bundled examples/*.mrt program, and
 //   2. a set of inline regression snippets targeting bugs found in the two
 //      independent implementations diverging (see the case list below).
@@ -23,7 +23,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '..')
 
 function runPython(src) {
-  const out = execFileSync('python3', ['-m', 'src'], {
+  const out = execFileSync('python3', ['-m', 'mrt'], {
     input: src,
     cwd: repoRoot,
     encoding: 'utf8',
@@ -31,7 +31,7 @@ function runPython(src) {
   return out.trimEnd()
 }
 
-// python3 -m src needs a *file*, not stdin, so write the snippet to a temp file.
+// python3 -m mrt needs a *file*, not stdin, so write the snippet to a temp file.
 //
 // A syntax error makes the CLI exit 65 and write to stderr, which execFileSync
 // turns into a thrown error. That is still a result worth comparing -- the two
@@ -39,7 +39,7 @@ function runPython(src) {
 // its stderr returned, letting syntax-error cases be checked for parity too.
 function runPythonFile(filePath) {
   try {
-    return execFileSync('python3', ['-m', 'src', filePath], {
+    return execFileSync('python3', ['-m', 'mrt', filePath], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],

@@ -231,7 +231,7 @@ impl Diagnostic {
         self
     }
 
-    /// The MRT 1.x rendering, exactly as `python -m src` prints it:
+    /// The MRT 1.x rendering, exactly as `python -m mrt` prints it:
     ///
     /// ```text
     /// Syntax Error: Unexpected character '&' (did you mean '&&'?) [line 3]

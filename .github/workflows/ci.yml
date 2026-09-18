@@ -30,7 +30,7 @@ jobs:
           pip install -e .
 
       - name: Lint (flake8, informational only)
-        run: flake8 src --max-line-length=120 --extend-ignore=E203,E501,W503,E302,E305,W391,F403,F405,F821
+        run: flake8 mrt --max-line-length=120 --extend-ignore=E203,E501,W503,E302,E305,W391,F403,F405,F821
         continue-on-error: true
 
       - name: Run tests

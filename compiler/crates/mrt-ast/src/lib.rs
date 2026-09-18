@@ -1,6 +1,6 @@
 //! The MRT abstract syntax tree.
 //!
-//! A direct translation of `src/ast.py`, with two differences that are worth
+//! A direct translation of `mrt/ast.py`, with two differences that are worth
 //! stating because they are the reason this crate exists at all:
 //!
 //! * **Every node carries a [`Span`]**, not just a line number. That is what

@@ -640,7 +640,7 @@ Run it the usual way — the entry file's directory is what relative paths
 resolve against:
 
 ```bash
-python -m src main.mrt
+python -m mrt main.mrt
 ```
 
 Things worth knowing:
