@@ -65,6 +65,7 @@ const UNSUPPORTED = new Set([
   'regression: abandoning a generator mid-loop leaves the caller intact',
 
   // Modules. No loader yet; the interpreter runs a single file.
+  'example: json.mrt',
   'example: modules.mrt',
   'modules: named imports, aliasing, and nested module paths',
   'modules: a module is evaluated once no matter how many importers',

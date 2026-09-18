@@ -1,0 +1,93 @@
+// Reading and writing JSON, with a parser written in MRT itself.
+//
+// The library lives in lib/json.mrt: a recursive-descent parser over a
+// Reader struct, and a writer that walks any MRT value back out again.
+
+import { parse, stringify } from "./lib/json.mrt";
+
+struct Point {
+    x, y;
+    func moved(dx, dy) { return Point(this.x + dx, this.y + dy); }
+}
+
+// Written a line at a time so the failures further down can point at a
+// line and a column that mean something.
+var DOCUMENT = join([
+    "{",
+    "  \"warehouse\": \"Phnom Penh\",",
+    "  \"open\": true,",
+    "  \"audited\": null,",
+    "  \"items\": [",
+    "    {\"sku\": \"A-100\", \"name\": \"cable\",    \"price\": 4.25, \"count\": 12},",
+    "    {\"sku\": \"B-220\", \"name\": \"adapter\",  \"price\": 12.5, \"count\": 3},",
+    "    {\"sku\": \"C-330\", \"name\": \"keyboard\", \"price\": 37.5, \"count\": 0},",
+    "    {\"sku\": \"D-440\", \"name\": \"monitor\",  \"price\": 145.0, \"count\": 2}",
+    "  ]",
+    "}"
+], "\n");
+
+func main() {
+    print("-- parsing --");
+    var stock = parse(DOCUMENT);
+    print(stock.warehouse, "| open:", stock.open, "| audited:", stock.audited);
+    print("items:", len(stock.items), "| first sku:", stock.items[0].sku);
+    print("types:", type(stock), type(stock.items), type(stock.items[0].price));
+
+    print("-- the parsed document is ordinary MRT data --");
+    var inStock = filter(stock.items, func(item) { return item.count > 0; });
+    print("in stock:", map(inStock, func(item) { return item.sku; }));
+
+    var value = reduce(
+        map(inStock, func(item) { return item.price * item.count; }),
+        func(a, b) { return a + b; },
+        0
+    );
+    print("value on hand:", value);
+
+    var dearest = sort(inStock, func(a, b) { return b.price - a.price; })[0];
+    print("most expensive:", "${dearest.name} at ${dearest.price}");
+
+    print("-- writing it back out --");
+    var report = {
+        warehouse: stock.warehouse,
+        lines: len(inStock),
+        value: value,
+        skus: map(inStock, func(item) { return item.sku; })
+    };
+    print(stringify(report));
+    print(stringify(report, 2));
+
+    print("-- round trip --");
+    var again = parse(stringify(report));
+    print("stable:", stringify(again) == stringify(report));
+    print("deep equal:", again.skus == report.skus, again.value == report.value);
+
+    print("-- structs write themselves out as objects --");
+    var corner = Point(3, 4);
+    print(stringify(corner), stringify([corner, corner.moved(1, -1)]));
+
+    print("-- strings are escaped, and unescaped again --");
+    var awkward = "quote \" backslash \\ tab \t newline \n done";
+    var encoded = stringify(awkward);
+    print(encoded);
+    print("survives the trip:", parse(encoded) == awkward);
+    print("\\u escapes decode:", parse("\"\\u0041\\u0042\"") == "AB");
+
+    print("-- failures say where --");
+    for (bad in [
+        "{\"sku\": \"A-100\",}",
+        "{\"count\" 3}",
+        "[1, 2\n, oops]",
+        "{\"price\": 01}",
+        "{\"note\": \"unfinished",
+        "{} and then some",
+        "[\"\\u2014\"]"
+    ]) {
+        try {
+            parse(bad);
+            print("parsed, unexpectedly");
+        } catch (e) if (get(e, "kind", "") == "JsonError") {
+            print("line ${e.line}, column ${e.column}: ${e.message}");
+        }
+    }
+}

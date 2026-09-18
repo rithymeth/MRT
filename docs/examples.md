@@ -811,3 +811,56 @@ Full programs: `examples/destructuring.mrt`, `examples/structs.mrt`,
 `examples/matching.mrt`, `examples/generators.mrt`,
 `examples/coroutines.mrt`, `examples/lazy.mrt` and
 `examples/expressions.mrt`.
+
+## A Library Written in MRT
+
+`examples/lib/json.mrt` is a JSON reader and writer with no host help at
+all: a recursive-descent parser over a `Reader` struct that tracks its own
+line and column, and a writer that walks any MRT value back out to text.
+
+### Reading a document
+```mrt
+import { parse, stringify } from "./lib/json.mrt";
+
+func main() {
+    var stock = parse("{\"items\": [{\"sku\": \"A-100\", \"count\": 12}]}");
+
+    // What comes back is ordinary MRT data, so the rest of the language
+    // applies to it unchanged.
+    print(stock.items[0].sku, type(stock.items));
+    print(filter(stock.items, func(item) { return item.count > 0; }));
+}
+```
+
+### Writing one back out
+```mrt
+struct Point { x, y; }
+
+func main() {
+    print(stringify({ok: true, at: [1, 2]}));     // {"ok":true,"at":[1,2]}
+    print(stringify(Point(3, 4)));                // {"x":3,"y":4}
+    print(stringify({a: [1]}, 2));                // pretty, two spaces a level
+}
+```
+
+A struct writes itself out as an object of its fields, so a value built with
+`Point(3, 4)` needs no conversion step of its own.
+
+### Failures say where they happened
+```mrt
+func main() {
+    try {
+        parse("{\"count\" 3}");
+    } catch (e) if (get(e, "kind", "") == "JsonError") {
+        print("line ${e.line}, column ${e.column}: ${e.message}");
+    }
+}
+// line 1, column 10: expected ':' after the key "count", found '3'
+```
+
+Two limits are worth knowing, and both come from MRT's own strings rather
+than from JSON: `\b` and `\f` are rejected, and `\uXXXX` is decoded
+through U+007F. Each says so instead of guessing.
+
+The whole program is `examples/json.mrt`, and `tests/test_json_library.py`
+pins the library's behaviour.
