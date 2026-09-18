@@ -118,7 +118,7 @@ def build_rust() -> pathlib.Path | None:
     return RUST_BINARY if RUST_BINARY.exists() else None
 
 
-def run_rust(binary: pathlib.Path, path: pathlib.Path, runs: int):
+def run_rust(binary: pathlib.Path, path: pathlib.Path, runs: int, vm: bool = False):
     """Time the Rust interpreter in-process via its own --bench mode.
 
     Spawning it once per run would measure process start-up, which the other
@@ -126,8 +126,9 @@ def run_rust(binary: pathlib.Path, path: pathlib.Path, runs: int):
     same shape of result as the Node runner does."""
     import json
 
+    flags = ["--vm"] if vm else []
     proc = subprocess.run(
-        [str(binary), "--bench", str(runs), str(path)],
+        [str(binary), *flags, "--bench", str(runs), str(path)],
         cwd=REPO, capture_output=True, text=True,
     )
     if proc.returncode != 0:
@@ -174,16 +175,16 @@ def main() -> int:
     if rust is None and not args.python_only:
         print("note: could not build the Rust interpreter; skipping it\n")
 
-    header = (f"{'benchmark':<20}{'python':>12}{'typescript':>13}{'rust':>11}"
-              f"{'py/ts':>8}{'py/rs':>8}{'ts/rs':>8}")
+    header = (f"{'benchmark':<20}{'python':>12}{'typescript':>13}{'rust':>11}{'vm':>11}"
+              f"{'py/ts':>8}{'py/rs':>8}{'ts/rs':>8}{'rs/vm':>8}")
     print(header)
     print("-" * len(header))
 
     failures = 0
     # Ratios are only meaningful over benchmarks both sides ran, so each
     # comparison keeps its own Python total rather than sharing one.
-    py_total = ts_total = rs_total = 0.0
-    py_vs_ts = py_vs_rs = ts_vs_rs = 0.0
+    py_total = ts_total = rs_total = vm_total = 0.0
+    py_vs_ts = py_vs_rs = ts_vs_rs = rs_vs_vm = 0.0
     for name in names:
         path = BENCH_DIR / f"{name}.mrt"
 
@@ -231,6 +232,16 @@ def main() -> int:
             else:
                 cell_rs, rs = other("rust", times, out)
 
+        cell_vm, vm = "-", None
+        if rust is not None:
+            times, out = run_rust(rust, path, args.runs, vm=True)
+            # The VM compiles a subset of MRT so far; a benchmark it cannot
+            # compile is reported as such rather than counted as a failure.
+            if times is not None and "is not compiled by the VM yet" in out:
+                cell_vm = "n/a"
+            else:
+                cell_vm, vm = other("vm", times, out)
+
         if ts is not None:
             ts_total += ts
             py_vs_ts += py
@@ -239,14 +250,21 @@ def main() -> int:
             py_vs_rs += py
             if ts is not None:
                 ts_vs_rs += ts
+        if vm is not None:
+            vm_total += vm
+            if rs is not None:
+                rs_vs_vm += rs
 
         ratio_ts = f"{py / ts:.1f}x" if ts else "-"
         ratio_rs = f"{py / rs:.1f}x" if rs else "-"
         # The one that decides whether a bytecode VM is the next step: two
         # tree-walkers over the same AST, differing only in their host.
         ratio_both = f"{ts / rs:.1f}x" if ts and rs else "-"
-        print(f"{name:<20}{py * 1000:>9.1f} ms{cell_ts:>13}{cell_rs:>11}"
-              f"{ratio_ts:>8}{ratio_rs:>8}{ratio_both:>8}")
+        # The one that says whether bytecode was worth building: two engines
+        # in the same language over the same AST.
+        ratio_vm = f"{rs / vm:.1f}x" if rs and vm else "-"
+        print(f"{name:<20}{py * 1000:>9.1f} ms{cell_ts:>13}{cell_rs:>11}{cell_vm:>11}"
+              f"{ratio_ts:>8}{ratio_rs:>8}{ratio_both:>8}{ratio_vm:>8}")
 
     print("-" * len(header))
     ts_cell = f"{ts_total * 1000:.1f} ms" if ts_total else "-"
@@ -254,8 +272,10 @@ def main() -> int:
     total_ts = f"{py_vs_ts / ts_total:.1f}x" if ts_total else "-"
     total_rs = f"{py_vs_rs / rs_total:.1f}x" if rs_total else "-"
     total_both = f"{ts_vs_rs / rs_total:.1f}x" if rs_total and ts_vs_rs else "-"
-    print(f"{'TOTAL':<20}{py_total * 1000:>9.1f} ms{ts_cell:>13}{rs_cell:>11}"
-          f"{total_ts:>8}{total_rs:>8}{total_both:>8}")
+    vm_cell = f"{vm_total * 1000:.1f} ms" if vm_total else "-"
+    total_vm = f"{rs_vs_vm / vm_total:.1f}x" if vm_total and rs_vs_vm else "-"
+    print(f"{'TOTAL':<20}{py_total * 1000:>9.1f} ms{ts_cell:>13}{rs_cell:>11}{vm_cell:>11}"
+          f"{total_ts:>8}{total_rs:>8}{total_both:>8}{total_vm:>8}")
     print(f"\nBest of {args.runs} runs, measured in-process (no start-up cost).")
     if rs_total and py_vs_rs != py_total:
         print("Each ratio covers only the benchmarks that implementation ran, so the\n"

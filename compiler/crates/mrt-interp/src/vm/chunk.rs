@@ -27,17 +27,24 @@ pub enum Op {
     True,
     False,
 
-    /// Read, assign to, and declare a variable by name.
+    /// Read, assign to, and declare a variable by name, through the `Env`
+    /// chain the tree-walker uses.
     ///
-    /// By *name*, not by frame slot, and that is deliberate. The resolver can
-    /// already produce slots, but the benchmarks put name lookup at ~10% of
-    /// run time against ~66% for dispatch -- so slots are an optimisation,
-    /// while sharing `Env` with the tree-walker means closures, per-iteration
-    /// loop bindings and module scopes are the semantics that are already
-    /// proven rather than a second set to get right.
+    /// Still the path for anything a nested closure captures, for globals,
+    /// and for top-level code -- all the places where a binding has to
+    /// outlive the frame or be reachable from another one.
     GetVar(u32),
     SetVar(u32),
     DefineVar(u32),
+
+    /// Read, assign to, and initialise a frame slot.
+    ///
+    /// The fast path: a function-local nothing captures lives at a fixed
+    /// offset from the frame's base, so reading it is an index into the
+    /// operand stack instead of a hash lookup per enclosing scope.
+    GetLocal(u32),
+    SetLocal(u32),
+    DefineLocal(u32),
 
     Pop,
 
@@ -165,4 +172,15 @@ pub struct Proto {
     /// of what a parameter list means.
     pub params: Vec<Param>,
     pub chunk: Chunk,
+    /// How many frame slots this function needs.
+    pub slots: usize,
+    /// True when every parameter is a plain name with no default, no rest
+    /// and no destructuring, *and* none of them is captured.
+    ///
+    /// Then the arguments already sitting on the operand stack at call time
+    /// *are* slots 0..n, and the call costs no binding work at all: no child
+    /// `Env`, no hash insert per parameter. Anything more interesting falls
+    /// back to the tree-walker's `bind_params`, which is the only place that
+    /// knows what a default or a rest parameter means.
+    pub simple_params: bool,
 }

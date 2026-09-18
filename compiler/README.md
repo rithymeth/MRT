@@ -258,7 +258,7 @@ can tell "does not compile this yet" apart from "compiles it wrongly".
 node scripts/check-vm-conformance.mjs   # or: npm run check:vm
 ```
 
-### Why it exists, and why that is not speed
+### Why it exists, and what it turned out to be worth
 
 A generator has to suspend mid-body and resume later. A tree-walker cannot:
 its state *is* the Rust call stack, and there is no way to park that in a
@@ -266,23 +266,43 @@ value. Python and JavaScript each borrow a coroutine from their host; stable
 Rust has none to borrow. A machine whose frame is an `ip`, an environment and
 a slice of an operand stack can park one by copying a struct.
 
-So the VM is built for resumability first. The speed question was worth
-asking separately, and the answer was not what the earlier profiling
-predicted — see [`benchmarks/README.md`](../benchmarks/README.md). On the
-seven benchmarks it can run it is **0.95x the tree-walker**: a fraction
-slower, not faster.
+So the VM was built for resumability first, and the speed question asked
+separately. The answer came in two parts:
 
-That is a real result rather than a disappointment. The Python profile put
-AST dispatch at ~66% of run time and name lookup at ~10%, and bytecode is
-precisely a way to remove dispatch — but in Rust, walking a tree is a match
-on an enum, and removing it buys almost nothing. What is left is `Env`'s
-name-keyed chain, which both engines pay equally. **The conclusion drawn
-from profiling the Python interpreter did not transfer.**
+| | vs the tree-walker |
+|---|---|
+| bytecode, variables resolved by name through `Env` | **0.95x** — slightly slower |
+| the same bytecode, function locals in frame slots | **2.5x** |
 
-The speed case for bytecode therefore rests on the thing this VM
-deliberately does not do yet: resolving variables to frame slots. The
-resolver already computes them. That makes it the next measurable step, with
-a number to beat rather than a projection.
+Replacing AST-walking with an instruction loop — the whole textbook case for
+bytecode — bought nothing. In Rust, walking a tree is a match on an enum,
+already close to free, so deleting it saved about as much as the operand-stack
+traffic it added. The cost both engines actually paid was `Env`: a hash lookup
+per scope per variable access. Resolving locals to a fixed offset is the
+entire 2.5x. Full numbers and the reasoning are in
+[`benchmarks/README.md`](../benchmarks/README.md).
+
+### Which variables get slots
+
+A binding can live in a slot only if nothing outlives the frame:
+
+* **Captured names stay in `Env`.** MRT closures capture by reference, so the
+  frame and the closure have to see one cell. The analysis in `capture.rs` is
+  deliberately conservative -- any mention of a name inside any nested
+  function disqualifies it, even where that function declares its own variable
+  of the name. Being wrong that way costs a slot; being wrong the other way
+  would hand a closure a stale copy, which is a silent wrong answer.
+* **Top-level code gets no slots at all.** A module's top-level `var` is a
+  global, reachable by name from every function in the file.
+* **Parameters are slots only when binding them is trivial** -- plain names,
+  no default, no rest, no destructuring, none captured. Then the arguments the
+  caller already pushed *are* slots 0..n and the call does no binding work.
+  Anything else goes through the tree-walker's `bind_params`, so a parameter
+  list means one thing in both engines.
+
+A side effect worth knowing: MRT frames are heap data here, so recursion is
+bounded by memory rather than by the host call stack. `deep(50000)` overflows
+the tree-walker and returns on the VM.
 
 ### What it deliberately does not own
 
