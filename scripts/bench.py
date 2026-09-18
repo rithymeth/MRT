@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Time the MRT interpreters.
 
-    python3 scripts/bench.py              # both interpreters, comparison table
+    python3 scripts/bench.py              # all three interpreters, side by side
     python3 scripts/bench.py --profile    # where the Python interpreter's time goes
     python3 scripts/bench.py fib loops    # only these
 
@@ -105,6 +105,37 @@ def run_typescript(bundle: pathlib.Path, path: pathlib.Path, runs: int):
     return data["times"], data["out"]
 
 
+RUST_BINARY = REPO / "compiler" / "target" / "release" / "mrt-run"
+
+
+def build_rust() -> pathlib.Path | None:
+    """Build the release binary, or give up quietly if there is no cargo."""
+    try:
+        subprocess.run(["cargo", "build", "--release", "--bin", "mrt-run"],
+                       cwd=REPO / "compiler", check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return RUST_BINARY if RUST_BINARY.exists() else None
+
+
+def run_rust(binary: pathlib.Path, path: pathlib.Path, runs: int):
+    """Time the Rust interpreter in-process via its own --bench mode.
+
+    Spawning it once per run would measure process start-up, which the other
+    two are not charged for. `--bench` loops inside the binary and reports the
+    same shape of result as the Node runner does."""
+    import json
+
+    proc = subprocess.run(
+        [str(binary), "--bench", str(runs), str(path)],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None, proc.stderr.strip()
+    data = json.loads(proc.stdout)
+    return data["times"], data["out"]
+
+
 def checksum_of(output: str) -> str:
     for line in output.splitlines():
         if line.startswith("checksum"):
@@ -138,14 +169,21 @@ def main() -> int:
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="mrt-bench-"))
     bundle = None if args.python_only else build_ts_bundle(tmp)
     if bundle is None and not args.python_only:
-        print("note: could not build the TypeScript bundle; timing Python only\n")
+        print("note: could not build the TypeScript bundle; skipping it\n")
+    rust = None if args.python_only else build_rust()
+    if rust is None and not args.python_only:
+        print("note: could not build the Rust interpreter; skipping it\n")
 
-    header = f"{'benchmark':<20}{'python':>12}{'typescript':>14}{'ratio':>9}"
+    header = (f"{'benchmark':<20}{'python':>12}{'typescript':>13}{'rust':>11}"
+              f"{'py/ts':>8}{'py/rs':>8}{'ts/rs':>8}")
     print(header)
     print("-" * len(header))
 
     failures = 0
-    py_total = ts_total = 0.0
+    # Ratios are only meaningful over benchmarks both sides ran, so each
+    # comparison keeps its own Python total rather than sharing one.
+    py_total = ts_total = rs_total = 0.0
+    py_vs_ts = py_vs_rs = ts_vs_rs = 0.0
     for name in names:
         path = BENCH_DIR / f"{name}.mrt"
 
@@ -162,32 +200,66 @@ def main() -> int:
             failures += 1
             continue
 
-        cell_ts, ratio = "-", "-"
-        if bundle is not None:
-            ts_times, ts_out = run_typescript(bundle, path, args.runs)
-            if ts_times is None:
-                cell_ts = "error"
+        def other(label, times, out):
+            """One competing implementation's cell, and the time to total."""
+            nonlocal failures
+            if times is None:
                 failures += 1
-            elif checksum_of(ts_out) != expected:
+                return "error", None
+            if checksum_of(out) != expected:
                 # A faster time that computes something else is not a result.
-                print(f"{name:<20}  CHECKSUM MISMATCH\n"
-                      f"    python:     {expected}\n"
-                      f"    typescript: {checksum_of(ts_out)}")
+                print(f"{name:<20}  CHECKSUM MISMATCH ({label})\n"
+                      f"    python: {expected}\n"
+                      f"    {label}: {checksum_of(out)}")
                 failures += 1
-                continue
-            else:
-                ts = min(ts_times)
-                ts_total += ts
-                cell_ts = f"{ts * 1000:.1f} ms"
-                ratio = f"{py / ts:.1f}x"
+                return "wrong", None
+            best = min(times)
+            return f"{best * 1000:.1f} ms", best
 
-        print(f"{name:<20}{py * 1000:>9.1f} ms{cell_ts:>14}{ratio:>9}")
+        cell_ts, ts = "-", None
+        if bundle is not None:
+            cell_ts, ts = other("typescript", *run_typescript(bundle, path, args.runs))
+
+        cell_rs, rs = "-", None
+        if rust is not None:
+            times, out = run_rust(rust, path, args.runs)
+            # The Rust interpreter does not implement every feature yet, so a
+            # benchmark it cannot run is reported as such rather than counted
+            # as a failure -- the other two still have a result worth printing.
+            if times is not None and "not implemented in this interpreter yet" in out:
+                cell_rs = "n/a"
+            else:
+                cell_rs, rs = other("rust", times, out)
+
+        if ts is not None:
+            ts_total += ts
+            py_vs_ts += py
+        if rs is not None:
+            rs_total += rs
+            py_vs_rs += py
+            if ts is not None:
+                ts_vs_rs += ts
+
+        ratio_ts = f"{py / ts:.1f}x" if ts else "-"
+        ratio_rs = f"{py / rs:.1f}x" if rs else "-"
+        # The one that decides whether a bytecode VM is the next step: two
+        # tree-walkers over the same AST, differing only in their host.
+        ratio_both = f"{ts / rs:.1f}x" if ts and rs else "-"
+        print(f"{name:<20}{py * 1000:>9.1f} ms{cell_ts:>13}{cell_rs:>11}"
+              f"{ratio_ts:>8}{ratio_rs:>8}{ratio_both:>8}")
 
     print("-" * len(header))
-    total_ratio = f"{py_total / ts_total:.1f}x" if ts_total else "-"
     ts_cell = f"{ts_total * 1000:.1f} ms" if ts_total else "-"
-    print(f"{'TOTAL':<20}{py_total * 1000:>9.1f} ms{ts_cell:>14}{total_ratio:>9}")
+    rs_cell = f"{rs_total * 1000:.1f} ms" if rs_total else "-"
+    total_ts = f"{py_vs_ts / ts_total:.1f}x" if ts_total else "-"
+    total_rs = f"{py_vs_rs / rs_total:.1f}x" if rs_total else "-"
+    total_both = f"{ts_vs_rs / rs_total:.1f}x" if rs_total and ts_vs_rs else "-"
+    print(f"{'TOTAL':<20}{py_total * 1000:>9.1f} ms{ts_cell:>13}{rs_cell:>11}"
+          f"{total_ts:>8}{total_rs:>8}{total_both:>8}")
     print(f"\nBest of {args.runs} runs, measured in-process (no start-up cost).")
+    if rs_total and py_vs_rs != py_total:
+        print("Each ratio covers only the benchmarks that implementation ran, so the\n"
+              "TOTAL times and the TOTAL ratios are over different sets.")
 
     if failures:
         print(f"\n{failures} benchmark(s) did not produce a usable result.", file=sys.stderr)

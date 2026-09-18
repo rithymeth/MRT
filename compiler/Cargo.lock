@@ -16,6 +16,7 @@ version = "0.1.0"
 dependencies = [
  "mrt-ast",
  "mrt-diagnostics",
+ "mrt-interp",
  "mrt-lexer",
  "mrt-parser",
  "mrt-resolver",
@@ -24,6 +25,15 @@ dependencies = [
 [[package]]
 name = "mrt-diagnostics"
 version = "0.1.0"
+
+[[package]]
+name = "mrt-interp"
+version = "0.1.0"
+dependencies = [
+ "mrt-ast",
+ "mrt-diagnostics",
+ "mrt-parser",
+]
 
 [[package]]
 name = "mrt-lexer"

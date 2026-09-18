@@ -1,13 +1,20 @@
 # MRT benchmarks
 
 Ten programs, each exercising one cost the interpreter actually pays, plus a
-runner that times them on both implementations.
+runner that times them on all three implementations.
 
 ```bash
-python3 scripts/bench.py              # both interpreters, comparison table
+python3 scripts/bench.py              # all three, side by side
 python3 scripts/bench.py --profile    # where Python's time actually goes
 python3 scripts/bench.py fib loops    # just these
 ```
+
+All three are timed in-process — Python directly, TypeScript through a Node
+runner, Rust through `mrt-run --bench` — so none of them is charged for
+process start-up while the others are not. The Rust interpreter does not
+implement generators yet, so `generators` shows `n/a` for it rather than a
+number; the TOTAL ratios only cover the benchmarks an implementation actually
+ran.
 
 ## Why these exist
 
@@ -44,33 +51,35 @@ therefore the ceiling on what a resolver could win back.
 ## Results
 
 Measured on this machine, best of 5 runs, in-process (no start-up cost).
-Re-measure before trusting these — they are a snapshot, not a constant.
+Re-measure before trusting these — they are a snapshot, not a constant, and
+they move by several percent between runs.
 
 ```
-benchmark                 python    typescript    ratio
--------------------------------------------------------
-arrays                 1085.0 ms       51.0 ms    21.3x
-closures                898.7 ms      170.0 ms     5.3x
-fib                     963.1 ms      208.3 ms     4.6x
-generators              760.3 ms      190.1 ms     4.0x
-loops                  1267.9 ms       38.8 ms    32.7x
-matching               1084.5 ms      151.7 ms     7.1x
-scopes_deep            2069.1 ms      105.5 ms    19.6x
-scopes_shallow         1764.5 ms       61.9 ms    28.5x
-strings                 671.2 ms       47.7 ms    14.1x
-structs                1140.1 ms      158.8 ms     7.2x
--------------------------------------------------------
-TOTAL                 11704.6 ms     1183.8 ms     9.9x
+benchmark                 python   typescript       rust   py/ts   py/rs   ts/rs
+--------------------------------------------------------------------------------
+arrays                 1347.2 ms      58.8 ms    51.9 ms   22.9x   26.0x    1.1x
+closures               1024.7 ms     178.9 ms    36.6 ms    5.7x   28.0x    4.9x
+fib                    1008.0 ms     246.0 ms    30.8 ms    4.1x   32.7x    8.0x
+generators             1018.5 ms     204.9 ms        n/a    5.0x       -       -
+loops                  1426.8 ms      46.2 ms    51.1 ms   30.9x   27.9x    0.9x
+matching               1177.6 ms     165.1 ms    53.1 ms    7.1x   22.2x    3.1x
+scopes_deep            2308.7 ms     120.9 ms    88.1 ms   19.1x   26.2x    1.4x
+scopes_shallow         1972.8 ms      66.6 ms    73.0 ms   29.6x   27.0x    0.9x
+strings                 744.0 ms      53.6 ms    42.2 ms   13.9x   17.6x    1.3x
+structs                1259.2 ms     169.7 ms    82.9 ms    7.4x   15.2x    2.0x
+--------------------------------------------------------------------------------
+TOTAL                 13287.4 ms    1310.7 ms   509.6 ms   10.1x   24.1x    2.2x
 ```
 
 ## What the numbers say
 
-Three findings, and none of them is the one the MRT 2.0 proposal assumed.
+Four findings, and none of the first three is what the MRT 2.0 proposal
+assumed.
 
 **1. Scope depth is not the bottleneck.** Eight extra levels of nesting cost
-**17%** (1764 ms → 2069 ms). That is real, but it is not the shape of a
-problem that justifies a new execution architecture on its own, and typical
-code sits one or two levels deep rather than eight.
+**17%** in Python. That is real, but it is not the shape of a problem that
+justifies a new execution architecture on its own, and typical code sits one
+or two levels deep rather than eight.
 
 **2. Dispatch dominates, not lookup.** Under `--profile`, on `loops`:
 
@@ -87,17 +96,54 @@ so treat these as proportions, not absolutes.)
 
 **3. The implementation language is worth about 10x on its own.** The
 TypeScript interpreter is *also* a tree-walker, running the same algorithms
-over the same AST shapes, and it is **9.9x faster overall** — 32x on the
-tightest loop. That number arrives before any architectural change at all.
+over the same AST shapes, and it is **~10x faster overall** than Python —
+31x on the tightest loop, before any architectural change at all.
 
-The third finding is the one that should inform planning. A Rust *tree-walker*
-would plausibly land in the same territory as the TypeScript one, for a small
-fraction of the effort of a bytecode VM with a garbage collector — and it
-would make the bytecode question answerable with a measurement rather than a
-projection, because there would be a fast tree-walker to beat.
+That finding is what the Rust tree-walker was built to test, and the
+`ts/rs` column is the answer.
 
-None of this says a bytecode VM is a bad idea. It says the ordering matters:
-the resolver is worth having (and is a prerequisite either way), the language
-change is worth more than expected, and the VM should be justified against a
-number rather than against Python.
+**4. The Rust tree-walker is 24x faster than Python — and the gap to
+TypeScript is entirely about what the benchmark does.** Two tree-walkers,
+same AST shapes, same algorithms, differing only in their host:
 
+| where Rust wins big | ts/rs | |
+|---|---|---|
+| `fib` | 8.0x | recursion: one call frame per unit of work |
+| `closures` | 4.9x | closure creation and calls through captures |
+| `matching` | 3.1x | pattern dispatch, allocating bindings per arm |
+| `structs` | 2.0x | instance construction and method dispatch |
+
+| where it does not | ts/rs | |
+|---|---|---|
+| `loops` | 0.9x | tight numeric loop — V8's JIT is *faster* |
+| `scopes_shallow` | 0.9x | mostly loop, same story |
+| `arrays` | 1.1x | index reads and writes in a loop |
+| `strings` | 1.3x | mostly time inside built-in string functions |
+
+The split is sharp and it is not noise: where a benchmark is a hot numeric
+loop, V8 compiles the interpreter's inner loop to machine code and matches or
+beats unoptimised Rust. Where a benchmark allocates an environment, builds a
+closure, or pushes a call frame, Rust wins by 2–8x, because that is where
+`Rc<RefCell<..>>` and a stack frame beat a GC'd object and a megamorphic call
+site.
+
+## What this means for the bytecode VM
+
+The VM's case now has a number to clear, which is the point of having built
+the tree-walker first.
+
+The costs the VM is supposed to remove — AST dispatch, environment
+allocation per call, name lookup — are exactly the costs in the *first*
+table, the ones where Rust already wins 2–8x by removing the host language's
+overhead rather than the architecture's. The costs in the *second* table are
+the ones a VM would attack directly, and those are the ones where an
+unoptimised Rust tree-walker is already at the JIT's level.
+
+So a bytecode VM is not obviously the next 10x. It is plausibly the next 2–3x
+on call-heavy code, on top of a tree-walker that is already there. What the
+measurement does say clearly is that generators — the one feature this
+interpreter cannot implement without a resumable evaluator — argue for the VM
+more strongly than the timings do: in Rust the natural way to suspend
+execution *is* an explicit instruction pointer over a flat program. The
+feature that is hardest to port is the one that most wants the new
+architecture.

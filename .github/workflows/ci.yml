@@ -83,7 +83,7 @@ jobs:
         run: npm run check:parity
 
   frontend:
-    name: MRT 2.0 frontend (Rust build, tests, and conformance with the Python lexer)
+    name: MRT 2.0 compiler (Rust build, tests, and conformance with the Python reference)
     runs-on: ubuntu-latest
 
     steps:
@@ -124,11 +124,22 @@ jobs:
       - name: Test
         run: cargo test --manifest-path compiler/Cargo.toml
 
-      # The Rust frontend has no evaluator yet, so it cannot run the 314
-      # behavioural tests or the 146 interpreter parity cases. What it can be
-      # held to is producing the same tokens and the same tree as the
-      # reference implementation, and rejecting exactly what it rejects --
-      # plus a resolver pass whose internal invariants must hold over every
-      # program in the corpus.
+      # Frontend conformance: the same tokens and the same tree as the
+      # reference implementation, rejecting exactly what it rejects, plus a
+      # resolver pass whose internal invariants must hold over every program
+      # in the corpus.
       - name: Check the Rust frontend against the Python reference frontend
         run: python3 scripts/check-frontend-conformance.py
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Interpreter conformance: every example and every shared regression
+      # case run through both the Python reference and the Rust interpreter,
+      # compared byte for byte. Cases that stop on a feature the Rust
+      # interpreter does not have yet are ratcheted rather than skipped, so
+      # neither a new gap nor a closed one passes unnoticed.
+      - name: Check the Rust interpreter against the Python reference interpreter
+        run: node scripts/check-interp-conformance.mjs

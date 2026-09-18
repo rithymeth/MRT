@@ -1,9 +1,14 @@
-# The MRT 2.0 compiler frontend
+# The MRT 2.0 compiler
 
-A new frontend for MRT, written in Rust. **Phase 1 is complete**: diagnostics,
-lexer, AST, parser and resolver. There is no evaluator here yet, and the MRT 1.x
-Python and TypeScript interpreters remain the implementations that actually run
-programs.
+A new implementation of MRT, written in Rust: diagnostics, lexer, AST, parser,
+resolver, and a tree-walking interpreter that runs programs. It is the third
+implementation of the language, alongside the Python reference and the
+Playground's TypeScript one, and it is held to the same conformance corpus as
+they are.
+
+It does not implement generators or modules yet — see [What is not here
+yet](#what-is-not-here-yet) — so the Python interpreter remains the one that
+runs everything.
 
 ## Why this exists
 
@@ -97,8 +102,9 @@ compiler/
 │   ├── mrt-lexer/         tokens and the scanner
 │   ├── mrt-ast/           the tree, and its canonical dump format
 │   ├── mrt-parser/        recursive descent, with error recovery
-│   └── mrt-resolver/      names to frame slots, captures and globals
-└── cli/                   mrt-check, the frontend driver
+│   ├── mrt-resolver/      names to frame slots, captures and globals
+│   └── mrt-interp/        values, environments, and the tree-walker
+└── cli/                   mrt-check (frontend driver), mrt-run (runtime)
 ```
 
 Offsets count `char`s, not bytes, matching how the Python lexer indexes its
@@ -121,6 +127,9 @@ mrt-check --dump-tokens FILE   # canonical token stream
 mrt-check --dump-ast FILE      # canonical AST
 mrt-check --dump-scopes FILE   # resolved frame layout
 mrt-check --compat FILE        # MRT 1.x error text, byte for byte
+
+mrt-run FILE                   # run a program
+mrt-run --bench 5 FILE         # time 5 in-process runs, as JSON
 ```
 
 `--compat` selects the *error format* and composes with either dump, which is
@@ -177,9 +186,64 @@ expression inside a `${...}` run is parsed from a detached fragment, and its
 spans have to be shifted back onto the real file or every diagnostic inside a
 template points at the wrong place.
 
+## The interpreter
+
+`mrt-interp` is a tree-walker, deliberately: the benchmarks showed the
+TypeScript tree-walker running ~10x faster than the Python one over the same
+AST shapes, which said the implementation language was worth more than the
+architecture — and the only way to find out was to build one and measure it.
+
+It is held to the same corpus the Playground's interpreter is:
+
+```bash
+node scripts/check-interp-conformance.mjs   # or: npm run check:rust-interp
+```
+
+Every bundled example and every shared regression case in
+`scripts/parity-cases.mjs` is run through the Python reference and through
+`mrt-run`, and the two outputs — stdout and error text alike — must be
+byte-identical. Cases that stop on a feature this interpreter does not have
+yet are recorded as *unsupported* rather than skipped, and the unsupported set
+is a **ratchet**: the harness fails both when a case newly stops working and
+when a listed case starts working. Implementing generators is expected to make
+it fail once, on purpose, until the list is shortened.
+
+The decisions it had to make on its own — the ones where agreeing with the
+other two implementations is not automatic — are pinned by unit tests in
+`crates/mrt-interp/src/lib.rs`: reference semantics for aggregates, Python's
+exponent form for large and small numbers, `true` and `1` as distinct object
+keys, `%` taking the sign of its dividend, a `for`-`in` variable rebound each
+iteration.
+
+Building it found a defect in the other two. Indexing raises from a helper
+several frames below the expression, and nothing put the line back: every
+`IndexError`, `KeyError` and bad-key `TypeError` arrived with `line` null and
+printed with no `[line N]` suffix at all. Both existing implementations agreed
+on it, so parity said nothing. The third one reported the line and gave it
+away; all three now do, and a parity case pins the values.
+
+Results are in [`benchmarks/README.md`](../benchmarks/README.md). The short
+version: **24x faster than Python overall, and 2.2x faster than TypeScript** —
+but that second number splits sharply by workload, from 8x on recursion down
+to 0.9x on a tight numeric loop, where V8's JIT beats an unoptimised Rust
+tree-walker.
+
 ## What is not here yet
 
-The resolver, and everything downstream of it. The 314 behavioural tests and
-146 interpreter parity cases are the gate for a backend that can run programs;
-they cannot be applied to a frontend that produces no output, so token- and
-AST-level conformance is what Phase 1 is held to.
+**Generators.** Both existing implementations suspend one by delegating to a
+host coroutine — Python's `yield from`, JavaScript's `yield*` — and stable
+Rust has no equivalent. The options are all expensive: a thread per generator
+forces `Arc<Mutex<..>>` through the whole interpreter and gives back the
+performance this was built to measure; async-as-generators fights the borrow
+checker for a tree-walker holding `&mut self` across a yield; and an explicit
+resumable evaluator is most of a bytecode VM already.
+
+That last point is why generators are deferred rather than hacked around: in
+Rust the natural way to suspend execution *is* an instruction pointer over a
+flat program. The feature that is hardest to port is also the one that argues
+hardest for the VM — a better case for it than the timings make.
+
+**Modules.** No loader yet; `mrt-run` runs a single file.
+
+**Everything downstream of the tree-walker**: HIR, MIR, bytecode, WASM. The
+interpreter exists partly to give those a number to beat.
