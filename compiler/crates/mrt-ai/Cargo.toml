@@ -1,0 +1,11 @@
+[package]
+name = "mrt-ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "First neural-network training backend for the MRT programming language"
+
+[lib]
+name = "mrt_ai"
+path = "src/lib.rs"
