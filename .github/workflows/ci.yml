@@ -143,3 +143,10 @@ jobs:
       # neither a new gap nor a closed one passes unnoticed.
       - name: Check the Rust interpreter against the Python reference interpreter
         run: node scripts/check-interp-conformance.mjs
+
+      # The bytecode VM compiles a subset of MRT so far. Of the cases it does
+      # compile, every one must match the reference byte for byte; the rest
+      # are ratcheted in scripts/vm-unsupported.json so neither a new gap nor
+      # a closed one passes unnoticed.
+      - name: Check the bytecode VM against the Python reference interpreter
+        run: node scripts/check-vm-conformance.mjs

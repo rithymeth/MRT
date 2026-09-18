@@ -64,6 +64,12 @@ impl Env {
         Err(Signal::error(Kind::NameError, format!("Undefined variable '{name}'.")).at(line))
     }
 
+    /// The enclosing scope, if any. The VM leaves a block by rebinding its
+    /// frame's environment to this rather than by unwinding a Rust frame.
+    pub fn parent(&self) -> Option<Env> {
+        self.0.enclosing.clone()
+    }
+
     pub fn has_here(&self, name: &str) -> bool {
         self.0.values.borrow().contains_key(name)
     }

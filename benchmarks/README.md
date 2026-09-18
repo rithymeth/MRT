@@ -127,6 +127,56 @@ closure, or pushes a call frame, Rust wins by 2–8x, because that is where
 `Rc<RefCell<..>>` and a stack frame beat a GC'd object and a megamorphic call
 site.
 
+## The bytecode VM, measured
+
+The VM (`compiler/crates/mrt-interp/src/vm`) compiles a subset of MRT so far,
+so it runs seven of the ten benchmarks. Best of 5, in-process, same machine:
+
+```
+benchmark            tree-walker          vm    tw/vm
+-----------------------------------------------------
+arrays                   57.2 ms     60.6 ms    0.94x
+closures                 43.4 ms     42.6 ms    1.02x
+fib                      33.0 ms     30.2 ms    1.09x
+loops                    56.3 ms     59.6 ms    0.95x
+scopes_deep             106.0 ms    114.3 ms    0.93x
+scopes_shallow           84.8 ms     93.2 ms    0.91x
+strings                  46.1 ms     47.5 ms    0.97x
+-----------------------------------------------------
+TOTAL                   426.8 ms    447.8 ms    0.95x
+```
+
+**The VM is not faster.** It wins slightly on the two call-heavy benchmarks
+(`fib` 1.09x, `closures` 1.02x) and loses everywhere else, for 0.95x overall.
+
+That contradicts finding 2 above, and the contradiction is the useful part.
+The Python profile put AST dispatch at ~66% and name lookup at ~10%, and
+bytecode is exactly a way to delete dispatch. But that split was measured in
+*Python*, where walking a tree means a chain of method calls and attribute
+lookups. In Rust, walking a tree is a match on an enum — already close to
+free — so deleting it buys almost nothing, while the operand-stack traffic
+and frame indirection the VM adds cost about as much as it saves.
+
+What is left is `Env`: a name-keyed `HashMap` chain, which both engines pay
+identically. **A conclusion drawn from profiling one implementation did not
+survive being ported to another**, which is a reason to re-measure after a
+language change rather than carry the old proportions forward.
+
+Two things follow:
+
+* The VM's justification is **resumability**, not speed. Generators need an
+  explicit instruction pointer; that argument is unaffected by these numbers.
+* The speed case for bytecode rests on what this VM deliberately does not do
+  yet: resolving variables to **frame slots**. The resolver already computes
+  them and neither engine uses them. That is now the next measurable step,
+  with a number to beat instead of a projection.
+
+An earlier draft of the machine was **0.75x** rather than 0.95x, because it
+cloned a `String` for every variable access and an `Op` for every
+instruction. Making `Op` `Copy` and interning names as `Rc<str>` was the
+whole difference. Worth recording: the first measurement of a new execution
+engine is as likely to be measuring its allocator traffic as its design.
+
 ## What this means for the bytecode VM
 
 The VM's case now has a number to clear, which is the point of having built
@@ -139,9 +189,10 @@ overhead rather than the architecture's. The costs in the *second* table are
 the ones a VM would attack directly, and those are the ones where an
 unoptimised Rust tree-walker is already at the JIT's level.
 
-So a bytecode VM is not obviously the next 10x. It is plausibly the next 2–3x
-on call-heavy code, on top of a tree-walker that is already there. What the
-measurement does say clearly is that generators — the one feature this
+So a bytecode VM is not obviously the next 10x. The section above now puts a
+number on it: on the benchmarks it can run, the VM is 0.95x — not a speedup
+at all until variables resolve to slots. What the measurement does say
+clearly is that generators — the one feature this
 interpreter cannot implement without a resumable evaluator — argue for the VM
 more strongly than the timings do: in Rust the natural way to suspend
 execution *is* an explicit instruction pointer over a flat program. The

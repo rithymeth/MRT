@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "check:parity": "node scripts/check-playground-parity.mjs",
-    "check:rust-interp": "node scripts/check-interp-conformance.mjs"
+    "check:rust-interp": "node scripts/check-interp-conformance.mjs",
+    "check:vm": "node scripts/check-vm-conformance.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
