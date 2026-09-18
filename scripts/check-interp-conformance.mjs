@@ -63,25 +63,6 @@ const UNSUPPORTED = new Set([
   'regression: abandoning many generators does not corrupt the interpreter',
   'regression: an abandoned generator runs no finally, a finished one does',
   'regression: abandoning a generator mid-loop leaves the caller intact',
-
-  // Modules. No loader yet; the interpreter runs a single file.
-  'example: json.mrt',
-  'example: modules.mrt',
-  'modules: named imports, aliasing, and nested module paths',
-  'modules: a module is evaluated once no matter how many importers',
-  'modules: module top-level code runs before the entry main()',
-  'modules: private names are not importable',
-  'modules: importing a name a module does not export',
-  'modules: a missing module reports the specifier',
-  'modules: a bare specifier is rejected',
-  'modules: circular imports are detected and named',
-  'modules: imported closures keep sharing their module state',
-  'modules: namespace imports bind one object of every export',
-  'modules: re-exports forward another module without binding locally',
-  'modules: re-exporting a name the source module lacks',
-  'modules: destructuring an imported object across module boundaries',
-  'modules: a struct declared in one module is usable from another',
-  'modules: modules combine with defaults, rest, errors and interpolation',
 ])
 
 const NOT_IMPLEMENTED = /are not implemented in this interpreter yet/

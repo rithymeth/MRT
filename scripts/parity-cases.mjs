@@ -668,6 +668,74 @@ export const MODULE_CASES = [
     },
   },
   {
+    // Two specifiers naming one file must share one evaluation, or a module
+    // with side effects runs twice. Paths are normalised lexically rather
+    // than canonicalised, so this is the case that pins it.
+    name: 'two specifiers reaching the same file share one evaluation',
+    files: {
+      'main.mrt': 'import { A } from "./a.mrt";\nimport { A as B } from "./lib/../a.mrt";\nfunc main() { print(A, B); }\n',
+      'a.mrt': 'print("a evaluated");\nexport var A = 1;\n',
+      'lib/keep.mrt': 'export var unused = 1;\n',
+    },
+  },
+  {
+    // A specifier resolves against the file that wrote it, not against the
+    // entry point -- so a module one directory down reaches back up with
+    // `../`, and getting the base wrong silently resolves to the wrong file.
+    name: 'a nested module resolves its own imports relative to itself',
+    files: {
+      'main.mrt': 'import { useA } from "./lib/inner.mrt";\nfunc main() { print(useA()); }\n',
+      'lib/inner.mrt': 'import { A } from "../a.mrt";\nexport func useA() { return A + 10; }\n',
+      'a.mrt': 'export var A = 1;\n',
+    },
+  },
+  {
+    name: 'a cycle three modules deep is detected and named in order',
+    files: {
+      'main.mrt': 'import { a } from "./a.mrt";\nfunc main() { print(a()); }\n',
+      'a.mrt': 'import { b } from "./b.mrt";\nexport func a() { return "a"; }\n',
+      'b.mrt': 'import { c } from "./deep/c.mrt";\nexport func b() { return "b"; }\n',
+      'deep/c.mrt': 'import { a } from "../a.mrt";\nexport func c() { return "c"; }\n',
+    },
+  },
+  {
+    name: 'a module importing itself is a cycle',
+    files: {
+      'main.mrt': 'import { x } from "./m.mrt";\nfunc main() { print(x); }\n',
+      'm.mrt': 'import { x } from "./m.mrt";\nexport var x = 1;\n',
+    },
+  },
+  {
+    // A module's scope is its own, but sits under the entry's globals: it
+    // cannot leak locals out and can still see a top-level `var`.
+    name: 'module scope is isolated from the importer but sees globals',
+    files: {
+      'main.mrt': 'var shared = "entry-global";\nimport { peek, look } from "./m.mrt";\nfunc main() { print(peek(), look()); try { print(secret); } catch (e) { print(e.kind, "|", e.message); } }\n',
+      'm.mrt': 'var secret = "hidden";\nexport func peek() { return secret; }\nexport func look() { return shared; }\nfunc main() { print("module main must not run"); }\n',
+    },
+  },
+  {
+    name: 'an error in a module\'s top level propagates with its own line',
+    files: {
+      'main.mrt': 'import { anything } from "./boom.mrt";\nfunc main() { print("never"); }\n',
+      'boom.mrt': 'var x = [1];\nprint(x[9]);\n',
+    },
+  },
+  {
+    name: 'a module with a syntax error reports it against the specifier',
+    files: {
+      'main.mrt': 'import { f } from "./broken.mrt";\nfunc main() { }\n',
+      'broken.mrt': 'export func f( {\n',
+    },
+  },
+  {
+    name: 'importing a directory reports a missing module',
+    files: {
+      'main.mrt': 'import { x } from "./lib";\nfunc main() { }\n',
+      'lib/thing.mrt': 'export var x = 1;\n',
+    },
+  },
+  {
     name: 'modules combine with defaults, rest, errors and interpolation',
     files: {
       'main.mrt': 'import { describe, tally } from "./util.mrt";\nfunc main() { print(describe("x")); print(describe("x", "!")); print(tally(1, 2, 3)); try { tally(); } catch (e) { print(e.kind); } }\n',

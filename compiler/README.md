@@ -6,9 +6,8 @@ implementation of the language, alongside the Python reference and the
 Playground's TypeScript one, and it is held to the same conformance corpus as
 they are.
 
-It does not implement generators or modules yet — see [What is not here
-yet](#what-is-not-here-yet) — so the Python interpreter remains the one that
-runs everything.
+Generators are the one thing it does not implement — see [What is not here
+yet](#what-is-not-here-yet).
 
 ## Why this exists
 
@@ -208,6 +207,25 @@ is a **ratchet**: the harness fails both when a case newly stops working and
 when a listed case starts working. Implementing generators is expected to make
 it fail once, on purpose, until the list is shortened.
 
+### Modules
+
+`import` / `export` work, including namespace imports, re-exports, module
+caching and cycle detection, and the resolution rules are the reference
+implementation's: only `./` and `../` specifiers resolve, so an `import`
+always names exactly one file and reading the source tells you which.
+
+Two details are load-bearing rather than incidental:
+
+* **Paths are normalised lexically, not canonicalised.** `canonicalize`
+  resolves symlinks and requires the file to exist, so a missing module would
+  fail with the OS's error instead of MRT's `Cannot find module`, and two
+  importers reaching one file through different symlinked paths would get two
+  evaluations instead of the cache hit the language promises.
+* **An export table is an ordered `Vec`, not a map.** A namespace import binds
+  it as an object, and `keys()` on that object is observable — so export order
+  is part of the language. Declarations hoist, which is why `export var PI`
+  followed by `export func square` yields `[square, PI]`.
+
 The decisions it had to make on its own — the ones where agreeing with the
 other two implementations is not automatic — are pinned by unit tests in
 `crates/mrt-interp/src/lib.rs`: reference semantics for aggregates, Python's
@@ -242,8 +260,6 @@ That last point is why generators are deferred rather than hacked around: in
 Rust the natural way to suspend execution *is* an instruction pointer over a
 flat program. The feature that is hardest to port is also the one that argues
 hardest for the VM — a better case for it than the timings make.
-
-**Modules.** No loader yet; `mrt-run` runs a single file.
 
 **Everything downstream of the tree-walker**: HIR, MIR, bytecode, WASM. The
 interpreter exists partly to give those a number to beat.
