@@ -17,7 +17,7 @@
 use std::fmt;
 
 /// A half-open range of source, `[start, end)`, in `char` offsets.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Span {
     pub start: u32,
     pub end: u32,
@@ -145,6 +145,28 @@ impl SourceFile {
     pub fn line_count(&self) -> u32 {
         self.line_starts.len() as u32
     }
+}
+
+/// JSON-style quoting, so a value containing a newline, tab or quote stays on
+/// one line of a dump. Shared by the token and AST dumps, and mirrored exactly
+/// by the Python dumpers -- the comparison is only meaningful if both sides
+/// escape identically. Hand-rolled to keep the crate dependency-free.
+pub fn quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

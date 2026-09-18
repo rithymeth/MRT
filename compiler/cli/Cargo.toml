@@ -12,6 +12,9 @@ path = "src/main.rs"
 [dependencies]
 mrt-diagnostics = { path = "../crates/mrt-diagnostics" }
 mrt-lexer = { path = "../crates/mrt-lexer" }
+mrt-ast = { path = "../crates/mrt-ast" }
+mrt-parser = { path = "../crates/mrt-parser" }
+mrt-resolver = { path = "../crates/mrt-resolver" }
 
 [lints]
 workspace = true

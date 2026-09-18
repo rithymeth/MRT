@@ -120,7 +120,9 @@ jobs:
 
       # The Rust frontend has no evaluator yet, so it cannot run the 314
       # behavioural tests or the 146 interpreter parity cases. What it can be
-      # held to is lexing exactly what the reference implementation lexes,
-      # and rejecting exactly what it rejects.
+      # held to is producing the same tokens and the same tree as the
+      # reference implementation, and rejecting exactly what it rejects --
+      # plus a resolver pass whose internal invariants must hold over every
+      # program in the corpus.
       - name: Check the Rust frontend against the Python reference frontend
         run: python3 scripts/check-frontend-conformance.py

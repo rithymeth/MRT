@@ -7,6 +7,8 @@
 //! ```text
 //! mrt-check FILE                 rich diagnostics (default)
 //! mrt-check --dump-tokens FILE   canonical token stream
+//! mrt-check --dump-ast FILE      canonical AST
+//! mrt-check --dump-scopes FILE   resolved frame layout
 //! mrt-check --compat FILE        render errors as MRT 1.x does, byte for
 //!                                byte. Independent of what is dumped, so
 //!                                the conformance harness can ask for a
@@ -16,7 +18,8 @@
 
 use std::process::ExitCode;
 
-use mrt_diagnostics::SourceFile;
+use mrt_ast::dump::dump_program;
+use mrt_diagnostics::{quote, SourceFile};
 use mrt_lexer::{lex, Literal, TemplatePart};
 
 /// Exit code MRT 1.x uses for a source error, inherited from `sysexits.h`.
@@ -32,6 +35,8 @@ fn main() -> ExitCode {
         match arg.as_str() {
             "--compat" => compat = true,
             "--dump-tokens" => mode = Mode::DumpTokens,
+            "--dump-ast" => mode = Mode::DumpAst,
+            "--dump-scopes" => mode = Mode::DumpScopes,
             "-h" | "--help" => {
                 eprintln!("{USAGE}");
                 return ExitCode::SUCCESS;
@@ -87,20 +92,48 @@ fn main() -> ExitCode {
             }
             print!("{out}");
         }
-        // With no parser yet, a file that lexes cleanly is as far as this
-        // phase can take it. Phase 1 continues in the parser crate.
-        Mode::Diagnose => {}
+        Mode::DumpAst | Mode::DumpScopes | Mode::Diagnose => {
+            let parsed = mrt_parser::Parser::new(tokens).parse();
+            if !parsed.errors.is_empty() {
+                for diagnostic in &parsed.errors {
+                    if compat {
+                        eprintln!("{}", diagnostic.render_compat());
+                    } else {
+                        eprint!("{}", diagnostic.render(&file));
+                    }
+                }
+                return ExitCode::from(EX_DATAERR);
+            }
+            match mode {
+                Mode::DumpAst => print!("{}", dump_program(&parsed.program)),
+                Mode::DumpScopes => {
+                    let resolved = mrt_resolver::resolve(&parsed.program);
+                    // Checked on every dump rather than only in tests: the
+                    // conformance harness runs this over the whole corpus, so
+                    // a broken capture chain fails there rather than silently
+                    // printing nonsense.
+                    if let Err(problem) = mrt_resolver::validate(&resolved) {
+                        eprintln!("resolver invariant violated: {problem}");
+                        return ExitCode::from(EX_DATAERR);
+                    }
+                    print!("{}", mrt_resolver::dump(&resolved, &file));
+                }
+                _ => {}
+            }
+        }
     }
 
     ExitCode::SUCCESS
 }
 
-const USAGE: &str = "usage: mrt-check [--dump-tokens] [--compat] FILE";
+const USAGE: &str = "usage: mrt-check [--dump-tokens | --dump-ast | --dump-scopes] [--compat] FILE";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Diagnose,
     DumpTokens,
+    DumpAst,
+    DumpScopes,
 }
 
 /// A literal in the canonical dump format shared with the Python dumper.
@@ -128,24 +161,4 @@ fn literal_repr(literal: &Literal) -> String {
             format!("[{}]", rendered.join(","))
         }
     }
-}
-
-/// JSON-style quoting, so a lexeme containing a newline, tab or quote stays
-/// on one line of the dump. Hand-rolled to keep the crate dependency-free.
-fn quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
