@@ -533,6 +533,19 @@ const REGRESSION_CASES = [
     src: 'func naturals() { var n = 0; while (true) { yield n; n += 1; } } func main() { var sum = 0; var i = 0; while (i < 300) { var local = i * 2; for (v in naturals()) { if (v > 1) { break; } } sum += local; i += 1; } print(sum); }',
   },
 
+  // --- Arithmetic and object-key semantics ---------------------------------
+  // Both of these diverged silently until someone probed for them, because
+  // nothing in this file used a negative modulo or mixed boolean and numeric
+  // object keys.
+  {
+    name: 'modulo takes the sign of the dividend, as in C and JavaScript',
+    src: 'func main() { print(7 % 3, -7 % 3, 7 % -3, -7 % -3); print(7.5 % 2, -7.5 % 2); print(0 % 5, -0 % 5); var probes = [func(){ return 1 % 0; }, func(){ return -1 % 0; }]; for (p in probes) { try { p(); } catch (e) { print(e.kind, "|", e.message); } } }',
+  },
+  {
+    name: 'boolean and numeric object keys are distinct, as == says they are',
+    src: 'func main() { var byNumber = {1: "one", 0: "zero"}; print(get(byNumber, true, "<missing>"), get(byNumber, false, "<missing>")); var byBool = {true: "yes"}; print(get(byBool, 1, "<missing>"), has(byBool, 1)); var mixed = {1: "number", true: "boolean"}; print(len(mixed), keys(mixed), values(mixed)); print(mixed[1], mixed[true]); print(mixed); var o = {}; o[true] = "t"; o[1] = "n"; o[false] = "f"; o[0] = "z"; print(len(o), keys(o)); for (k in o) { print(k, type(k), o[k]); } try { print(byNumber[true]); } catch (e) { print(e.kind, "|", e.message); } }',
+  },
+
   {
     name: 'pipeline combining closures, for-in, interpolation and stdlib',
     src: 'func main() { var people = [{name: "Ada", age: 36}, {name: "Bob", age: 17}, {name: "Cy", age: 44}]; var adults = filter(people, func(p) { return p.age >= 18; }); var names = sort(map(adults, func(p) { return p.name; })); for (n in names) { print("adult: ${n}"); } print("total age ${ reduce(map(people, func(p){ return p.age; }), func(a,b){ return a+b; }) }"); }',

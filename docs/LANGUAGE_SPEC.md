@@ -422,6 +422,13 @@ concatenation (with the other operand converted via the same rules
 `print`/`toString` use — so `"x = " + 5` is `"x = 5"`, not `"x = 5.0"`).
 Otherwise both operands must be numbers.
 
+**`%` takes the sign of the dividend**, as in C, Java, JavaScript, Rust and
+Go: `-7 % 3` is `-1`, not `2`, and `7 % -3` is `1`. Dividing or taking the
+modulus by zero raises an `ArithmeticError` rather than producing an infinity
+or a `NaN`. This was unspecified until the two implementations were found to
+have guessed differently — the reference one inherited Python's floored `%`,
+which takes the sign of the divisor.
+
 ## Statements and semantics
 
 - **`var`**: declares a new binding in the *current* block scope,
@@ -1313,14 +1320,15 @@ The parity checker exercises multi-file programs through both.
   `arr[f()] = arr[f()] + 1`, calling `f()` twice. Harmless for the
   common case of a simple variable/literal index; avoid a
   side-effecting expression as an index target of `+=` and friends.
-- **`true`/`false` and `1`/`0` as *object keys* can collide.** Equality
-  (`==`) and array membership (`indexOf`/`has`) correctly treat `true` and
-  `1` as unequal everywhere (see Types and values, above). Object keys are
-  the one exception: they're stored in the host language's native
-  map/dict, and both the Python and JavaScript runtimes hash `true`/`1`
-  (and `false`/`0`) identically, so `{1: "a"}[true]` returns `"a"` instead
-  of raising a missing-key error. Avoid mixing boolean and numeric keys in
-  the same object.
+- **Object keys follow `==`, so `true` and `1` are different keys.**
+  `{1: "a"}[true]` raises a missing-key error, and `{1: "n", true: "b"}` is
+  an object with two keys. This used to be listed here as an unavoidable
+  wart: keys were stored in the host language's native map, and Python's
+  dict hashes `true` and `1` identically. It turned out JavaScript's `Map`
+  does not, so the same program answered differently depending on where it
+  ran; the reference implementation now wraps boolean keys to keep them
+  apart. Keys agreeing with the language's own equality is the rule, not
+  the exception.
 - **`in` is a reserved word.** `for (x in xs)` needs it, so a program that
   used `in` as a variable or function name does not parse. The same applies
   to `null`, `try`, `catch`, `finally` and `throw`. `from` and `as` are

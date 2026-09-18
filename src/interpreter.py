@@ -23,7 +23,8 @@ def stringify(value: Any) -> str:
     if isinstance(value, list):
         return "[" + ", ".join(stringify(v) for v in value) + "]"
     if isinstance(value, dict):
-        return "{" + ", ".join(f"{stringify(k)}: {stringify(v)}" for k, v in value.items()) + "}"
+        return "{" + ", ".join(f"{stringify(load_key(k))}: {stringify(v)}"
+                               for k, v in value.items()) + "}"
     if isinstance(value, (MRTInstance, MRTGenerator)):
         return str(value)
     if callable(value):
@@ -386,6 +387,45 @@ def make_error_value(error: MRTRuntimeError) -> Dict[str, Any]:
         "stack": list(error.mrt_stack),
     }
 
+class BoolKey:
+    """How a boolean object key is stored.
+
+    MRT's `==` says `true != 1` at every nesting level, and there is a parity
+    case pinning it. Python's dict disagrees: it hashes `True` and `1`
+    identically, so `{1: "a"}[true]` used to find `"a"` here while the
+    Playground -- whose Map keeps them apart -- reported a missing key. The
+    same program gave two different answers depending on where it ran.
+
+    Wrapping booleans on the way in makes object keys agree with the equality
+    the rest of the language already uses. Strings and numbers are stored as
+    themselves, so nothing else changes.
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: bool):
+        self.value = value
+
+    def __hash__(self) -> int:
+        return hash(("mrt-bool", self.value))
+
+    def __eq__(self, other: Any) -> bool:
+        return isinstance(other, BoolKey) and other.value is self.value
+
+    def __repr__(self) -> str:
+        return f"BoolKey({self.value})"
+
+
+def store_key(key: Any) -> Any:
+    """The dict key an MRT object key is stored under."""
+    return BoolKey(key) if isinstance(key, bool) else key
+
+
+def load_key(stored: Any) -> Any:
+    """The MRT value a stored dict key stands for."""
+    return stored.value if isinstance(stored, BoolKey) else stored
+
+
 class _Missing:
     """Sentinel for "this pattern slot had no corresponding value", which is
     distinct from a value that is genuinely `null`."""
@@ -724,7 +764,7 @@ class MRTBuiltin:
         source = object_like(args[0]) if len(args) == 1 else None
         if source is None:
             raise MRTRuntimeError("keys() takes exactly one object argument.", kind="ArityError")
-        return list(source.keys())
+        return [load_key(k) for k in source]
 
     @staticmethod
     def values(*args):
@@ -740,7 +780,7 @@ class MRTBuiltin:
         container, key = args
         source = object_like(container)
         if source is not None:
-            return key in source
+            return store_key(key) in source
         if isinstance(container, list):
             return any(values_equal(item, key) for item in container)
         raise MRTRuntimeError("First argument to has() must be an array or object.", kind="TypeError")
@@ -753,7 +793,7 @@ class MRTBuiltin:
         default = args[2] if len(args) == 3 else None
         source = object_like(container)
         if source is not None:
-            return source.get(key, default)
+            return source.get(store_key(key), default)
         if isinstance(container, list):
             if isinstance(key, (int, float)) and not isinstance(key, bool):
                 i = int(key)
@@ -1754,7 +1794,7 @@ class Interpreter:
             return self._drive_items(list(value))
         source = object_like(value)
         if source is not None:
-            return self._drive_items(list(source.keys()))
+            return self._drive_items([load_key(k) for k in source])
 
         raise MRTRuntimeError(
             "Can only iterate over an array, string, object, or generator.",
@@ -2064,7 +2104,7 @@ class Interpreter:
                 for key_expr, value_expr in expr.pairs:
                     key = self.evaluate(key_expr)
                     self._check_hashable_key(key)
-                    result[key] = self.evaluate(value_expr)
+                    result[store_key(key)] = self.evaluate(value_expr)
                 return result
             case Call():
                 callee = self.evaluate(expr.callee)
@@ -2187,14 +2227,15 @@ class Interpreter:
 
         if isinstance(target, dict):
             self._check_hashable_key(index)
-            if index not in target:
+            key = store_key(index)
+            if key not in target:
                 # json.dumps, not !r: the Playground formats this message with
                 # JSON.stringify, and Python's repr would quote with
                 # apostrophes (and escape differently), so a program that
                 # prints a caught e.message would see two different texts.
                 raise MRTRuntimeError(
                     f"Key {json.dumps(stringify(index))} not found in object.", kind="KeyError")
-            return target[index]
+            return target[key]
 
         if isinstance(target, list):
             i = self._require_array_index(index, len(target))
@@ -2220,7 +2261,7 @@ class Interpreter:
 
         if isinstance(target, dict):
             self._check_hashable_key(index)
-            target[index] = value
+            target[store_key(index)] = value
             return value
 
         if isinstance(target, list):
@@ -2272,7 +2313,13 @@ class Interpreter:
             self._check_numbers(left, right, '%', line)
             if float(right) == 0:
                 raise MRTRuntimeError("Modulo by zero.", line, kind="ArithmeticError")
-            return float(left) % float(right)
+            # The result takes the sign of the *dividend*, as `%` does in C,
+            # Java, JavaScript, Rust and Go. Python's own `%` takes the sign
+            # of the divisor instead, which made `-7 % 3` evaluate to 2 here
+            # and -1 in the Playground -- a silent disagreement about a core
+            # operator. MRT's stated design goal is C/JS-family syntax, so
+            # the C/JS answer is the right one and this is the odd one out.
+            return math.fmod(float(left), float(right))
         if op == TokenType.EQUALS:
             return self.is_equal(left, right)
         if op == TokenType.NOT_EQUALS:
