@@ -3,6 +3,10 @@
 version = 3
 
 [[package]]
+name = "mrt-ai"
+version = "0.1.0"
+
+[[package]]
 name = "mrt-ast"
 version = "0.1.0"
 dependencies = [
@@ -30,6 +34,7 @@ version = "0.1.0"
 name = "mrt-interp"
 version = "0.1.0"
 dependencies = [
+ "mrt-ai",
  "mrt-ast",
  "mrt-diagnostics",
  "mrt-parser",

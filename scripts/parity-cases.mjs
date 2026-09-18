@@ -1,7 +1,7 @@
 // The shared conformance corpus.
 //
 // Every case here is a program with one right answer, and that answer is
-// whatever `src/interpreter.py` prints. The corpus is imported by each
+// whatever `mrt/interpreter.py` prints. The corpus is imported by each
 // harness that checks another implementation against it -- the Playground's
 // TypeScript interpreter and the Rust one -- so a case added for one is
 // automatically run by the others. That is the point: three hand-written

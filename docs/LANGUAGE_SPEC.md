@@ -1,10 +1,11 @@
 # The MRT Language Specification
 
 This document is the authoritative description of MRT as implemented by
-`src/` (the reference implementation, in Python) and mirrored by
-`src/lib/mrtInterpreter.ts` (the browser Playground). Where the two ever
-disagree, this spec — and the reference implementation's test suite in
-`tests/` — is what's correct; the Playground should be brought in line.
+`mrt/` (the reference implementation, in Python) and mirrored by
+`src/lib/mrtInterpreter.ts` (the browser Playground) and `compiler/` (the
+Rust implementation). Where any of them disagree, this spec — and the
+reference implementation's test suite in `tests/` — is what's correct; the
+others should be brought in line.
 
 It supersedes informal descriptions in the README and `docs/*.md`, which
 are kept as friendlier, example-driven introductions. This document exists
@@ -344,7 +345,7 @@ TEMPLATE       = (* a string literal containing >= 1 "${" expression "}" *) ;
 ```
 
 Notes on the grammar as written above (a simplification of the actual
-recursive-descent parser in `src/parser.py`):
+recursive-descent parser in `mrt/parser.py`):
 
 - The real `assignment` production accepts *any* `logic_or` result as the
   left-hand side and only checks afterwards (once it sees `=` or a
@@ -662,7 +663,7 @@ doesn't mean enumerating every built-in that can produce one:
 | `ArithmeticError` | division or modulo by zero |
 | `RuntimeError` | anything not covered above |
 
-The set is defined once in `src/errors.py` as `ERROR_KINDS` and mirrored by
+The set is defined once in `mrt/errors.py` as `ERROR_KINDS` and mirrored by
 `ErrorKind` in the Playground interpreter.
 
 ### Stack traces

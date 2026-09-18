@@ -1,6 +1,6 @@
 //! A tree-walking interpreter for MRT, in Rust.
 //!
-//! Its job is to be *the same language* as `src/interpreter.py` and
+//! Its job is to be *the same language* as `mrt/interpreter.py` and
 //! `src/lib/mrtInterpreter.ts`, not a better one: the conformance harness
 //! runs real programs through all three and requires byte-identical output,
 //! so a tidier decision here is a bug.
@@ -59,7 +59,7 @@ pub struct Interpreter {
 pub struct Outcome {
     pub output: Vec<String>,
     /// The error text, if the program stopped early. Rendered exactly as
-    /// `python -m src` prints it.
+    /// `python -m mrt` prints it.
     pub error: Option<String>,
 }
 

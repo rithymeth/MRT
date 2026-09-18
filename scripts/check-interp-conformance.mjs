@@ -107,7 +107,7 @@ function run(cmd, args, options = {}) {
 const binary = path.join(repoRoot, 'compiler/target/release/mrt-run')
 
 function runPythonFile(file) {
-  return run('python3', ['-m', 'src', file])
+  return run('python3', ['-m', 'mrt', file])
 }
 
 function runRustFile(file) {

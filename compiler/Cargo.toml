@@ -1,9 +1,7 @@
 # The MRT 2.0 compiler frontend.
 #
 # Deliberately zero external dependencies: a hand-written lexer, parser and
-# resolver need none, and a hermetic build keeps `cargo test` usable in CI
-# and offline. Add a dependency only when it pays for the supply chain it
-# brings with it.
+# resolver need none, and a hermetic build keeps `cargo test` usable in CI.
 [workspace]
 resolver = "2"
 members = [
@@ -13,6 +11,7 @@ members = [
     "crates/mrt-parser",
     "crates/mrt-resolver",
     "crates/mrt-interp",
+    "crates/mrt-ai",
     "cli",
 ]
 

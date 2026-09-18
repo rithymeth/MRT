@@ -1,7 +1,7 @@
 import pytest
 
-from src.errors import MRTSyntaxError
-from src.lexer import Lexer, TokenType
+from mrt.errors import MRTSyntaxError
+from mrt.lexer import Lexer, TokenType
 
 
 def token_types(source: str):

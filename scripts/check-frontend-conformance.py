@@ -38,7 +38,7 @@ sys.path.insert(0, str(REPO))
 
 from scripts import dump_ast  # noqa: E402
 from scripts.dump_tokens import dump as dump_tokens  # noqa: E402
-from src.errors import MRTError  # noqa: E402
+from mrt.errors import MRTError  # noqa: E402
 
 
 # Cases the real programs never produce, each pinning down one behaviour that
