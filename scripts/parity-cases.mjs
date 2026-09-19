@@ -773,10 +773,11 @@ export const MODULE_CASES = [
 // divergence recorded rather than resolved.
 //
 // `ai_linear.mrt` calls `aiTrainLinear`, a builtin only the Rust engine has
-// (compiler/crates/mrt-ai). On the reference it is an undefined variable, so
-// the Rust engine is currently a strict superset of the language its own
-// conformance harness defines. Either the reference grows these builtins or
-// they are declared an engine extension with a home in the spec; until then the
-// Rust harnesses skip the example rather than report a mismatch they cannot
-// act on.
+// (compiler/crates/mrt-ai). That is settled rather than outstanding: MRT-AI is
+// a declared *engine extension*, specified as such under "Engine extensions"
+// in docs/LANGUAGE_SPEC.md. It is deliberately not part of the language, so a
+// program using it is not a conformance case and the Rust harnesses skip it
+// rather than reporting a mismatch nobody can act on. Extensions carry their
+// own tests in the crate that provides them, because being outside the corpus
+// means untested otherwise.
 export const ENGINE_SPECIFIC_EXAMPLES = new Set(['ai_linear.mrt'])
