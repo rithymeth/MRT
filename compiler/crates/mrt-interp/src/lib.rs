@@ -34,6 +34,7 @@
 //!
 //! Everything else the language has is here, modules included.
 
+pub mod ai;
 pub mod builtins;
 pub mod env;
 pub mod error;
