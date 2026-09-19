@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mrt-lang"
-version = "0.3.0"
+version = "0.4.0"
 description = "The MRT programming language: reference interpreter and CLI"
 readme = "README.md"
 requires-python = ">=3.10"  # uses `match` statements, which require Python 3.10+
@@ -34,6 +34,14 @@ Changelog = "https://github.com/rithymeth/MRT/releases"
 
 [project.scripts]
 mrt = "mrt.__main__:main"
+# The same entry point under a second name, because `mrt` is not reliably
+# available on Windows: `C:\Windows\System32\MRT.exe` is Microsoft's
+# Malicious Software Removal Tool, filenames there are case-insensitive, and
+# System32 precedes Python's Scripts directory on PATH. Typing `mrt` runs the
+# malware scanner, which ignores the argument and exits quietly -- so a Windows
+# user's first run of this package produces silence and looks broken.
+# `mrt` stays for macOS and Linux, where it is fine.
+mrt-lang = "mrt.__main__:main"
 
 # Only the interpreter ships. `src/` next door is the Playground's React app
 # and the TypeScript interpreter, which are not part of this distribution.

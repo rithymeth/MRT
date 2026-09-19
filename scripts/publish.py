@@ -21,7 +21,7 @@ It checks four things, in the order they tend to break:
 3. the wheel installs into a *clean* virtualenv -- which is where a missing
    package, a bad entry point or an over-eager `packages` list shows up, and
    an editable install in the working tree never will;
-4. the installed `mrt` command runs an actual program, and the import package
+4. both installed commands (`mrt`, `mrt-lang`) run an actual program, and the import package
    has the name it is supposed to have.
 
 That last check exists because the package shipped `src` as its top-level
@@ -92,12 +92,17 @@ def main() -> int:
         program = pathlib.Path(tmp) / "smoke.mrt"
         program.write_text('func main() { print("ok"); }\n')
 
-        print("\n== running a program through the installed CLI ==")
-        result = subprocess.run([str(venv / "bin" / "mrt"), str(program)],
-                                capture_output=True, text=True)
-        if result.returncode != 0 or result.stdout.strip() != "ok":
-            sys.exit(f"installed CLI misbehaved: {result.returncode} "
-                     f"{result.stdout!r} {result.stderr!r}")
+        print("\n== running a program through the installed CLIs ==")
+        # Both names. `mrt` is unusable on Windows -- System32's MRT.exe, the
+        # Malicious Software Removal Tool, wins on a case-insensitive PATH --
+        # so `mrt-lang` is the command those users are told to type, and
+        # shipping it broken would be worse than not shipping it at all.
+        for command in ("mrt", "mrt-lang"):
+            result = subprocess.run([str(venv / "bin" / command), str(program)],
+                                    capture_output=True, text=True)
+            if result.returncode != 0 or result.stdout.strip() != "ok":
+                sys.exit(f"installed CLI '{command}' misbehaved: "
+                         f"{result.returncode} {result.stdout!r} {result.stderr!r}")
 
         # Every import check below runs from `tmp`, never from the repository.
         # `python -c` puts the working directory on sys.path, so running these
