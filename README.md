@@ -382,10 +382,11 @@ conformance corpus and required to produce byte-identical output.
 - `examples/`: example MRT programs
   - `examples/lib/`: library modules the programs above import, including
     `json.mrt` -- a JSON parser and writer written in MRT itself
-  - `examples/ai_*.mrt`: programs using MRT-AI, an *engine extension* the Rust
-    engines have and the other two deliberately do not. See "Engine extensions"
-    in the specification, and
+  - `examples/ai_*.mrt` and `examples/game_*.mrt`: programs using MRT-AI and
+    MRT-Game, *engine extensions* the Rust engines have and the other two
+    deliberately do not. See "Engine extensions" in the specification, and
     [`compiler/crates/mrt-ai/README.md`](https://github.com/rithymeth/MRT/blob/main/compiler/crates/mrt-ai/README.md)
+    and [`compiler/crates/mrt-game/README.md`](https://github.com/rithymeth/MRT/blob/main/compiler/crates/mrt-game/README.md)
 - `benchmarks/`: ten programs and a three-way timing comparison
 - `tests/`: test suite
 

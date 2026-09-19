@@ -10,6 +10,7 @@ mrt-diagnostics = { path = "../mrt-diagnostics" }
 mrt-ast = { path = "../mrt-ast" }
 mrt-parser = { path = "../mrt-parser" }
 mrt-ai = { path = "../mrt-ai" }
+mrt-game = { path = "../mrt-game" }
 
 [lints]
 workspace = true

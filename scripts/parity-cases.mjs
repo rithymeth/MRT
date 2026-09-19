@@ -772,12 +772,16 @@ export const MODULE_CASES = [
 // four implementations agree on. These are the exceptions, and each one is a
 // divergence recorded rather than resolved.
 //
-// These examples call `ai*` builtins that only the Rust engines have
-// (compiler/crates/mrt-ai). That is settled rather than outstanding: MRT-AI is
-// a declared *engine extension*, specified as such under "Engine extensions"
-// in docs/LANGUAGE_SPEC.md. It is deliberately not part of the language, so a
-// program using it is not a conformance case and the Rust harnesses skip it
-// rather than reporting a mismatch nobody can act on. Extensions carry their
-// own tests in the crate that provides them, because being outside the corpus
-// means untested otherwise.
-export const ENGINE_SPECIFIC_EXAMPLES = new Set(['ai_linear.mrt', 'ai_net.mrt'])
+// These examples call `ai*` or `game*` builtins that only the Rust engines
+// have (compiler/crates/mrt-ai, compiler/crates/mrt-game). That is settled
+// rather than outstanding: both are declared *engine extensions*, specified as
+// such under "Engine extensions" in docs/LANGUAGE_SPEC.md. Neither is part of
+// the language, so a program using one is not a conformance case and the Rust
+// harnesses skip it rather than reporting a mismatch nobody can act on.
+// Extensions carry their own tests in the crate that provides them, because
+// being outside the corpus means untested otherwise.
+export const ENGINE_SPECIFIC_EXAMPLES = new Set([
+  'ai_linear.mrt',
+  'ai_net.mrt',
+  'game_shapes.mrt',
+])

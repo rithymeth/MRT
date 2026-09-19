@@ -10,6 +10,7 @@ use std::rc::Rc;
 use crate::ai::{tensor_from_mrt, tensor_to_mrt};
 use crate::env::Env;
 use crate::error::{arity_error, type_error, value_error, Eval, Kind, Signal};
+use crate::game::{channel, color, coord};
 use crate::generator::{step_result, Generator, Transform};
 use crate::value::*;
 use crate::{is_iterable, object_fields, Interpreter};
@@ -77,6 +78,21 @@ const NAMES: &[&str] = &[
     "aiActivation",
     "aiPredict",
     "aiTrain",
+    "gameInit",
+    "gameColor",
+    "gameColorAlpha",
+    "gameColorParts",
+    "gameWidth",
+    "gameHeight",
+    "gameClear",
+    "gamePixel",
+    "gameRect",
+    "gameRectOutline",
+    "gameLine",
+    "gameCircle",
+    "gameCircleOutline",
+    "gameColorAt",
+    "gameSave",
 ];
 
 pub fn install(globals: &Env) {
@@ -169,6 +185,163 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 whole(&args[3], "aiTrain", "epochs")?,
                 number(&args[4], "aiTrain")?,
             )
+        }
+
+        // -- the game extension's drawing surface ---------------------------
+        // The screen lives on the interpreter, not in an MRT value: a
+        // framebuffer is too large to be data the way a model is. See
+        // crate::game.
+        "gameInit" => {
+            exactly(&args, 3, "gameInit() takes a width, a height, and a title.")?;
+            let width = whole(&args[0], "gameInit", "the width")?;
+            let height = whole(&args[1], "gameInit", "the height")?;
+            let Value::Str(title) = &args[2] else {
+                return Err(type_error(format!(
+                    "gameInit() needs the title to be a string, not {}.",
+                    type_name(&args[2])
+                )));
+            };
+            interp.screen = Some(crate::game::init(width, height, title)?);
+            Ok(Value::Null)
+        }
+        "gameColor" => {
+            exactly(&args, 3, "gameColor() takes red, green, and blue.")?;
+            Ok(crate::game::make_color(
+                channel(&args[0], "gameColor", "red")?,
+                channel(&args[1], "gameColor", "green")?,
+                channel(&args[2], "gameColor", "blue")?,
+                255,
+            ))
+        }
+        "gameColorAlpha" => {
+            exactly(
+                &args,
+                4,
+                "gameColorAlpha() takes red, green, blue, and alpha.",
+            )?;
+            Ok(crate::game::make_color(
+                channel(&args[0], "gameColorAlpha", "red")?,
+                channel(&args[1], "gameColorAlpha", "green")?,
+                channel(&args[2], "gameColorAlpha", "blue")?,
+                channel(&args[3], "gameColorAlpha", "alpha")?,
+            ))
+        }
+        "gameColorParts" => {
+            one(&args, "gameColorParts")?;
+            Ok(crate::game::split_color(color(&args[0], "gameColorParts")?))
+        }
+        "gameWidth" => {
+            exactly(&args, 0, "gameWidth() takes no arguments.")?;
+            Ok(Value::Number(
+                screen_of(interp, "gameWidth")?.surface.width as f64,
+            ))
+        }
+        "gameHeight" => {
+            exactly(&args, 0, "gameHeight() takes no arguments.")?;
+            Ok(Value::Number(
+                screen_of(interp, "gameHeight")?.surface.height as f64,
+            ))
+        }
+        "gameClear" => {
+            one(&args, "gameClear")?;
+            crate::game::draw::clear(&mut interp.screen, color(&args[0], "gameClear")?)
+        }
+        "gamePixel" => {
+            exactly(&args, 3, "gamePixel() takes x, y, and a colour.")?;
+            crate::game::draw::pixel(
+                &mut interp.screen,
+                coord(&args[0], "gamePixel", "x")?,
+                coord(&args[1], "gamePixel", "y")?,
+                color(&args[2], "gamePixel")?,
+            )
+        }
+        "gameRect" => {
+            exactly(
+                &args,
+                5,
+                "gameRect() takes x, y, a width, a height, and a colour.",
+            )?;
+            crate::game::draw::rect(
+                &mut interp.screen,
+                coord(&args[0], "gameRect", "x")?,
+                coord(&args[1], "gameRect", "y")?,
+                coord(&args[2], "gameRect", "the width")?,
+                coord(&args[3], "gameRect", "the height")?,
+                color(&args[4], "gameRect")?,
+            )
+        }
+        "gameRectOutline" => {
+            exactly(
+                &args,
+                6,
+                "gameRectOutline() takes x, y, a width, a height, a thickness, and a colour.",
+            )?;
+            crate::game::draw::rect_outline(
+                &mut interp.screen,
+                coord(&args[0], "gameRectOutline", "x")?,
+                coord(&args[1], "gameRectOutline", "y")?,
+                coord(&args[2], "gameRectOutline", "the width")?,
+                coord(&args[3], "gameRectOutline", "the height")?,
+                coord(&args[4], "gameRectOutline", "the thickness")?,
+                color(&args[5], "gameRectOutline")?,
+            )
+        }
+        "gameLine" => {
+            exactly(&args, 5, "gameLine() takes x1, y1, x2, y2, and a colour.")?;
+            crate::game::draw::line(
+                &mut interp.screen,
+                coord(&args[0], "gameLine", "x1")?,
+                coord(&args[1], "gameLine", "y1")?,
+                coord(&args[2], "gameLine", "x2")?,
+                coord(&args[3], "gameLine", "y2")?,
+                color(&args[4], "gameLine")?,
+            )
+        }
+        "gameCircle" => {
+            exactly(&args, 4, "gameCircle() takes x, y, a radius, and a colour.")?;
+            crate::game::draw::circle(
+                &mut interp.screen,
+                coord(&args[0], "gameCircle", "x")?,
+                coord(&args[1], "gameCircle", "y")?,
+                coord(&args[2], "gameCircle", "the radius")?,
+                color(&args[3], "gameCircle")?,
+            )
+        }
+        "gameCircleOutline" => {
+            exactly(
+                &args,
+                4,
+                "gameCircleOutline() takes x, y, a radius, and a colour.",
+            )?;
+            crate::game::draw::circle_outline(
+                &mut interp.screen,
+                coord(&args[0], "gameCircleOutline", "x")?,
+                coord(&args[1], "gameCircleOutline", "y")?,
+                coord(&args[2], "gameCircleOutline", "the radius")?,
+                color(&args[3], "gameCircleOutline")?,
+            )
+        }
+        "gameColorAt" => {
+            // Reading the surface back is what lets a program check its own
+            // drawing, which is otherwise only visible to a person looking at
+            // a file.
+            exactly(&args, 2, "gameColorAt() takes x and y.")?;
+            let x = coord(&args[0], "gameColorAt", "x")?;
+            let y = coord(&args[1], "gameColorAt", "y")?;
+            Ok(match screen_of(interp, "gameColorAt")?.surface.get(x, y) {
+                Some(c) => Value::Number(c.0 as f64),
+                None => Value::Null,
+            })
+        }
+        "gameSave" => {
+            one(&args, "gameSave")?;
+            let Value::Str(path) = &args[0] else {
+                return Err(type_error(format!(
+                    "gameSave() needs a path, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            crate::game::save(&interp.screen, path)
         }
 
         "aiTrainLinear" => {
@@ -976,4 +1149,17 @@ fn whole(value: &Value, who: &str, what: &str) -> Result<usize, Signal> {
             type_name(other)
         ))),
     }
+}
+
+/// The screen, for the built-ins that only read it.
+///
+/// The drawing calls take `&mut interp.screen` directly; these need the
+/// interpreter borrowed immutably alongside their arguments, which is a
+/// different shape and so a different helper.
+fn screen_of<'a>(interp: &'a Interpreter, who: &str) -> Result<&'a crate::game::Screen, Signal> {
+    interp.screen.as_ref().ok_or_else(|| {
+        value_error(format!(
+            "{who}() needs a screen; call gameInit(width, height, title) first."
+        ))
+    })
 }

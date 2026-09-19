@@ -38,6 +38,7 @@ pub mod ai;
 pub mod builtins;
 pub mod env;
 pub mod error;
+pub mod game;
 pub mod generator;
 pub mod value;
 pub mod vm;
@@ -95,6 +96,13 @@ pub struct Interpreter {
     /// namespace import turns it into an object and `keys()` on that object
     /// is observable.
     current_exports: Exports,
+
+    /// The game extension's screen, once `gameInit` has made one.
+    ///
+    /// Interpreter state rather than a global, so two interpreters in one
+    /// process draw on their own screens -- which the test suite relies on,
+    /// since it runs every program twice, once per engine.
+    pub(crate) screen: Option<game::Screen>,
 }
 
 /// A module's export table: names in the order they were exported.
@@ -273,6 +281,7 @@ impl Interpreter {
             module_exports: HashMap::new(),
             module_loading: Vec::new(),
             current_exports: Vec::new(),
+            screen: None,
         }
     }
 

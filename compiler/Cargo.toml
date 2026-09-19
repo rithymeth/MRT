@@ -12,6 +12,7 @@ members = [
     "crates/mrt-resolver",
     "crates/mrt-interp",
     "crates/mrt-ai",
+    "crates/mrt-game",
     "cli",
 ]
 

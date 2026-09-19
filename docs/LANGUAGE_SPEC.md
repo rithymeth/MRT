@@ -1320,7 +1320,7 @@ drift four implementations and a shared corpus exist to prevent.
 
 ### MRT-AI
 
-The one extension that exists. Provided by the Rust engines only
+Provided by the Rust engines only
 (`compiler/crates/mrt-ai`, bridged in `compiler/crates/mrt-interp/src/ai.rs`),
 it supplies numerical and machine-learning primitives — tensors, layers,
 reverse-mode automatic differentiation, optimisers — through built-ins
@@ -1384,6 +1384,69 @@ is reproducible.
 
 `aiTrainLinear(x, y, epochs, rate)` predates the model surface and remains as
 the one-call shortcut for fitting a single dense layer.
+
+### MRT-Game
+
+The 2D drawing surface, provided by the Rust engines only
+(`compiler/crates/mrt-game`, bridged in
+`compiler/crates/mrt-interp/src/game.rs`), through built-ins prefixed `game`.
+Its examples live in `examples/game_*.mrt`.
+
+#### The screen is not a value
+
+MRT-AI made a model *ordinary MRT data*, so the language learned no new type.
+The same goal here reaches a different arrangement, and the difference is
+worth stating rather than leaving to look like an inconsistency.
+
+A model is a few thousand numbers. A 1280x720 framebuffer is 921,600 pixels;
+as MRT values that is a million of them rebuilt every frame, which is not a
+slow design but an unusable one. So the surface stays inside the engine and
+the drawing built-ins address it implicitly -- one screen, like the canvas
+context most drawing APIs settle on.
+
+The language still learns no new value kind. It gets there by holding
+*nothing* rather than by holding data: everything that crosses the boundary --
+coordinates, sizes, colours -- is a plain number.
+
+```mrt
+func main() {
+    gameInit(400, 240, "MRT Shapes");
+    var sky = gameColor(18, 22, 38);
+    gameClear(sky);
+    gameCircle(200, 120, 40, gameColorAlpha(255, 214, 92, 140));
+    gameSave("frame.png");
+}
+```
+
+#### The built-ins
+
+| Call | Result |
+|------|--------|
+| `gameInit(width, height, title)` | Creates the screen, 1 to 16384 on a side. Calling it again replaces it. |
+| `gameColor(r, g, b)` | An opaque colour, packed `0xAARRGGBB` into a number. |
+| `gameColorAlpha(r, g, b, a)` | The same with an alpha channel. |
+| `gameColorParts(color)` | `{red, green, blue, alpha}` — a packed colour taken back apart. |
+| `gameWidth()` / `gameHeight()` | The screen's size. |
+| `gameClear(color)` | Fills the screen, replacing rather than blending. |
+| `gamePixel(x, y, color)` | One pixel. |
+| `gameRect(x, y, w, h, color)` | A filled rectangle. |
+| `gameRectOutline(x, y, w, h, thickness, color)` | Its outline, drawn *inside* those bounds. |
+| `gameLine(x1, y1, x2, y2, color)` | A one-pixel line. |
+| `gameCircle(x, y, radius, color)` / `gameCircleOutline(...)` | Filled and hollow circles. |
+| `gameColorAt(x, y)` | The colour at a point, or `null` off the screen. |
+| `gameSave(path)` | Writes the frame as a PNG. |
+
+Conventions, fixed once: Y points **down** from a top-left origin; a colour
+channel outside 0–255 is an error rather than a clamp; coordinates may be
+fractional and are floored, since a moving thing is rarely on a whole pixel;
+and **everything clips**. Drawing off the edge of the screen is ordinary — that
+is what it means for something to walk out of shot — so it neither fails nor
+wraps around.
+
+Reading a colour back with `gameColorAt` lets a program check its own drawing.
+That matters more than it looks: there is no window yet, so a saved PNG and a
+read-back pixel are the only two ways to know what a frame contains, and only
+one of them can be automated.
 
 ## Known ambiguities (by design)
 
