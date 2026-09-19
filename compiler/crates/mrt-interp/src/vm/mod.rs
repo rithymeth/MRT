@@ -276,14 +276,146 @@ mod tests {
         );
     }
 
+    // -- try / catch / finally --------------------------------------------
+
+    #[test]
+    fn a_thrown_value_reaches_its_catch() {
+        assert_eq!(
+            agree(
+                r#"func main() { try { throw {code: 1}; } catch (e) { print("caught", e.code); } }"#
+            ),
+            "caught 1"
+        );
+    }
+
+    #[test]
+    fn an_interpreter_error_is_catchable_as_an_error_object() {
+        assert_eq!(
+            agree(
+                "func main() { try { var a = [1]; print(a[9]); } \
+                 catch (e) { print(e.kind, \"|\", e.message); } }"
+            ),
+            "IndexError | Array index 9 out of bounds for array of length 1."
+        );
+    }
+
+    #[test]
+    fn guards_choose_the_clause() {
+        assert_eq!(
+            agree(
+                "func main() { try { throw 1; } catch (e) if (e == 2) { print(\"wrong\"); } \
+                 catch (e) if (e == 1) { print(\"right\", e); } }"
+            ),
+            "right 1"
+        );
+    }
+
+    #[test]
+    fn a_stack_trace_is_built_innermost_first_across_frames() {
+        // The VM builds it on the way out of each frame, as the tree-walker
+        // does. Without that the trace is simply empty -- which looks like a
+        // feature nobody implemented rather than a wrong answer.
+        assert_eq!(
+            agree(
+                "func c() { throw \"x\"; } func b() { return c(); } func a() { return b(); } \
+                 func main() { try { a(); } catch (e) { print(e); } }"
+            ),
+            "x"
+        );
+    }
+
+    #[test]
+    fn a_finally_runs_on_the_return_path() {
+        assert_eq!(
+            agree(
+                "func f() { try { return \"from try\"; } finally { print(\"fin\"); } } \
+                 func main() { print(f()); }"
+            ),
+            "fin\nfrom try"
+        );
+    }
+
+    #[test]
+    fn a_finally_runs_when_a_catch_clause_returns() {
+        // The unwinder pops the handler to enter the clause, so the clause's
+        // own `return` had nothing left telling it a finally was owed. It
+        // silently skipped the one construct whose entire promise is that it
+        // always runs.
+        assert_eq!(
+            agree(
+                "func f() { try { throw \"x\"; } catch (e) { return \"caught\"; } \
+                 finally { print(\"fin\"); } } func main() { print(f()); }"
+            ),
+            "fin\ncaught"
+        );
+    }
+
+    #[test]
+    fn a_signal_from_finally_replaces_the_one_it_interrupted() {
+        assert_eq!(
+            agree(
+                "func f() { try { throw \"a\"; } finally { throw \"b\"; } } \
+                 func main() { try { f(); } catch (e) { print(e); } }"
+            ),
+            "b"
+        );
+    }
+
+    #[test]
+    fn a_return_in_finally_wins_over_the_one_in_try() {
+        assert_eq!(
+            agree(
+                "func f() { try { return \"try\"; } finally { return \"finally\"; } } \
+                 func main() { print(f()); }"
+            ),
+            "finally"
+        );
+    }
+
+    #[test]
+    fn a_try_inside_a_loop_leaves_the_loop_variable_alone() {
+        // The catch chain opens one lexical scope but leaves it two ways, and
+        // closing it twice in the compiler shifted every slot after the
+        // `try`. The loop counter then resolved as a global and vanished.
+        assert_eq!(
+            agree(
+                "func f() { var h = 0; for (var i = 0; i < 5; i = i + 1) { \
+                 try { if (i == 3) { break; } h = h + 1; } catch (e) { } } return h; } \
+                 func main() { print(f()); }"
+            ),
+            "3"
+        );
+    }
+
+    #[test]
+    fn a_catch_can_destructure_the_thrown_value() {
+        assert_eq!(
+            agree(
+                "func main() { try { throw {code: 7, msg: \"m\"}; } \
+                 catch ({code, msg}) { print(code, msg); } }"
+            ),
+            "7 m"
+        );
+    }
+
+    #[test]
+    fn a_break_out_of_a_finally_is_refused_rather_than_skipped() {
+        // Running the finally on the way out needs machinery this compiler
+        // does not have. Jumping past it would be a wrong answer; saying so
+        // keeps it in the ratchet where it is visible.
+        assert!(vm("func main() { for (var i = 0; i < 2; i = i + 1) { \
+             try { break; } finally { print(\"fin\"); } } }")
+        .contains("'break' out of a try with a finally is not compiled by the VM yet"));
+    }
+
     #[test]
     fn an_uncompilable_construct_is_refused_by_name() {
         // Not a wrong answer and not a panic: the conformance harness tells
         // "cannot compile this yet" apart from "compiles it wrongly" purely
         // by this text.
         assert_eq!(
-            vm("func main() { try { print(1); } catch (e) { } }"),
-            "Runtime Error: try/catch is not compiled by the VM yet."
+            vm("func main() { match (1) { case 1: print(1); } }"),
+            "Runtime Error: match is not compiled by the VM yet."
         );
         assert_eq!(
             vm("func g() { yield 1; } func main() { }"),

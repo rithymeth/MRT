@@ -13,7 +13,7 @@ use std::rc::Rc;
 use mrt_ast::BinOp;
 
 use crate::env::Env;
-use crate::error::{type_error, Kind, Signal};
+use crate::error::{type_error, Kind, Signal, Thrown};
 use crate::value::{stringify, Compiled, ObjKey, ObjMap, Value};
 use crate::vm::chunk::{Chunk, Op, Proto};
 use crate::Interpreter;
@@ -41,6 +41,13 @@ pub struct Vm<'a> {
     interp: &'a mut Interpreter,
     stack: Vec<Value>,
     frames: Vec<Frame>,
+    /// Open `try` blocks, innermost last.
+    handlers: Vec<Handler>,
+    /// What an unwinding `finally` has to resume when it finishes.
+    ///
+    /// A stack because `finally` blocks nest: an inner one running while an
+    /// outer signal is in flight must not lose the outer one.
+    pending: Vec<Pending>,
     /// Live `for`-`in` cursors, innermost last.
     ///
     /// Kept in their own typed stack rather than as a `Value` on the operand
@@ -57,12 +64,43 @@ struct Cursor {
     next: usize,
 }
 
+/// Whether the machine should keep stepping.
+enum Step {
+    Running,
+    Done(Value),
+}
+
+/// One open `try`.
+///
+/// The recorded depths are what makes unwinding sound: a signal raised
+/// twelve frames and thirty operands deep has to leave the machine exactly
+/// as the `try` found it, and the only way to know "exactly" is to have
+/// written it down on the way in.
+struct Handler {
+    frame: usize,
+    stack: usize,
+    cursors: usize,
+    env: Env,
+    catch_ip: Option<u32>,
+    finally_ip: Option<u32>,
+}
+
+/// What a `finally` reached by unwinding must do when it ends.
+enum Pending {
+    /// Re-raise the signal the `finally` interrupted.
+    Signal(Signal),
+    /// Complete the `return` the `finally` interrupted.
+    Return(Value),
+}
+
 impl<'a> Vm<'a> {
     pub fn new(interp: &'a mut Interpreter) -> Vm<'a> {
         Vm {
             interp,
             stack: Vec::new(),
             frames: Vec::new(),
+            handlers: Vec::new(),
+            pending: Vec::new(),
             cursors: Vec::new(),
         }
     }
@@ -126,6 +164,102 @@ impl<'a> Vm<'a> {
 
     fn execute(&mut self) -> Result<Value, Signal> {
         loop {
+            match self.step() {
+                Ok(Step::Running) => {}
+                Ok(Step::Done(value)) => return Ok(value),
+                Err(signal) => self.unwind(signal)?,
+            }
+        }
+    }
+
+    /// Discard frames down to `depth`, naming each one on the signal as it
+    /// goes.
+    ///
+    /// The trace is built on the way out, exactly as the tree-walker builds
+    /// it: a raise site knows nothing about who called it, but every frame
+    /// the signal passes through knows its own name. Popping from the top
+    /// gives innermost first, which is the order the language specifies.
+    fn unwind_frames(&mut self, mut signal: Signal, depth: usize) -> Signal {
+        while self.frames.len() > depth {
+            let frame = self.frames.pop().expect("a frame to unwind");
+            // The entry chunk is not a function, so it contributes no name --
+            // the same reason the tree-walker's top level does not.
+            if let Some(name) = &frame.proto.name {
+                signal = signal.with_frame(name);
+            } else if self.frames.is_empty() {
+                // The bottom frame is the entry chunk.
+            } else {
+                signal = signal.with_frame("<anonymous>");
+            }
+        }
+        signal
+    }
+
+    /// Unwind to the innermost handler that wants `signal`, or give up and
+    /// let it out of the machine.
+    fn unwind(&mut self, mut signal: Signal) -> Result<(), Signal> {
+        // `break`, `continue` and `return` are compiled into jumps rather
+        // than raised, so anything arriving here is a genuine failure or a
+        // `throw` -- except a `return` parked by a `finally`, which is
+        // resumed rather than unwound.
+        if !matches!(signal, Signal::Throw(_) | Signal::Error(_)) {
+            return Err(signal);
+        }
+
+        while let Some(handler) = self.handlers.pop() {
+            signal = self.unwind_frames(signal, handler.frame);
+            self.stack.truncate(handler.stack);
+            self.cursors.truncate(handler.cursors);
+            let Some(frame) = self.frames.last_mut() else {
+                break;
+            };
+            frame.env = handler.env.clone();
+
+            if let Some(catch_ip) = handler.catch_ip {
+                // The value a clause sees: a thrown one as thrown, and an
+                // interpreter failure as the standard error object, with its
+                // `kind` and the trace collected so far for guards to read.
+                let value = match &signal {
+                    Signal::Throw(t) => t.value.clone(),
+                    Signal::Error(e) => crate::error_value(e),
+                    _ => unreachable!("checked above"),
+                };
+                frame.ip = catch_ip as usize;
+                let resume = handler.finally_ip;
+                self.pending.push(Pending::Signal(signal));
+                self.stack.push(value);
+                // The `try` is done but the `finally` is not. Leave a
+                // finally-only handler behind, so that a `return` or a fresh
+                // `throw` from inside the clause -- or no clause matching at
+                // all -- still runs it. Without this the most natural thing
+                // to write in a catch block, `return`, is exactly what skips
+                // the block that promised to always run.
+                if let Some(finally_ip) = resume {
+                    let frame_depth = self.frames.len();
+                    self.handlers.push(Handler {
+                        frame: frame_depth,
+                        stack: handler.stack,
+                        cursors: handler.cursors,
+                        env: handler.env,
+                        catch_ip: None,
+                        finally_ip: Some(finally_ip),
+                    });
+                }
+                return Ok(());
+            }
+            if let Some(finally_ip) = handler.finally_ip {
+                frame.ip = finally_ip as usize;
+                self.pending.push(Pending::Signal(signal));
+                return Ok(());
+            }
+        }
+        // Nothing wanted it: name the frames it is still inside on the way
+        // out of the machine.
+        Err(self.unwind_frames(signal, 0))
+    }
+
+    fn step(&mut self) -> Result<Step, Signal> {
+        {
             let (op, line) = {
                 let frame = self.frames.last_mut().expect("a frame to be running");
                 let op = frame.proto.chunk.code[frame.ip];
@@ -296,14 +430,17 @@ impl<'a> Vm<'a> {
 
                 Op::Return => {
                     let value = self.pop();
-                    let frame = self.frames.pop().expect("a frame to return from");
-                    // Discard anything the frame left behind, then hand the
-                    // result to the caller.
-                    self.stack.truncate(frame.base);
-                    if self.frames.is_empty() {
-                        return Ok(value);
+                    // A `return` from inside a `try` still owes its
+                    // `finally`. Park the value, run the finally, and let
+                    // `EndFinally` complete the return -- otherwise the one
+                    // construct whose whole promise is "this always runs"
+                    // would be skipped by the most ordinary exit there is.
+                    if let Some(finally_ip) = self.take_frame_finally() {
+                        self.pending.push(Pending::Return(value));
+                        self.jump(finally_ip);
+                        return Ok(Step::Running);
                     }
-                    self.push(value);
+                    return Ok(self.finish_return(value));
                 }
 
                 Op::IterInit => {
@@ -324,8 +461,87 @@ impl<'a> Vm<'a> {
                 Op::IterDrop => {
                     self.cursors.pop();
                 }
+
+                Op::Throw => {
+                    let value = self.pop();
+                    return Err(Signal::Throw(Thrown {
+                        value,
+                        stack: Vec::new(),
+                    }));
+                }
+
+                Op::PushHandler { catch, finally } => {
+                    const NONE: u32 = u32::MAX;
+                    self.handlers.push(Handler {
+                        frame: self.frames.len(),
+                        stack: self.stack.len(),
+                        cursors: self.cursors.len(),
+                        env: self.frame().env.clone(),
+                        catch_ip: (catch != NONE).then_some(catch),
+                        finally_ip: (finally != NONE).then_some(finally),
+                    });
+                }
+                Op::PopHandler => {
+                    self.handlers.pop();
+                }
+                Op::BindCatch(index) => {
+                    let pattern = self.frame().proto.chunk.patterns[index as usize].clone();
+                    let value = self.stack.last().expect("a thrown value").clone();
+                    let scope = self.frame().env.clone();
+                    // A clause that cannot take the value apart does not
+                    // match; that is a choice about which clause runs, not an
+                    // error the program should see.
+                    let bound = self
+                        .interp
+                        .bind_pattern(&pattern, Some(value), &scope, Some(line), true)
+                        .is_ok();
+                    self.push(Value::Bool(bound));
+                }
+                Op::DropPending => {
+                    self.pending.pop();
+                }
+                Op::EndFinally => match self.pending.pop() {
+                    Some(Pending::Signal(signal)) => return Err(signal),
+                    Some(Pending::Return(value)) => {
+                        if let Some(finally_ip) = self.take_frame_finally() {
+                            self.pending.push(Pending::Return(value));
+                            self.jump(finally_ip);
+                            return Ok(Step::Running);
+                        }
+                        return Ok(self.finish_return(value));
+                    }
+                    None => {}
+                },
             }
         }
+        Ok(Step::Running)
+    }
+
+    /// Pop this frame's innermost handler if it still owes a `finally`.
+    fn take_frame_finally(&mut self) -> Option<u32> {
+        let depth = self.frames.len();
+        let handler = self.handlers.last()?;
+        if handler.frame != depth {
+            return None;
+        }
+        let finally_ip = handler.finally_ip?;
+        self.handlers.pop();
+        Some(finally_ip)
+    }
+
+    fn finish_return(&mut self, value: Value) -> Step {
+        let frame = self.frames.pop().expect("a frame to return from");
+        // Discard anything the frame left behind, then hand the result to
+        // the caller.
+        self.stack.truncate(frame.base);
+        // Handlers opened by the frame that is going away go with it.
+        let depth = self.frames.len();
+        self.handlers.retain(|h| h.frame <= depth);
+        if self.frames.is_empty() {
+            return Step::Done(value);
+        }
+        self.push(value);
+        Step::Running
     }
 
     fn jump(&mut self, target: u32) {

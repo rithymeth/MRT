@@ -250,9 +250,10 @@ tree-walker.
 ## The bytecode VM
 
 `mrt-interp/src/vm` is a stack machine: a compiler from AST to a flat
-instruction vector, and a loop that steps it. It runs a subset of the
-language today and refuses the rest **by name**, so the conformance harness
-can tell "does not compile this yet" apart from "compiles it wrongly".
+instruction vector, and a loop that steps it. It runs a growing subset of the
+language and refuses the rest **by name**, so the conformance harness can
+tell "does not compile this yet" apart from "compiles it wrongly". Still
+outstanding: `match`, structs, modules, destructuring, spread, generators.
 
 ```bash
 node scripts/check-vm-conformance.mjs   # or: npm run check:vm
@@ -303,6 +304,35 @@ A binding can live in a slot only if nothing outlives the frame:
 A side effect worth knowing: MRT frames are heap data here, so recursion is
 bounded by memory rather than by the host call stack. `deep(50000)` overflows
 the tree-walker and returns on the VM.
+
+### How `try` / `catch` / `finally` works
+
+A handler stack, and an unwinder. `PushHandler` records where to resume plus
+the frame, operand-stack and cursor depths at the time, because a signal
+raised twelve frames and thirty operands deep has to leave the machine
+exactly as the `try` found it — and the only way to know "exactly" is to
+have written it down on the way in.
+
+Three details are load-bearing:
+
+* **The `finally` block is compiled twice.** One copy runs on the paths that
+  leave normally, the other on the paths still carrying a signal, and the
+  second ends by re-raising it. Sharing one copy would mean the block has to
+  know which way it was entered, which is the same bookkeeping somewhere
+  less obvious.
+* **Entering a catch clause leaves a finally-only handler behind.** The
+  unwinder pops the `try`'s handler to get into the clause, so without this
+  a `return` from inside the clause — the most natural thing to write there
+  — skips the one construct whose entire promise is that it always runs.
+* **The stack trace is built on the way out.** Each frame the signal passes
+  names itself, innermost first, exactly as the tree-walker does it.
+  Otherwise `e.stack` is simply empty, which reads as a feature nobody
+  implemented rather than as a wrong answer.
+
+One case is refused rather than approximated: a `break` or `continue` that
+jumps out of a `try` with a `finally`. Running the block on the way past
+needs machinery this compiler does not have, and jumping over it would be
+silently wrong.
 
 ### What it deliberately does not own
 
