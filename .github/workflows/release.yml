@@ -16,7 +16,7 @@
 # To cut a release:
 #
 #   1. bump `version` in pyproject.toml and merge it
-#   2. git tag v0.3.0 && git push origin v0.3.0
+#   2. git tag v0.4.0 && git push origin v0.4.0
 #
 # The tag must match the version in pyproject.toml -- the build job checks
 # this and fails loudly rather than publishing something mislabelled.
@@ -77,6 +77,11 @@ jobs:
           /tmp/check/bin/pip install dist/*.whl
           printf 'func main() { print("ok"); }\n' > /tmp/smoke.mrt
           test "$(/tmp/check/bin/mrt /tmp/smoke.mrt)" = "ok"
+          # Both console scripts, because `mrt` is unusable on Windows --
+          # System32's MRT.exe wins there -- so `mrt-lang` is the name those
+          # users are told to type, and shipping it broken would be worse
+          # than not shipping it.
+          test "$(/tmp/check/bin/mrt-lang /tmp/smoke.mrt)" = "ok"
           /tmp/check/bin/python -c "import mrt, sys; sys.exit(0)"
 
       - uses: actions/upload-artifact@v4

@@ -43,6 +43,30 @@ After installation, you can run MRT programs using the `mrt` command:
 mrt your_program.mrt
 ```
 
+### On Windows, use `mrt-lang`
+
+```powershell
+mrt-lang your_program.mrt
+```
+
+`mrt` is not usable as a command on Windows, through no fault of this
+package: `C:\Windows\System32\MRT.exe` is Microsoft's Malicious Software
+Removal Tool, filenames on Windows are case-insensitive, and `System32`
+comes before Python's `Scripts` directory on `PATH`. Typing `mrt` therefore
+starts the malware scanner, which ignores the file you gave it and exits
+without printing anything -- so the first run of this package looks like a
+broken install rather than a name collision.
+
+`mrt-lang` is the same program under a name nothing else claims, and works
+everywhere. `python -m mrt your_program.mrt` also works and cannot be
+shadowed at all. If you would rather keep typing `mrt`, a function in your
+PowerShell profile (`notepad $PROFILE`) takes precedence over any
+executable:
+
+```powershell
+function mrt { python -m mrt @args }
+```
+
 ## Quick Start
 
 1. Create a file `hello.mrt`:
@@ -54,8 +78,12 @@ func main() {
 
 2. Run the program:
 ```bash
-mrt hello.mrt
+mrt hello.mrt        # or: mrt-lang hello.mrt   (required on Windows)
 ```
+
+A file with no top-level `main` runs its top-level statements and nothing
+else, so a file of only declarations prints nothing. That is not an error --
+the command says so on stderr rather than leaving you to guess.
 
 ## Language Examples
 
