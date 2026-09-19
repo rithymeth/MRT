@@ -69,6 +69,14 @@ struct Compiler {
 struct Local {
     name: String,
     depth: usize,
+    /// True when this name lives in the `Env` rather than in a slot.
+    ///
+    /// Recorded even though it has no slot, because it still has to
+    /// *shadow*. A `catch (e)` inside a function that already has a slotted
+    /// `e` binds the caught value into the environment; without an entry
+    /// here the clause body resolves `e` to the old slot and quietly reads
+    /// the wrong value. Nothing about that looks like an error.
+    in_env: bool,
 }
 
 /// Where a `break` or `continue` jump has to be patched to once the loop's
@@ -117,7 +125,6 @@ impl Compiler {
             }
             StmtKind::Print(args) => {
                 for arg in args {
-                    self.no_spread(arg)?;
                     self.expression(arg)?;
                 }
                 self.chunk.emit(Op::Print(args.len() as u32), line);
@@ -126,19 +133,32 @@ impl Compiler {
                 pattern,
                 initializer,
             } => {
-                // `Pattern::Name`'s own `default` is a *destructuring*
-                // default, not this declaration's initializer -- reading the
-                // value off the pattern silently declares every variable null.
-                let Pattern::Name { name, .. } = pattern else {
-                    return Err(Unsupported::of("destructuring in a declaration"));
-                };
                 match initializer {
                     Some(expr) => self.expression(expr)?,
                     None => {
                         self.chunk.emit(Op::Null, line);
                     }
                 }
-                self.emit_define(&name.text, line);
+                match pattern {
+                    // `Pattern::Name`'s own `default` is a *destructuring*
+                    // default, not this declaration's initializer -- reading
+                    // the value off the pattern silently declares every
+                    // variable null.
+                    Pattern::Name {
+                        name,
+                        default: None,
+                    } => {
+                        self.emit_define(&name.text, line);
+                    }
+                    other => {
+                        // Taking a value apart is the tree-walker's, so the
+                        // rules about missing elements, defaults and rest
+                        // have one implementation.
+                        self.declare_pattern(other);
+                        let index = self.chunk.pattern(other.clone());
+                        self.chunk.emit(Op::BindPattern(index), line);
+                    }
+                }
             }
             StmtKind::Block(body) => {
                 self.push_scope(line);
@@ -226,9 +246,6 @@ impl Compiler {
                 iterable,
                 body,
             } => {
-                let Pattern::Name { name, .. } = pattern else {
-                    return Err(Unsupported::of("destructuring in a for-in loop"));
-                };
                 self.expression(iterable)?;
                 self.chunk.emit(Op::IterInit, line);
                 // A `break` jumps to the `IterDrop`, never past it, so every
@@ -239,7 +256,17 @@ impl Compiler {
                 // A fresh scope per iteration, so a closure made inside the
                 // body captures that turn's binding and not a shared one.
                 self.push_scope(line);
-                self.emit_define(&name.text, line);
+                match pattern {
+                    Pattern::Name {
+                        name,
+                        default: None,
+                    } => self.emit_define(&name.text, line),
+                    other => {
+                        self.declare_pattern(other);
+                        let index = self.chunk.pattern(other.clone());
+                        self.chunk.emit(Op::BindPattern(index), line);
+                    }
+                }
                 let result = self.statement(body, Some(&mut loops));
                 self.pop_scope(line);
                 result?;
@@ -308,11 +335,86 @@ impl Compiler {
                 self.expression(value)?;
                 self.chunk.emit(Op::Throw, line);
             }
-            StmtKind::Match { .. } => return Err(Unsupported::of("match")),
-            StmtKind::Struct { .. } => return Err(Unsupported::of("structs")),
+            StmtKind::Match { subject, cases } => {
+                self.expression(subject)?;
+                let mut loops = in_loop;
+                let mut done = Vec::new();
+                for case in cases {
+                    self.push_scope(line);
+                    let to_next = match &case.pattern {
+                        Some(pattern) => {
+                            self.declare_match_pattern(pattern);
+                            let index = self.chunk.match_pattern(pattern.clone());
+                            self.chunk.emit(Op::MatchPattern(index), line);
+                            Some(self.chunk.emit(Op::JumpIfFalse(0), line))
+                        }
+                        // `default:` takes anything.
+                        None => None,
+                    };
+                    let to_next_guard = match &case.guard {
+                        Some(guard) => {
+                            self.expression(guard)?;
+                            Some(self.chunk.emit(Op::JumpIfFalse(0), line))
+                        }
+                        None => None,
+                    };
+                    // This case wins: drop the subject and run the body.
+                    self.chunk.emit(Op::Pop, line);
+                    let result = self.scoped_body(&case.body, loops.as_deref_mut());
+                    self.chunk.emit(Op::PopScope, line);
+                    result?;
+                    done.push(self.chunk.emit(Op::Jump(0), line));
+
+                    // ...or it does not. Same lexical scope, second runtime
+                    // exit, so close it only once -- below.
+                    if let Some(site) = to_next {
+                        self.patch(site);
+                    }
+                    if let Some(site) = to_next_guard {
+                        self.patch(site);
+                    }
+                    self.chunk.emit(Op::PopScope, line);
+                    self.close_scope();
+                }
+                // Nothing matched. The subject is still on the stack for the
+                // error to name.
+                self.chunk.emit(Op::NoMatch, line);
+                for site in done {
+                    self.patch(site);
+                }
+            }
+            StmtKind::Struct {
+                name,
+                fields,
+                methods,
+            } => {
+                // A generator method would be an AST closure the tree-walker
+                // runs, and it cannot run generators either -- so the refusal
+                // has to happen here, or the case fails at run time with the
+                // *other* engine's message and the harness reads it as a
+                // wrong answer rather than a gap.
+                if methods.iter().any(|m| {
+                    matches!(
+                        &m.kind,
+                        StmtKind::Function {
+                            is_generator: true,
+                            ..
+                        }
+                    )
+                }) {
+                    return Err(Unsupported::of("generators"));
+                }
+                let index =
+                    self.chunk
+                        .struct_def(name.text.clone(), fields.clone(), methods.clone());
+                self.chunk.emit(Op::Struct(index), line);
+                self.emit_define(&name.text, line);
+            }
             StmtKind::Yield { .. } => return Err(Unsupported::of("generators")),
-            StmtKind::DestructureAssign { .. } => {
-                return Err(Unsupported::of("destructuring assignment"))
+            StmtKind::DestructureAssign { pattern, value } => {
+                self.expression(value)?;
+                let index = self.chunk.pattern(pattern.clone());
+                self.chunk.emit(Op::AssignPattern(index), line);
             }
             StmtKind::Import { .. } | StmtKind::Export { .. } | StmtKind::ExportNames { .. } => {
                 return Err(Unsupported::of("modules"))
@@ -360,18 +462,87 @@ impl Compiler {
         self.locals.push(Local {
             name: name.to_string(),
             depth: self.scope_depth,
+            in_env: false,
         });
         self.max_slots = self.max_slots.max(self.locals.len());
         slot
     }
 
+    /// Record that `name` is bound in the environment for this scope, so it
+    /// shadows any slot of the same name further out.
+    ///
+    /// It occupies a slot index it never uses. Paying one wasted slot is the
+    /// cheap way to keep slot numbering a simple `Vec` position while these
+    /// entries come and go with their scopes.
+    fn declare_env_local(&mut self, name: &str) {
+        self.locals.push(Local {
+            name: name.to_string(),
+            depth: self.scope_depth,
+            in_env: true,
+        });
+        self.max_slots = self.max_slots.max(self.locals.len());
+    }
+
+    /// Every name a *match* pattern captures. Bound into the environment by
+    /// the tree-walker, so each has to shadow any outer slot of the name for
+    /// the rest of the case.
+    fn declare_match_pattern(&mut self, pattern: &MatchPattern) {
+        match pattern {
+            MatchPattern::Bind { name } => self.declare_env_local(&name.text),
+            MatchPattern::Array { elements, rest, .. } => {
+                for element in elements {
+                    self.declare_match_pattern(element);
+                }
+                if let Some(rest) = rest {
+                    self.declare_env_local(&rest.text);
+                }
+            }
+            MatchPattern::Object { entries, .. } => {
+                for (_, value) in entries {
+                    self.declare_match_pattern(value);
+                }
+            }
+            MatchPattern::Struct { elements, .. } => {
+                for element in elements {
+                    self.declare_match_pattern(element);
+                }
+            }
+            MatchPattern::Literal { .. } => {}
+        }
+    }
+
+    /// Every name a pattern binds, so each can shadow correctly.
+    fn declare_pattern(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Name { name, .. } => self.declare_env_local(&name.text),
+            Pattern::Array { elements, rest, .. } => {
+                for element in elements {
+                    self.declare_pattern(element);
+                }
+                if let Some(rest) = rest {
+                    self.declare_env_local(&rest.text);
+                }
+            }
+            Pattern::Object { entries, rest, .. } => {
+                for (_, value) in entries {
+                    self.declare_pattern(value);
+                }
+                if let Some(rest) = rest {
+                    self.declare_env_local(&rest.text);
+                }
+            }
+        }
+    }
+
     /// The slot `name` resolves to, innermost first so an inner declaration
-    /// shadows an outer one.
+    /// shadows an outer one. `None` when the innermost binding is in the
+    /// environment, which is also a shadow -- just not a slotted one.
     fn resolve_local(&self, name: &str) -> Option<u32> {
-        self.locals
-            .iter()
-            .rposition(|local| local.name == name)
-            .map(|i| i as u32)
+        let index = self.locals.iter().rposition(|local| local.name == name)?;
+        if self.locals[index].in_env {
+            return None;
+        }
+        Some(index as u32)
     }
 
     /// Emit a read of `name`, through a slot where possible.
@@ -479,6 +650,7 @@ impl Compiler {
             // clause that does not apply leaves the next one something to
             // test.
             self.push_scope(line);
+            self.declare_pattern(&clause.pattern);
             let index = self.chunk.pattern(clause.pattern.clone());
             self.chunk.emit(Op::BindCatch(index), line);
             let to_next = self.chunk.emit(Op::JumpIfFalse(0), line);
@@ -633,21 +805,53 @@ impl Compiler {
             }
             ExprKind::Grouping(inner) => self.expression(inner)?,
             ExprKind::Call { callee, args } => {
-                for arg in args {
-                    self.no_spread(arg)?;
-                }
                 self.expression(callee)?;
-                for arg in args {
-                    self.expression(arg)?;
+                if args.iter().any(|a| matches!(a.kind, ExprKind::Spread(_))) {
+                    // A spread makes the argument count a run-time fact, so
+                    // the arguments are gathered into an array and the call
+                    // reads its length instead of the compiler knowing it.
+                    self.chunk.emit(Op::BeginSpread, line);
+                    for arg in args {
+                        match &arg.kind {
+                            ExprKind::Spread(inner) => {
+                                self.expression(inner)?;
+                                self.chunk.emit(Op::SpreadInto, line);
+                            }
+                            _ => {
+                                self.expression(arg)?;
+                                self.chunk.emit(Op::PushInto, line);
+                            }
+                        }
+                    }
+                    self.chunk.emit(Op::CallSpread, line);
+                } else {
+                    for arg in args {
+                        self.expression(arg)?;
+                    }
+                    self.chunk.emit(Op::Call(args.len() as u32), line);
                 }
-                self.chunk.emit(Op::Call(args.len() as u32), line);
             }
             ExprKind::Array(items) => {
-                for item in items {
-                    self.no_spread(item)?;
-                    self.expression(item)?;
+                if items.iter().any(|i| matches!(i.kind, ExprKind::Spread(_))) {
+                    self.chunk.emit(Op::BeginSpread, line);
+                    for item in items {
+                        match &item.kind {
+                            ExprKind::Spread(inner) => {
+                                self.expression(inner)?;
+                                self.chunk.emit(Op::SpreadInto, line);
+                            }
+                            _ => {
+                                self.expression(item)?;
+                                self.chunk.emit(Op::PushInto, line);
+                            }
+                        }
+                    }
+                } else {
+                    for item in items {
+                        self.expression(item)?;
+                    }
+                    self.chunk.emit(Op::Array(items.len() as u32), line);
                 }
-                self.chunk.emit(Op::Array(items.len() as u32), line);
             }
             ExprKind::Index { target, index } => {
                 self.expression(target)?;
@@ -694,8 +898,52 @@ impl Compiler {
                 }
                 self.function(name.as_ref().map(|n| n.text.clone()), params, body, line)?;
             }
-            ExprKind::Spread(_) => return Err(Unsupported::of("spread")),
-            ExprKind::Match { .. } => return Err(Unsupported::of("match")),
+            // Only meaningful inside a call or an array literal, both of
+            // which handle it above.
+            ExprKind::Spread(_) => return Err(Unsupported::of("a spread outside a call or array")),
+            // A `match` expression is the statement's shape with a value in
+            // place of a body, so the arms leave one on the stack.
+            ExprKind::Match { subject, arms } => {
+                self.expression(subject)?;
+                let mut done = Vec::new();
+                for arm in arms {
+                    self.push_scope(line);
+                    let to_next = match &arm.pattern {
+                        Some(pattern) => {
+                            self.declare_match_pattern(pattern);
+                            let index = self.chunk.match_pattern(pattern.clone());
+                            self.chunk.emit(Op::MatchPattern(index), line);
+                            Some(self.chunk.emit(Op::JumpIfFalse(0), line))
+                        }
+                        None => None,
+                    };
+                    let to_next_guard = match &arm.guard {
+                        Some(guard) => {
+                            self.expression(guard)?;
+                            Some(self.chunk.emit(Op::JumpIfFalse(0), line))
+                        }
+                        None => None,
+                    };
+                    self.chunk.emit(Op::Pop, line);
+                    let result = self.expression(&arm.value);
+                    self.chunk.emit(Op::PopScope, line);
+                    result?;
+                    done.push(self.chunk.emit(Op::Jump(0), line));
+
+                    if let Some(site) = to_next {
+                        self.patch(site);
+                    }
+                    if let Some(site) = to_next_guard {
+                        self.patch(site);
+                    }
+                    self.chunk.emit(Op::PopScope, line);
+                    self.close_scope();
+                }
+                self.chunk.emit(Op::NoMatch, line);
+                for site in done {
+                    self.patch(site);
+                }
+            }
             ExprKind::Yield(_) => return Err(Unsupported::of("generators")),
         }
         Ok(())
@@ -754,15 +1002,6 @@ impl Compiler {
         let index = self.chunk.proto(proto);
         self.chunk.emit(Op::Closure(index), line);
         Ok(())
-    }
-
-    /// Spread arguments are evaluated by a path this compiler does not have
-    /// yet; refusing one is better than silently passing an array.
-    fn no_spread(&self, expr: &Expr) -> Emit<()> {
-        match expr.kind {
-            ExprKind::Spread(_) => Err(Unsupported::of("spread")),
-            _ => Ok(()),
-        }
     }
 
     // -- jump patching -----------------------------------------------------

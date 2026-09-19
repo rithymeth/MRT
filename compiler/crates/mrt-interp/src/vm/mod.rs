@@ -408,14 +408,149 @@ mod tests {
         .contains("'break' out of a try with a finally is not compiled by the VM yet"));
     }
 
+    // -- destructuring, spread, structs, match -----------------------------
+
+    #[test]
+    fn a_catch_clause_shadows_a_slotted_name_of_its_own() {
+        // `e` is a slotted parameter and the clause binds another `e` in the
+        // environment. Without an entry marking the shadow, the body reads
+        // the slot -- the caller's argument, not the caught value. A wrong
+        // answer that looks entirely reasonable.
+        assert_eq!(
+            agree(
+                r#"func f(e) { try { throw "inner"; } catch (e) { return e; } }
+                   func main() { print(f("outer")); }"#
+            ),
+            "inner"
+        );
+    }
+
+    #[test]
+    fn declarations_can_destructure() {
+        assert_eq!(
+            agree(
+                "func main() { var [a, b] = [1, 2]; var {x, y = 9, ...rest} = {x: 10, z: 30}; \
+                 print(a, b, x, y, rest); }"
+            ),
+            "1 2 10 9 {z: 30}"
+        );
+    }
+
+    #[test]
+    fn a_pattern_can_assign_to_existing_variables() {
+        // The tree-walker performs this through the environment, so the
+        // targets cannot be slotted -- otherwise the swap is an
+        // undefined-variable error instead.
+        assert_eq!(
+            agree("func main() { var p = 1; var q = 2; [p, q] = [q, p]; print(p, q); }"),
+            "2 1"
+        );
+    }
+
+    #[test]
+    fn a_for_in_loop_can_destructure_each_item() {
+        assert_eq!(
+            agree(r#"func main() { for ([k, v] in [[1, "one"], [2, "two"]]) { print(k, v); } }"#),
+            "1 one\n2 two"
+        );
+    }
+
+    #[test]
+    fn spread_works_in_calls_and_array_literals() {
+        assert_eq!(
+            agree(
+                "func f(first, ...more) { return first + sum(more); } \
+                 func main() { var xs = [2, 3]; print(f(1, ...xs), [0, ...xs, 4]); }"
+            ),
+            "6 [0, 2, 3, 4]"
+        );
+    }
+
+    #[test]
+    fn spread_takes_arrays_only() {
+        // Not "anything iterable": `...` over a string is a type error with
+        // its own message, so reaching for `iterate` here would make the VM
+        // accept programs the language rejects.
+        assert_eq!(
+            agree(
+                r#"func f(...xs) { return len(xs); }
+                   func main() { try { f(..."ab"); } catch (e) { print(e.kind, "|", e.message); } }"#
+            ),
+            "TypeError | Can only spread an array with '...'."
+        );
+    }
+
+    #[test]
+    fn structs_construct_print_and_dispatch_methods() {
+        assert_eq!(
+            agree(
+                "struct Point { x, y = 0; func mag() { return sqrt(this.x*this.x + this.y*this.y); } } \
+                 func main() { var p = Point(3, 4); print(p, p.mag(), type(p), Point(1)); }"
+            ),
+            "Point(x: 3, y: 4) 5 Point Point(x: 1, y: 0)"
+        );
+    }
+
+    #[test]
+    fn match_covers_literals_shapes_structs_and_guards() {
+        assert_eq!(
+            agree(
+                r#"struct C { r; }
+                   func k(v) { return match (v) { case 0: "zero", case [a, b]: "pair", 
+                     case [h, ...t]: "head", case {kind: "c"}: "obj", case C(r) if (r > 10): "big",
+                     case C(r): "small", default: "other" }; }
+                   func main() { print(k(0), k([1,2]), k([1,2,3]), k({kind: "c"}), k(C(20)), k(C(2)), k("x")); }"#
+            ),
+            "zero pair head obj big small other"
+        );
+    }
+
+    #[test]
+    fn a_match_pattern_binding_shadows_an_outer_slot() {
+        assert_eq!(
+            agree(
+                r#"func main() { var n = 1; match ([7]) { case [n]: print("inner", n); } 
+                   print("outer", n); }"#
+            ),
+            "inner 7\nouter 1"
+        );
+    }
+
+    #[test]
+    fn a_struct_pattern_resolves_its_name_through_the_interpreter() {
+        // `match_pattern` looks the struct name up in `Interpreter::env`
+        // rather than the scope it is handed, so the VM has to keep that
+        // field pointing at the running frame. Otherwise this reports an
+        // undefined variable instead of the language's own message.
+        assert_eq!(
+            agree(
+                r#"func main() { var notStruct = 5; 
+                   try { match (1) { case notStruct(a): print("no"); } } 
+                   catch (e) { print(e.kind, "|", e.message); } }"#
+            ),
+            "TypeError | 'notStruct' is not a struct, so it can't be used as a pattern."
+        );
+    }
+
+    #[test]
+    fn an_unmatched_match_names_the_value() {
+        assert_eq!(
+            agree(
+                r#"func main() { try { match (99) { case 1: print("no"); } } 
+                   catch (e) { print(e.kind, "|", e.message); } }"#
+            ),
+            "ValueError | No case matched 99 in this match, and there is no 'default'."
+        );
+    }
+
     #[test]
     fn an_uncompilable_construct_is_refused_by_name() {
         // Not a wrong answer and not a panic: the conformance harness tells
         // "cannot compile this yet" apart from "compiles it wrongly" purely
         // by this text.
         assert_eq!(
-            vm("func main() { match (1) { case 1: print(1); } }"),
-            "Runtime Error: match is not compiled by the VM yet."
+            vm("import { x } from \"./m.mrt\";\nfunc main() { }"),
+            "Runtime Error: modules is not compiled by the VM yet."
         );
         assert_eq!(
             vm("func g() { yield 1; } func main() { }"),
