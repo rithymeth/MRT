@@ -1,0 +1,43 @@
+// Build, train and run a neural network from MRT source.
+//
+// MRT-AI is an engine extension: only the Rust engines have these builtins,
+// and a program using them is not portable MRT. See "Engine extensions" in
+// docs/LANGUAGE_SPEC.md.
+//
+// XOR is the point of the example. A single dense layer cannot learn it -- no
+// straight line separates the two classes -- so a model that gets this right
+// has genuinely learned something a linear fit cannot.
+
+func show(label, value) {
+    print(label, round(value * 1000000) / 1000000);
+}
+
+func main() {
+    var inputs = [[0, 0], [0, 1], [1, 0], [1, 1]];
+    var targets = [[0], [1], [1], [0]];
+
+    // A model is an array of layers, and each layer is an ordinary object.
+    var model = [
+        aiDense(2, 4, 7),
+        aiActivation("tanh"),
+        aiDense(4, 1, 8),
+        aiActivation("sigmoid")
+    ];
+
+    print("layers:", len(model));
+    print("first layer kind:", model[0].kind);
+    print("first layer weight rows:", len(model[0].weights));
+
+    var trained = aiTrain(model, inputs, targets, 400, 0.1);
+    show("initial loss:", trained.initialLoss);
+    show("final loss:", trained.loss);
+    print("epochs recorded:", len(trained.history));
+    print("learned:", trained.loss < trained.initialLoss / 10);
+
+    // Training hands back a *new* model; the one passed in is untouched.
+    var guesses = aiPredict(trained.model, inputs);
+    for (var i = 0; i < len(guesses); i = i + 1) {
+        var rounded = round(guesses[i][0]);
+        print(inputs[i][0], "xor", inputs[i][1], "->", rounded);
+    }
+}

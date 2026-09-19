@@ -772,7 +772,7 @@ export const MODULE_CASES = [
 // four implementations agree on. These are the exceptions, and each one is a
 // divergence recorded rather than resolved.
 //
-// `ai_linear.mrt` calls `aiTrainLinear`, a builtin only the Rust engine has
+// These examples call `ai*` builtins that only the Rust engines have
 // (compiler/crates/mrt-ai). That is settled rather than outstanding: MRT-AI is
 // a declared *engine extension*, specified as such under "Engine extensions"
 // in docs/LANGUAGE_SPEC.md. It is deliberately not part of the language, so a
@@ -780,4 +780,4 @@ export const MODULE_CASES = [
 // rather than reporting a mismatch nobody can act on. Extensions carry their
 // own tests in the crate that provides them, because being outside the corpus
 // means untested otherwise.
-export const ENGINE_SPECIFIC_EXAMPLES = new Set(['ai_linear.mrt'])
+export const ENGINE_SPECIFIC_EXAMPLES = new Set(['ai_linear.mrt', 'ai_net.mrt'])

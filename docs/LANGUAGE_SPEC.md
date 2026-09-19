@@ -1320,14 +1320,70 @@ drift four implementations and a shared corpus exist to prevent.
 
 ### MRT-AI
 
-The one extension that exists. Provided by the Rust engine only
-(`compiler/crates/mrt-ai`), it supplies numerical and machine-learning
-primitives — tensors, layers, automatic differentiation, optimisers — through
-built-ins prefixed `ai`. Its examples live in `examples/ai_*.mrt`.
+The one extension that exists. Provided by the Rust engines only
+(`compiler/crates/mrt-ai`, bridged in `compiler/crates/mrt-interp/src/ai.rs`),
+it supplies numerical and machine-learning primitives — tensors, layers,
+reverse-mode automatic differentiation, optimisers — through built-ins
+prefixed `ai`. Its examples live in `examples/ai_*.mrt`.
 
 The Python reference and the TypeScript playground do not implement it and are
-not expected to. `aiTrainLinear(x, y, epochs, rate)` is an undefined variable
-on both, which is the correct answer there: it is not part of MRT.
+not expected to. `aiDense(...)` is an undefined variable on both, which is the
+correct answer there: it is not part of MRT.
+
+#### A model is ordinary MRT data
+
+An extension that added a *type* would no longer be optional to understand: a
+reader of a program using it would meet a value the language cannot describe.
+So MRT-AI adds none. A **model is an array of layer objects**, each an
+ordinary object with a `kind` and its weights as nested arrays:
+
+```mrt
+var model = [
+    aiDense(2, 4, 7),
+    aiActivation("tanh"),
+    aiDense(4, 1, 8),
+    aiActivation("sigmoid")
+];
+
+print(model[0].kind);          // dense
+print(len(model[0].weights));  // 2  -- rows, one per input
+```
+
+`print(model)` shows the weights, `model[0].bias` reads one, and a model
+survives `toString`, comparison and indexing like any other value. A tensor is
+likewise a plain array of equal-length arrays of numbers: `[[1, 2], [3, 4]]`
+is two rows of two.
+
+The cost is paid knowingly: every call converts between nested arrays and the
+engine's tensors, so training from MRT is slower than training from Rust. For
+a language whose point is teaching what an implementation does, an inspectable
+model beats a fast opaque one.
+
+#### The built-ins
+
+| Call | Result |
+|------|--------|
+| `aiDense(inputs, outputs, seed)` | A fully-connected layer, weights spread deterministically from `seed`. |
+| `aiConv2d(channels, height, width, kernel, stride, filters, seed)` | A 2D convolution over images of that shape. |
+| `aiAttention(features, head, seed)` | A single-head scaled dot-product attention layer. |
+| `aiLayerNorm(features)` | Layer normalisation, gain 1 and shift 0. |
+| `aiActivation(kind)` | A parameterless layer: `"relu"`, `"sigmoid"`, `"tanh"` or `"softmax"`. |
+| `aiPredict(model, input)` | Runs the model forward; returns the output tensor. |
+| `aiTrain(model, inputs, targets, epochs, rate)` | Trains on mean squared error with Adam. Returns `{model, loss, initialLoss, history}`. |
+
+`aiTrain` hands back a **new** model rather than mutating the one passed in,
+because MRT objects are shared handles: training in place would rewrite a
+model its caller is still holding. The returned `history` has one loss per
+epoch, so a program can see whether learning actually happened rather than
+trusting that it did.
+
+Every size is a count: `aiDense(2.5, 1, 0)` is a `ValueError`, not a rounded
+2. Seeds are explicit and there is no hidden global generator, because two
+runs of the same program must build the same model or nothing about training
+is reproducible.
+
+`aiTrainLinear(x, y, epochs, rate)` predates the model surface and remains as
+the one-call shortcut for fitting a single dense layer.
 
 ## Known ambiguities (by design)
 

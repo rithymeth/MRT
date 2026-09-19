@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::ai::{tensor_from_mrt, tensor_to_mrt};
 use crate::env::Env;
 use crate::error::{arity_error, type_error, value_error, Eval, Kind, Signal};
 use crate::generator::{step_result, Generator, Transform};
@@ -69,6 +70,13 @@ const NAMES: &[&str] = &[
     "send",
     "print",
     "aiTrainLinear",
+    "aiDense",
+    "aiConv2d",
+    "aiAttention",
+    "aiLayerNorm",
+    "aiActivation",
+    "aiPredict",
+    "aiTrain",
 ];
 
 pub fn install(globals: &Env) {
@@ -79,6 +87,90 @@ pub fn install(globals: &Env) {
 
 pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
     match name {
+        // -- the AI extension's model surface -------------------------------
+        // A model is an array of layer objects, so every one of these takes
+        // and returns ordinary MRT data. See crate::ai for why that beats an
+        // opaque handle.
+        "aiDense" => {
+            exactly(&args, 3, "aiDense() takes inputs, outputs, and a seed.")?;
+            let inputs = whole(&args[0], "aiDense", "inputs")?;
+            let outputs = whole(&args[1], "aiDense", "outputs")?;
+            let seed = whole(&args[2], "aiDense", "seed")? as u64;
+            if inputs == 0 || outputs == 0 {
+                return Err(value_error(
+                    "aiDense() needs at least one input and output.",
+                ));
+            }
+            Ok(crate::ai::dense(inputs, outputs, seed))
+        }
+        "aiConv2d" => {
+            exactly(
+                &args,
+                7,
+                "aiConv2d() takes channels, height, width, kernel, stride, filters, and a seed.",
+            )?;
+            crate::ai::conv2d(
+                whole(&args[0], "aiConv2d", "channels")?,
+                whole(&args[1], "aiConv2d", "height")?,
+                whole(&args[2], "aiConv2d", "width")?,
+                whole(&args[3], "aiConv2d", "kernel")?,
+                whole(&args[4], "aiConv2d", "stride")?,
+                whole(&args[5], "aiConv2d", "filters")?,
+                whole(&args[6], "aiConv2d", "seed")? as u64,
+            )
+        }
+        "aiAttention" => {
+            exactly(&args, 3, "aiAttention() takes features, head, and a seed.")?;
+            let features = whole(&args[0], "aiAttention", "features")?;
+            let head = whole(&args[1], "aiAttention", "head")?;
+            if features == 0 || head == 0 {
+                return Err(value_error(
+                    "aiAttention() needs at least one feature and one head column.",
+                ));
+            }
+            Ok(crate::ai::attention(
+                features,
+                head,
+                whole(&args[2], "aiAttention", "seed")? as u64,
+            ))
+        }
+        "aiLayerNorm" => {
+            one(&args, "aiLayerNorm")?;
+            let features = whole(&args[0], "aiLayerNorm", "features")?;
+            if features == 0 {
+                return Err(value_error("aiLayerNorm() needs at least one feature."));
+            }
+            Ok(crate::ai::layer_norm(features))
+        }
+        "aiActivation" => {
+            one(&args, "aiActivation")?;
+            let Value::Str(kind) = &args[0] else {
+                return Err(type_error(format!(
+                    "aiActivation() expects a string, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            crate::ai::activation(kind)
+        }
+        "aiPredict" => {
+            exactly(&args, 2, "aiPredict() takes a model and an input.")?;
+            crate::ai::predict(&args[0], &args[1])
+        }
+        "aiTrain" => {
+            exactly(
+                &args,
+                5,
+                "aiTrain() takes a model, inputs, targets, epochs, and a learning rate.",
+            )?;
+            crate::ai::train(
+                &args[0],
+                &args[1],
+                &args[2],
+                whole(&args[3], "aiTrain", "epochs")?,
+                number(&args[4], "aiTrain")?,
+            )
+        }
+
         "aiTrainLinear" => {
             exactly(
                 &args,
@@ -869,47 +961,19 @@ fn flatten_into(items: &[Value], depth: i64, out: &mut Vec<Value>) {
     }
 }
 
-fn tensor_from_mrt(value: &Value, who: &str) -> Result<mrt_ai::Tensor, Signal> {
-    let Value::Array(rows) = value else {
-        return Err(type_error(format!("{who}() expects a 2D array.")));
-    };
-    let rows = rows.borrow();
-    if rows.is_empty() {
-        return Err(value_error(format!(
-            "{who}() cannot train on an empty tensor."
-        )));
+/// A count: a number that is whole and not negative.
+///
+/// Separate from `number` because a layer size of 2.5 or -1 is a mistake worth
+/// naming rather than rounding away.
+fn whole(value: &Value, who: &str, what: &str) -> Result<usize, Signal> {
+    match value {
+        Value::Number(n) if *n >= 0.0 && n.fract() == 0.0 && n.is_finite() => Ok(*n as usize),
+        Value::Number(n) => Err(value_error(format!(
+            "{who}() needs {what} to be a whole number that is not negative, not {n}."
+        ))),
+        other => Err(type_error(format!(
+            "{who}() needs {what} to be a number, not {}.",
+            type_name(other)
+        ))),
     }
-    let mut data = Vec::new();
-    let mut cols = None;
-    for row in rows.iter() {
-        let Value::Array(items) = row else {
-            return Err(type_error(format!("{who}() expects rows to be arrays.")));
-        };
-        let items = items.borrow();
-        if items.is_empty() {
-            return Err(value_error(format!("{who}() rows cannot be empty.")));
-        }
-        if let Some(expected) = cols {
-            if expected != items.len() {
-                return Err(value_error(format!(
-                    "{who}() rows must have equal lengths."
-                )));
-            }
-        } else {
-            cols = Some(items.len());
-        }
-        for item in items.iter() {
-            data.push(number(item, who)?);
-        }
-    }
-    mrt_ai::Tensor::from_vec(rows.len(), cols.unwrap(), data)
-        .map_err(|e| value_error(e.to_string()))
-}
-
-fn tensor_to_mrt(t: &mrt_ai::Tensor) -> Value {
-    Value::array(
-        (0..t.rows)
-            .map(|r| Value::array((0..t.cols).map(|c| Value::Number(t.get(r, c))).collect()))
-            .collect(),
-    )
 }
