@@ -4,6 +4,14 @@ import os
 from functools import cmp_to_key
 from typing import Any, Dict, List, Optional
 from .ast import *
+
+# What became of a top-level `main`, recorded on the interpreter for a CLI to
+# report. A file that declares only functions and structs runs correctly and
+# prints nothing, which looks identical to a broken install -- these let the
+# command say which it was.
+ENTRY_RAN = "ran"
+ENTRY_MISSING = "missing"
+
 from .lexer import Token, TokenType
 from .errors import MRTRuntimeError
 
@@ -1001,6 +1009,13 @@ class Interpreter:
         self.globals = Environment()
         self.environment = self.globals
         self.output = []  # Capture output for web playground
+        # What became of a top-level `main`: ENTRY_RAN, ENTRY_MISSING, or the
+        # type name of a non-callable `main`. A CLI reads this to explain a
+        # file that ran correctly and did nothing, which is otherwise
+        # indistinguishable from a broken installation. Kept off `output` so
+        # that conformance, which compares printed text across four
+        # implementations, is unaffected.
+        self.entry = ENTRY_MISSING
 
         # -- Modules --
         # `module_path` is the absolute path of the file being run; imports
@@ -1315,7 +1330,14 @@ class Interpreter:
                 pass
 
             if isinstance(main_func, MRTFunction):
+                self.entry = ENTRY_RAN
                 main_func.call(self, [])
+            elif main_func is None:
+                self.entry = ENTRY_MISSING
+            else:
+                # A `main` that is not callable is a different mistake from
+                # not having one, and worth saying so: the name is taken.
+                self.entry = type_name(main_func)
 
         except MRTThrow as thrown:
             # Nothing caught it, so it halts the program like any other

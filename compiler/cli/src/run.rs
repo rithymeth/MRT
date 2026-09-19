@@ -8,6 +8,7 @@
 use std::process::ExitCode;
 
 use mrt_diagnostics::SourceFile;
+use mrt_interp::{Entry, Outcome};
 
 const USAGE: &str = "usage: mrt-run [--vm] [--bench RUNS] FILE";
 
@@ -71,11 +72,48 @@ fn main() -> ExitCode {
         println!("{line}");
     }
     match outcome.error {
-        None => ExitCode::SUCCESS,
+        None => {
+            explain_if_nothing_ran(&outcome, path);
+            ExitCode::SUCCESS
+        }
         Some(error) => {
             let syntax = error.starts_with("Syntax Error:");
             eprintln!("{error}");
             ExitCode::from(if syntax { EX_DATAERR } else { EX_SOFTWARE })
+        }
+    }
+}
+
+/// Say so when a file ran correctly and did nothing.
+///
+/// MRT calls a top-level `main` if the file defines one, so a file of only
+/// declarations runs to completion, prints nothing and exits 0 -- which is
+/// indistinguishable from a broken installation. The program was never
+/// wrong, so this is not an error and does not change the exit code; it goes
+/// to stderr, which also keeps it out of the printed output that four
+/// implementations are held to match byte for byte.
+///
+/// Worded identically to the Python CLI's note on purpose: the two are one
+/// command as far as anyone using them is concerned.
+fn explain_if_nothing_ran(outcome: &Outcome, path: &str) {
+    if outcome.entry == Entry::Ran || !outcome.output.is_empty() {
+        return;
+    }
+    match &outcome.entry {
+        Entry::Ran => unreachable!("returned above"),
+        Entry::Missing => {
+            eprintln!("mrt: nothing ran in '{path}' -- no top-level 'main' function.");
+            eprintln!(
+                "hint: add  func main() {{ ... }}  at the top level (not indented \
+inside another function), or write statements at file scope."
+            );
+        }
+        // The name is taken by something uncallable, which is a different
+        // mistake from not having one and deserves to be named as such.
+        Entry::NotCallable(what) => {
+            eprintln!(
+                "mrt: nothing ran in '{path}' -- the top-level 'main' is a {what}, not a function."
+            );
         }
     }
 }

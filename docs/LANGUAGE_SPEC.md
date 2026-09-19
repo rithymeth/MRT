@@ -1255,6 +1255,17 @@ run in source order. In the *entry* file, `main()` — if one is defined — is
 called after all of that. A module's `main`, if it has one, is never called
 by the import.
 
+`main` must be a **top-level function** and the name is case-sensitive. A
+`main` declared inside another function is a local of that function and never
+reaches the global scope, so nothing calls it; `Main` is an ordinary name.
+When the entry file defines no callable top-level `main`, its top-level
+statements are all that runs — which, for a file of only declarations, means
+the program runs to completion and does nothing. That is correct behaviour
+and not an error, so the exit status is still 0; the CLI prints a note to
+**stderr** saying so, because a silent success is otherwise indistinguishable
+from a broken installation. Nothing about the note reaches standard output,
+which is what implementations are compared on.
+
 ### What an import binds
 
 An import binds the exported *value* as it stood when the module finished
