@@ -1,4 +1,5 @@
 pub mod autograd;
+pub mod nn;
 
 use std::fmt;
 
