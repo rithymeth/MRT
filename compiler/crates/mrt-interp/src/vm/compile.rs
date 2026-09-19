@@ -34,6 +34,7 @@ pub fn compile_program(statements: &[Stmt]) -> Emit<Chunk> {
         max_slots: 0,
         captured: HashSet::new(),
         slots_allowed: false,
+        finally_depth: 0,
     };
     // The entry chunk runs top-level code and then returns null; `main` is
     // called by the driver, exactly as the tree-walker does it.
@@ -57,6 +58,8 @@ struct Compiler {
     /// closures capture by reference, so the binding has to live somewhere
     /// both the frame and the closure can see.
     captured: HashSet<String>,
+    /// How many `try` blocks with a `finally` are currently open.
+    finally_depth: usize,
     /// Top-level code is compiled with no slots at all -- a module's
     /// top-level `var` is a global, reachable by name from every function in
     /// the file, so putting one in a frame slot would hide it.
@@ -73,6 +76,12 @@ struct Local {
 struct Loop {
     breaks: Vec<usize>,
     continues: Vec<usize>,
+    /// How many `try` blocks with a `finally` were open at loop entry.
+    ///
+    /// A `break` that leaves a `finally` behind has to run it on the way
+    /// out, which needs machinery this compiler does not have; refusing is
+    /// better than jumping past it.
+    finally_depth: usize,
     /// The scope depth the loop was entered at.
     ///
     /// A `break` from inside a nested block has to close the scopes it is
@@ -268,6 +277,9 @@ impl Compiler {
             }
             StmtKind::Break => match in_loop {
                 Some(loops) => {
+                    if self.finally_depth > loops.finally_depth {
+                        return Err(Unsupported::of("'break' out of a try with a finally"));
+                    }
                     let depth = loops.depth;
                     self.unwind_to(depth, line);
                     let site = self.chunk.emit(Op::Jump(0), line);
@@ -277,6 +289,9 @@ impl Compiler {
             },
             StmtKind::Continue => match in_loop {
                 Some(loops) => {
+                    if self.finally_depth > loops.finally_depth {
+                        return Err(Unsupported::of("'continue' out of a try with a finally"));
+                    }
                     let depth = loops.depth;
                     self.unwind_to(depth, line);
                     let site = self.chunk.emit(Op::Jump(0), line);
@@ -284,8 +299,15 @@ impl Compiler {
                 }
                 None => return Err(Unsupported::of("'continue' outside a loop")),
             },
-            StmtKind::Try { .. } => return Err(Unsupported::of("try/catch")),
-            StmtKind::Throw(_) => return Err(Unsupported::of("throw")),
+            StmtKind::Try {
+                body,
+                catches,
+                finally,
+            } => self.try_statement(body, catches, finally.as_deref(), line, in_loop)?,
+            StmtKind::Throw(value) => {
+                self.expression(value)?;
+                self.chunk.emit(Op::Throw, line);
+            }
             StmtKind::Match { .. } => return Err(Unsupported::of("match")),
             StmtKind::Struct { .. } => return Err(Unsupported::of("structs")),
             StmtKind::Yield { .. } => return Err(Unsupported::of("generators")),
@@ -306,6 +328,16 @@ impl Compiler {
 
     fn pop_scope(&mut self, line: u32) {
         self.chunk.emit(Op::PopScope, line);
+        self.close_scope();
+    }
+
+    /// Forget a scope without emitting anything.
+    ///
+    /// Needed where one lexical scope has *several* runtime exits -- a catch
+    /// clause leaves one way when it matches and another when it does not,
+    /// so it emits two `PopScope`s but is still one scope. Decrementing the
+    /// depth twice silently corrupts every slot number after the `try`.
+    fn close_scope(&mut self) {
         self.scope_depth -= 1;
         // Slots of the closing block become free for the next one.
         while self
@@ -381,6 +413,161 @@ impl Compiler {
         for _ in depth..self.scope_depth {
             self.chunk.emit(Op::PopScope, line);
         }
+    }
+
+    /// Compile a `try`/`catch`/`finally`.
+    ///
+    /// The shape:
+    ///
+    /// ```text
+    ///     PushHandler(catch, finally_unwind)
+    ///     <body>                  in its own scope
+    ///     PopHandler
+    ///     Jump normal
+    /// catch:                      reached by unwinding, thrown value on the
+    ///     <clause chain>          stack and the signal parked
+    ///     EndFinally              no clause matched: re-raise
+    /// normal:
+    ///     <finally>               the ordinary path
+    ///     Jump end
+    /// finally_unwind:
+    ///     <finally>               the unwinding path -- a second copy
+    ///     EndFinally              resume whatever was parked
+    /// end:
+    /// ```
+    ///
+    /// The `finally` block is emitted **twice** on purpose. One copy runs on
+    /// the paths that leave normally, the other on the paths that are still
+    /// carrying a signal, and the second ends by re-raising it. Sharing one
+    /// copy would need the finally to know which way it was entered, which
+    /// is the same bookkeeping in a less obvious place.
+    fn try_statement(
+        &mut self,
+        body: &[Stmt],
+        catches: &[CatchClause],
+        finally: Option<&[Stmt]>,
+        line: u32,
+        in_loop: Option<&mut Loop>,
+    ) -> Emit<()> {
+        const NONE: u32 = u32::MAX;
+
+        let handler = self.chunk.emit(
+            Op::PushHandler {
+                catch: NONE,
+                finally: NONE,
+            },
+            line,
+        );
+
+        if finally.is_some() {
+            self.finally_depth += 1;
+        }
+
+        let mut loops = in_loop;
+        self.push_scope(line);
+        let result = self.scoped_body(body, loops.as_deref_mut());
+        self.pop_scope(line);
+        result?;
+        self.chunk.emit(Op::PopHandler, line);
+        let to_normal = self.chunk.emit(Op::Jump(0), line);
+
+        // -- the clause chain ------------------------------------------------
+        let catch_at = self.here();
+        let mut clause_done = Vec::new();
+        for clause in catches {
+            // The thrown value stays on the stack across attempts, so a
+            // clause that does not apply leaves the next one something to
+            // test.
+            self.push_scope(line);
+            let index = self.chunk.pattern(clause.pattern.clone());
+            self.chunk.emit(Op::BindCatch(index), line);
+            let to_next = self.chunk.emit(Op::JumpIfFalse(0), line);
+
+            let to_next_guard = match &clause.guard {
+                Some(guard) => {
+                    self.expression(guard)?;
+                    Some(self.chunk.emit(Op::JumpIfFalse(0), line))
+                }
+                None => None,
+            };
+
+            // This clause handles it: drop the value and the parked signal.
+            self.chunk.emit(Op::Pop, line);
+            self.chunk.emit(Op::DropPending, line);
+            let result = self.scoped_body(&clause.body, loops.as_deref_mut());
+            // Retire the finally-only handler the unwinder left behind, but
+            // only once the clause body is *past*: while it runs, that
+            // handler is what makes a `return` or a fresh `throw` from
+            // inside the clause still run the finally.
+            if finally.is_some() {
+                self.chunk.emit(Op::PopHandler, line);
+            }
+            self.chunk.emit(Op::PopScope, line);
+            result?;
+            clause_done.push(self.chunk.emit(Op::Jump(0), line));
+
+            // ...or it does not, and the next clause gets a turn. Same
+            // lexical scope, second runtime exit: emit the `PopScope` but
+            // close the scope only once, below.
+            self.patch(to_next);
+            if let Some(site) = to_next_guard {
+                self.patch(site);
+            }
+            self.chunk.emit(Op::PopScope, line);
+            self.close_scope();
+        }
+        // No clause matched. Drop the value and re-raise what was parked;
+        // the finally-only handler, if there is one, picks it up and runs
+        // the finally on the way past.
+        self.chunk.emit(Op::Pop, line);
+        self.chunk.emit(Op::EndFinally, line);
+
+        // -- the two finally copies -----------------------------------------
+        self.patch(to_normal);
+        for site in clause_done {
+            self.patch_to(site, self.here());
+        }
+        if let Some(block) = finally {
+            self.push_scope(line);
+            let result = self.scoped_body(block, loops.as_deref_mut());
+            self.pop_scope(line);
+            result?;
+        }
+        let to_end = self.chunk.emit(Op::Jump(0), line);
+
+        let unwind_at = self.here();
+        if let Some(block) = finally {
+            self.push_scope(line);
+            let result = self.scoped_body(block, loops);
+            self.pop_scope(line);
+            result?;
+        }
+        self.chunk.emit(Op::EndFinally, line);
+
+        self.patch(to_end);
+
+        if finally.is_some() {
+            self.finally_depth -= 1;
+        }
+
+        let finally_target = if finally.is_some() {
+            unwind_at
+        } else {
+            NONE as usize
+        };
+        self.chunk.code[handler] = Op::PushHandler {
+            catch: if catches.is_empty() {
+                NONE
+            } else {
+                catch_at as u32
+            },
+            finally: if finally.is_some() {
+                finally_target as u32
+            } else {
+                NONE
+            },
+        };
+        Ok(())
     }
 
     fn scoped_body(&mut self, body: &[Stmt], in_loop: Option<&mut Loop>) -> Emit<()> {
@@ -544,6 +731,7 @@ impl Compiler {
             max_slots: 0,
             captured,
             slots_allowed: true,
+            finally_depth: 0,
         };
         if simple_params {
             for param in params {
@@ -605,6 +793,7 @@ impl Compiler {
             breaks: Vec::new(),
             continues: Vec::new(),
             depth: self.scope_depth,
+            finally_depth: self.finally_depth,
         }
     }
 

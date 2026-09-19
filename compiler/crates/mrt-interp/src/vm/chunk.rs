@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use mrt_ast::{BinOp, Param};
+use mrt_ast::{BinOp, Param, Pattern};
 
 use crate::value::Value;
 
@@ -81,6 +81,28 @@ pub enum Op {
 
     Print(u32),
 
+    /// Raise the value on top of the stack as a thrown signal.
+    Throw,
+
+    /// Enter a `try`. Records where to resume if a signal unwinds through
+    /// here: `catch` for the clause chain, `finally` for the copy of the
+    /// finally block that re-raises afterwards. `u32::MAX` means absent.
+    PushHandler {
+        catch: u32,
+        finally: u32,
+    },
+    /// Leave a `try` normally.
+    PopHandler,
+    /// Bind the value on top of the stack through a catch clause's pattern,
+    /// pushing `true` if it bound and `false` if the clause does not apply.
+    /// The value itself stays on the stack for the next clause to try.
+    BindCatch(u32),
+    /// Discard the signal parked by the unwinder: a clause handled it.
+    DropPending,
+    /// End a finally block reached by unwinding: resume whatever was parked
+    /// -- re-raise the signal, or complete the return it interrupted.
+    EndFinally,
+
     /// Materialise the iterable on top of the stack into a cursor, held in
     /// the machine's own cursor stack rather than as an operand.
     IterInit,
@@ -104,6 +126,10 @@ pub struct Chunk {
     pub names: Vec<Rc<str>>,
     /// Nested function prototypes, indexed by the `u32` in `Closure`.
     pub protos: Vec<Rc<Proto>>,
+    /// Catch-clause patterns, indexed by the `u32` in `BindCatch`. Kept as
+    /// AST and bound by the tree-walker, so a pattern means one thing in
+    /// both engines -- the same reason parameter lists are kept whole.
+    pub patterns: Vec<Pattern>,
 }
 
 impl Chunk {
@@ -114,6 +140,7 @@ impl Chunk {
             constants: Vec::new(),
             names: Vec::new(),
             protos: Vec::new(),
+            patterns: Vec::new(),
         }
     }
 
@@ -155,6 +182,11 @@ impl Chunk {
     pub fn proto(&mut self, proto: Rc<Proto>) -> u32 {
         self.protos.push(proto);
         (self.protos.len() - 1) as u32
+    }
+
+    pub fn pattern(&mut self, pattern: Pattern) -> u32 {
+        self.patterns.push(pattern);
+        (self.patterns.len() - 1) as u32
     }
 }
 
