@@ -11,10 +11,16 @@ python3 scripts/bench.py fib loops    # just these
 
 All three are timed in-process — Python directly, TypeScript through a Node
 runner, Rust through `mrt-run --bench` — so none of them is charged for
-process start-up while the others are not. The Rust interpreter does not
-implement generators yet, so `generators` shows `n/a` for it rather than a
-number; the TOTAL ratios only cover the benchmarks an implementation actually
-ran.
+process start-up while the others are not. Every implementation now runs every
+benchmark, `generators` included; the TOTAL ratios still only cover the
+benchmarks an implementation actually ran, which matters whenever that stops
+being true.
+
+A caution about reading the per-benchmark ratios too closely: on a shared
+machine, two runs of *identical* code have differed by around a third on the
+VM column. The suite is reliable for the order-of-magnitude differences
+between implementations and unreliable for anything smaller, so a change that
+moves a benchmark by 10% has not been shown to have moved it at all.
 
 ## Why these exist
 

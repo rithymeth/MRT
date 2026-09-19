@@ -4,14 +4,17 @@
 // scripts/parity-cases.mjs -- the same corpus the Playground's TypeScript
 // interpreter is held to.
 //
-// The Rust interpreter is younger than the other two and does not implement
-// generators or modules yet, so a case that stops on one of those is recorded
-// as *unsupported* rather than as a mismatch. That would be a hole big enough
-// to hide a regression in, so the unsupported set is a ratchet: it is compared
-// against UNSUPPORTED below, and the harness fails both when a case newly
-// stops working and when a listed case starts working. Implementing a feature
-// is therefore expected to make this script fail once, on purpose, until the
-// list is shortened.
+// A case that stops on an unimplemented feature is recorded as *unsupported*
+// rather than as a mismatch. That would be a hole big enough to hide a
+// regression in, so the unsupported set is a ratchet: it is compared against
+// UNSUPPORTED below, and the harness fails both when a case newly stops
+// working and when a listed case starts working. Implementing a feature is
+// therefore expected to make this script fail once, on purpose, until the list
+// is shortened.
+//
+// That list is now empty -- the Rust interpreter runs everything the reference
+// does -- which is exactly when a ratchet earns its keep: there is nowhere for
+// a regression to hide as "not implemented".
 //
 // Run with `npm run check:rust-interp`.
 
@@ -29,41 +32,13 @@ const repoRoot = path.resolve(__dirname, '..')
 // Cases the Rust interpreter is known not to run yet. Keep the reason with
 // the name: a bare list of names decays into a list of things nobody
 // remembers being broken.
-const UNSUPPORTED = new Set([
-  // Generators. Both other implementations suspend one by delegating to a
-  // host coroutine -- Python's `yield from`, JavaScript's `yield*` -- and
-  // stable Rust has no equivalent to delegate to.
-  'example: coroutines.mrt',
-  'example: generators.mrt',
-  'example: lazy.mrt',
-  'regression: a generator function is lazy and yields in order',
-  'regression: an endless generator is consumed only as far as asked',
-  'regression: generators chain into streaming pipelines',
-  'regression: yield inside if, for, for-in, try and match',
-  'regression: return ends a generator early',
-  'regression: generators are single use',
-  'regression: a generator keeps its own scope across suspensions',
-  'regression: errors and throws propagate out of a generator with a frame',
-  'regression: closures capture a generator per call, independently',
-  'regression: a generator method on a struct sees this',
-  'regression: next/send drive a generator by hand and report done',
-  'regression: the value sent on the first step is discarded',
-  'regression: a yield with no sender sees null, and assigns through any target',
-  'regression: next/send reject non-generators and tolerate exhaustion',
-  'regression: yield* delegates to generators, arrays, strings and objects',
-  'regression: yield* forwards sent values into the delegate',
-  'regression: a generator resumes where an earlier consumer stopped',
-  'regression: an exhausted generator is an error to iterate but not to step',
-  'regression: resuming a generator from inside itself is an error',
-  'regression: lazy map and filter over an endless generator',
-  'regression: lazy map is only as lazy as it is asked to be',
-  'regression: take pulls exactly as many items as asked',
-  'regression: a struct with iter() is iterable everywhere an iterable is',
-  'regression: the higher-order builtins accept anything iterable',
-  'regression: abandoning many generators does not corrupt the interpreter',
-  'regression: an abandoned generator runs no finally, a finished one does',
-  'regression: abandoning a generator mid-loop leaves the caller intact',
-])
+// Empty, and that is the news: the Rust interpreter now runs every construct
+// the reference does. Generators were the last gap, and they closed by
+// compiling a generator body and parking it as a VM frame rather than by
+// finding a coroutine for the tree-walker to borrow -- there is none in stable
+// Rust to borrow. Keep the ratchet: a feature that stops working should fail
+// here rather than quietly join a list.
+const UNSUPPORTED = new Set([])
 
 const NOT_IMPLEMENTED = /are not implemented in this interpreter yet/
 

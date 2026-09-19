@@ -29,8 +29,9 @@ happens?*
 13. [Generators](#generators)
 14. [The iterator protocol](#the-iterator-protocol)
 15. [Modules](#modules)
-16. [Known ambiguities (by design)](#known-ambiguities-by-design)
-17. [Future work / explicitly out of scope](#future-work--explicitly-out-of-scope)
+16. [Engine extensions](#engine-extensions)
+17. [Known ambiguities (by design)](#known-ambiguities-by-design)
+18. [Future work / explicitly out of scope](#future-work--explicitly-out-of-scope)
 
 ## Design goals and non-goals
 
@@ -1279,6 +1280,43 @@ over a set of built-in virtual modules, and a host that supplies none has
 no imports at all (attempting one reports
 `Imports need a file to resolve against; run this program from a file.`).
 The parity checker exercises multi-file programs through both.
+
+## Engine extensions
+
+Everything above this section is *the language*: four implementations answer
+for it, and the conformance corpus is what "answer for it" means. An
+implementation that disagrees with the reference about any of it has a bug.
+
+An **engine extension** is the deliberate exception. It is functionality one
+implementation provides and the others do not, and it is not part of the
+language:
+
+- It is **not in the conformance corpus**, and a program using one is not a
+  conformance case. The harnesses skip such programs by name
+  (`ENGINE_SPECIFIC_EXAMPLES` in `scripts/parity-cases.mjs`) rather than
+  reporting a mismatch nobody can act on.
+- It **carries its own tests**, in the crate that provides it. Being outside
+  the corpus means untested unless something else tests it.
+- It is **named so that it cannot be mistaken for core**. Extension built-ins
+  share a prefix that the core library never uses.
+- A program using one is **not portable**, and that is the point of saying so
+  here rather than letting each reader discover it.
+
+The rule this protects: a program that uses only what is specified above runs
+identically on every implementation. Without the distinction, "MRT" would
+quietly come to mean "whatever the fastest implementation does", which is the
+drift four implementations and a shared corpus exist to prevent.
+
+### MRT-AI
+
+The one extension that exists. Provided by the Rust engine only
+(`compiler/crates/mrt-ai`), it supplies numerical and machine-learning
+primitives — tensors, layers, automatic differentiation, optimisers — through
+built-ins prefixed `ai`. Its examples live in `examples/ai_*.mrt`.
+
+The Python reference and the TypeScript playground do not implement it and are
+not expected to. `aiTrainLinear(x, y, epochs, rate)` is an undefined variable
+on both, which is the correct answer there: it is not part of MRT.
 
 ## Known ambiguities (by design)
 

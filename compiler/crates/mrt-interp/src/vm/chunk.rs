@@ -80,6 +80,21 @@ pub enum Op {
     Return,
 
     Print(u32),
+    /// Print the elements of the gathered array on top of the stack. A spread
+    /// makes the argument count dynamic, which `Print`'s static one cannot say.
+    PrintSpread,
+
+    /// Suspend the running generator, handing the value on top of the stack
+    /// to whoever pulled. On resume the sent value is pushed in its place,
+    /// which is what makes `var got = yield x;` work: one instruction both
+    /// delivers and receives.
+    Yield,
+
+    /// Begin a `yield*`: pop the delegate sequence and open a cursor over it.
+    DelegateInit,
+    /// Pull the next item from the delegate, passing the sent value on top of
+    /// the stack into it. Jumps when the delegate runs out.
+    DelegateNext(u32),
 
     /// Raise the value on top of the stack as a thrown signal.
     Throw,
@@ -262,4 +277,7 @@ pub struct Proto {
     /// back to the tree-walker's `bind_params`, which is the only place that
     /// knows what a default or a rest parameter means.
     pub simple_params: bool,
+    /// True when the body contains `yield`. Calling such a function does not
+    /// run it: it builds a generator parked before the first instruction.
+    pub is_generator: bool,
 }

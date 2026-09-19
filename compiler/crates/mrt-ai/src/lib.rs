@@ -1,3 +1,5 @@
+pub mod autograd;
+
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq)]

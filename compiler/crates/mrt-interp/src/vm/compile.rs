@@ -44,6 +44,39 @@ pub fn compile_program(statements: &[Stmt]) -> Emit<Chunk> {
     Ok(compiler.chunk)
 }
 
+/// Compile one function body on its own, for a generator the tree-walker was
+/// asked to call.
+///
+/// Suspending is the machine's alone, so a generator has to be compiled even
+/// when the rest of the program is being walked. The body's free names still
+/// resolve through the closure's `Env` at run time, which is why nothing here
+/// needs to know about the enclosing function: `slots_allowed` is off, so
+/// every name goes through the environment rather than a frame slot.
+pub fn compile_function(params: &[Param], body: &[Stmt], name: Option<String>) -> Emit<Rc<Proto>> {
+    let mut compiler = Compiler {
+        chunk: Chunk::new(),
+        scope_depth: 0,
+        locals: Vec::new(),
+        max_slots: 0,
+        captured: HashSet::new(),
+        slots_allowed: false,
+        finally_depth: 0,
+    };
+    compiler.block_body(body)?;
+    compiler.chunk.emit(Op::Null, 0);
+    compiler.chunk.emit(Op::Return, 0);
+    Ok(Rc::new(Proto {
+        name,
+        params: params.to_vec(),
+        chunk: compiler.chunk,
+        slots: compiler.max_slots,
+        // Parameters bind through the tree-walker, so the list means exactly
+        // what it means everywhere else.
+        simple_params: false,
+        is_generator: true,
+    }))
+}
+
 struct Compiler {
     chunk: Chunk,
     /// How many `PushScope`s are currently open in this function body.
@@ -124,10 +157,30 @@ impl Compiler {
                 self.chunk.emit(Op::Pop, line);
             }
             StmtKind::Print(args) => {
-                for arg in args {
-                    self.expression(arg)?;
+                // A spread makes the count dynamic, so the arguments are
+                // gathered into an array first -- the same three instructions
+                // a call or an array literal uses, so `...` means one thing.
+                if args.iter().any(|a| matches!(a.kind, ExprKind::Spread(_))) {
+                    self.chunk.emit(Op::BeginSpread, line);
+                    for arg in args {
+                        match &arg.kind {
+                            ExprKind::Spread(inner) => {
+                                self.expression(inner)?;
+                                self.chunk.emit(Op::SpreadInto, line);
+                            }
+                            _ => {
+                                self.expression(arg)?;
+                                self.chunk.emit(Op::PushInto, line);
+                            }
+                        }
+                    }
+                    self.chunk.emit(Op::PrintSpread, line);
+                } else {
+                    for arg in args {
+                        self.expression(arg)?;
+                    }
+                    self.chunk.emit(Op::Print(args.len() as u32), line);
                 }
-                self.chunk.emit(Op::Print(args.len() as u32), line);
             }
             StmtKind::Var {
                 pattern,
@@ -287,10 +340,7 @@ impl Compiler {
                 body,
                 is_generator,
             } => {
-                if *is_generator {
-                    return Err(Unsupported::of("generators"));
-                }
-                self.function(Some(name.text.clone()), params, body, line)?;
+                self.function(Some(name.text.clone()), params, body, *is_generator, line)?;
                 self.emit_define(&name.text, line);
             }
             StmtKind::Return(value) => {
@@ -388,29 +438,43 @@ impl Compiler {
                 fields,
                 methods,
             } => {
-                // A generator method would be an AST closure the tree-walker
-                // runs, and it cannot run generators either -- so the refusal
-                // has to happen here, or the case fails at run time with the
-                // *other* engine's message and the harness reads it as a
-                // wrong answer rather than a gap.
-                if methods.iter().any(|m| {
-                    matches!(
-                        &m.kind,
-                        StmtKind::Function {
-                            is_generator: true,
-                            ..
-                        }
-                    )
-                }) {
-                    return Err(Unsupported::of("generators"));
-                }
+                // Methods stay AST closures, generator or not: calling one
+                // compiles its body on demand, so a generator method is a
+                // parked frame like any other. This used to be refused here
+                // because the tree-walker could not make one at all.
                 let index =
                     self.chunk
                         .struct_def(name.text.clone(), fields.clone(), methods.clone());
                 self.chunk.emit(Op::Struct(index), line);
                 self.emit_define(&name.text, line);
             }
-            StmtKind::Yield { .. } => return Err(Unsupported::of("generators")),
+            StmtKind::Yield { value, delegate } => {
+                // `yield*` forwards a whole sequence, and forwarding sent
+                // values back into the delegate is its own mechanism. Refused
+                // by name rather than approximated, so the harness reads it as
+                // a gap instead of a wrong answer.
+                self.expression(value)?;
+                if *delegate {
+                    // `yield* xs` is a loop that re-yields someone else's
+                    // items. The sent value is threaded through rather than
+                    // dropped: it lives on the stack between the `Yield` that
+                    // received it and the `DelegateNext` that passes it on, so
+                    // a value sent into the outer generator reaches whatever
+                    // the inner one is parked at.
+                    self.chunk.emit(Op::DelegateInit, line);
+                    self.chunk.emit(Op::Null, line);
+                    let top = self.here();
+                    let done = self.chunk.emit(Op::DelegateNext(0), line);
+                    self.chunk.emit(Op::Yield, line);
+                    self.chunk.emit(Op::Jump(top as u32), line);
+                    self.patch(done);
+                    self.chunk.emit(Op::IterDrop, line);
+                } else {
+                    self.chunk.emit(Op::Yield, line);
+                    // As a statement there is nowhere for the sent value to go.
+                    self.chunk.emit(Op::Pop, line);
+                }
+            }
             StmtKind::DestructureAssign { pattern, value } => {
                 self.expression(value)?;
                 let index = self.chunk.pattern(pattern.clone());
@@ -893,10 +957,13 @@ impl Compiler {
                 body,
                 is_generator,
             } => {
-                if *is_generator {
-                    return Err(Unsupported::of("generators"));
-                }
-                self.function(name.as_ref().map(|n| n.text.clone()), params, body, line)?;
+                self.function(
+                    name.as_ref().map(|n| n.text.clone()),
+                    params,
+                    body,
+                    *is_generator,
+                    line,
+                )?;
             }
             // Only meaningful inside a call or an array literal, both of
             // which handle it above.
@@ -944,7 +1011,13 @@ impl Compiler {
                     self.patch(site);
                 }
             }
-            ExprKind::Yield(_) => return Err(Unsupported::of("generators")),
+            // As an expression the yield evaluates to whatever was sent in,
+            // which `Op::Yield` leaves on the stack on resume. One instruction
+            // both delivers and receives.
+            ExprKind::Yield(value) => {
+                self.expression(value)?;
+                self.chunk.emit(Op::Yield, line);
+            }
         }
         Ok(())
     }
@@ -954,6 +1027,7 @@ impl Compiler {
         name: Option<String>,
         params: &[Param],
         body: &[Stmt],
+        is_generator: bool,
         line: u32,
     ) -> Emit<()> {
         // Which of this body's names a *nested* function mentions. Computed
@@ -998,6 +1072,7 @@ impl Compiler {
             chunk: inner.chunk,
             slots: inner.max_slots,
             simple_params,
+            is_generator,
         });
         let index = self.chunk.proto(proto);
         self.chunk.emit(Op::Closure(index), line);
@@ -1022,7 +1097,8 @@ impl Compiler {
             | Op::JumpIfFalse(slot)
             | Op::JumpIfFalsyKeep(slot)
             | Op::JumpIfTruthyKeep(slot)
-            | Op::IterNext(slot) => *slot = target,
+            | Op::IterNext(slot)
+            | Op::DelegateNext(slot) => *slot = target,
             other => unreachable!("tried to patch {other:?}"),
         }
     }

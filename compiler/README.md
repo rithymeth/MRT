@@ -253,7 +253,7 @@ tree-walker.
 instruction vector, and a loop that steps it. It runs a growing subset of the
 language and refuses the rest **by name**, so the conformance harness can
 tell "does not compile this yet" apart from "compiles it wrongly". Still
-outstanding: modules and generators.
+outstanding: modules, and nothing else.
 
 ```bash
 node scripts/check-vm-conformance.mjs   # or: npm run check:vm
@@ -267,8 +267,20 @@ value. Python and JavaScript each borrow a coroutine from their host; stable
 Rust has none to borrow. A machine whose frame is an `ip`, an environment and
 a slice of an operand stack can park one by copying a struct.
 
-So the VM was built for resumability first, and the speed question asked
-separately. The answer came in two parts:
+So the VM was built for resumability first, and that is now what it does:
+generators are compiled, and a suspended one *is* a VM frame lifted out of the
+machine and stored in a value. Resuming copies it back. Because `yield` is
+lexical -- a nested function containing one is its own generator -- a
+generator can only ever be parked in its own frame, so the machine never has
+to save a call chain, only everything else that frame owns: its operand stack
+region, its open `try` handlers and its live `for`-`in` cursors.
+
+The tree-walker gained generators from the same work, and not by growing a way
+to suspend: asked to call an AST generator function, it compiles that body and
+hands back a parked frame. So a generator means one thing regardless of which
+engine ran the file, which is the property the corpus exists to protect.
+
+The speed question was asked separately. The answer came in two parts:
 
 | | vs the tree-walker |
 |---|---|
