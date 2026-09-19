@@ -543,17 +543,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_uncompilable_construct_is_refused_by_name() {
-        // Not a wrong answer and not a panic: the conformance harness tells
-        // "cannot compile this yet" apart from "compiles it wrongly" purely
-        // by this text.
-        assert_eq!(
-            vm("import { x } from \"./m.mrt\";\nfunc main() { }"),
-            "Runtime Error: modules is not compiled by the VM yet."
-        );
-    }
-
     // -- generators --------------------------------------------------------
     //
     // The feature the machine exists for, so these test the *mechanism* --
@@ -700,13 +689,40 @@ mod tests {
         );
     }
 
+    // -- hoisting, which is the top level's rule and not a general one -----
+
     #[test]
-    fn an_uncompilable_construct_is_still_refused_by_name() {
-        // Modules are the last gap, and the harness tells "cannot compile
-        // this yet" apart from "compiles it wrongly" purely by this text.
+    fn a_function_declared_after_its_use_in_a_block_is_not_hoisted() {
+        // The VM used to hoist declarations in *every* block, so this printed
+        // 1 while every other implementation reported an undefined variable.
+        // Wrong in the permissive direction, which is the worse one: code
+        // written against the VM would stop working everywhere else.
         assert_eq!(
-            vm("import { x } from \"./m.mrt\";\nfunc main() { }"),
-            "Runtime Error: modules is not compiled by the VM yet."
+            agree("func main() { print(f()); func f() { return 1; } }"),
+            "Runtime Error: Undefined variable 'f'. [line 1]"
+        );
+    }
+
+    #[test]
+    fn the_top_level_does_hoist_so_main_can_call_what_follows_it() {
+        assert_eq!(
+            agree("func main() { print(later()); } func later() { return 7; }"),
+            "7"
+        );
+        assert_eq!(
+            agree("func main() { var p = Point(1, 2); print(p.x + p.y); } struct Point { x, y; }"),
+            "3"
+        );
+    }
+
+    #[test]
+    fn a_missing_module_is_the_language_error_not_a_refusal() {
+        // This used to assert that modules were refused by the compiler.
+        // They compile now, so an `import` that cannot be satisfied has to
+        // fail the way the language says it does, on both engines.
+        assert_eq!(
+            agree("import { x } from \"./nope.mrt\";\nfunc main() { }"),
+            "Runtime Error: Cannot find module \"./nope.mrt\". [line 1]"
         );
     }
 }

@@ -250,10 +250,21 @@ tree-walker.
 ## The bytecode VM
 
 `mrt-interp/src/vm` is a stack machine: a compiler from AST to a flat
-instruction vector, and a loop that steps it. It runs a growing subset of the
-language and refuses the rest **by name**, so the conformance harness can
-tell "does not compile this yet" apart from "compiles it wrongly". Still
-outstanding: modules, and nothing else.
+instruction vector, and a loop that steps it. It runs **the whole language** --
+163/163 conformance checks, nothing outstanding -- which is the same point the
+tree-walker reached.
+
+Anything it could not compile was refused **by name** rather than
+approximated, so the harness could tell "does not compile this yet" apart from
+"compiles it wrongly". That mechanism stays even with nothing left to refuse:
+it is what keeps a future gap from being recorded as a wrong answer, and what
+stops a regression hiding as "not implemented yet".
+
+An imported module is compiled and run on whichever engine is driving, so
+`mrt-run --vm` means the VM ran the program rather than the VM ran the entry
+file. What does *not* move is the loader itself -- path resolution, the
+evaluation cache, the cycle stack are interpreter state, and a module system
+with two implementations would be two module systems.
 
 ```bash
 node scripts/check-vm-conformance.mjs   # or: npm run check:vm

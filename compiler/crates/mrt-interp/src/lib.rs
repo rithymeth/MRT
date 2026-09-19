@@ -56,6 +56,13 @@ use crate::error::{
 use crate::generator::{already_iterated, already_running, Cursor, GenState, Generator, Transform};
 use crate::value::*;
 
+/// Which engine is running a program.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Engine {
+    TreeWalker,
+    Vm,
+}
+
 pub struct Interpreter {
     pub globals: Env,
     pub env: Env,
@@ -63,6 +70,13 @@ pub struct Interpreter {
     /// What became of a top-level `main`. Read by a CLI to explain a file
     /// that ran correctly and printed nothing.
     pub entry: Entry,
+    /// Which engine is driving this program.
+    ///
+    /// Only the module loader reads it, and only to decide how to evaluate an
+    /// imported file's top level. Without it `mrt-run --vm` would compile the
+    /// entry file and then quietly walk every module it imports, so "the VM
+    /// ran this" would be true of one file out of however many.
+    pub(crate) engine: Engine,
 
     /// The file currently being evaluated. `import` specifiers resolve
     /// against its directory, so this is swapped while a module runs and
@@ -184,6 +198,7 @@ pub fn run_vm(file: &SourceFile) -> Outcome {
     };
 
     let mut interp = Interpreter::with_module_path(Some(std::path::PathBuf::from(file.name())));
+    interp.engine = Engine::Vm;
     let result = (|| -> Exec {
         let mut machine = vm::Vm::new(&mut interp);
         machine.run(chunk)?;
@@ -252,6 +267,7 @@ impl Interpreter {
             globals,
             output: Vec::new(),
             entry: Entry::Missing,
+            engine: Engine::TreeWalker,
             module_path: path.map(|p| absolute(&p)),
             module_exports: HashMap::new(),
             module_loading: Vec::new(),
@@ -1048,7 +1064,7 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 impl Interpreter {
-    fn record_export(&mut self, name: &str, value: Value) {
+    pub(crate) fn record_export(&mut self, name: &str, value: Value) {
         // Re-exporting a name replaces the earlier entry in place, so the
         // table keeps first-export order rather than last.
         if let Some(slot) = self.current_exports.iter_mut().find(|(n, _)| n == name) {
@@ -1139,7 +1155,7 @@ impl Interpreter {
         let previous_exports = std::mem::take(&mut self.current_exports);
         self.module_loading.push(path.clone());
 
-        let result = self.run_top_level(&parsed.program.statements);
+        let result = self.run_module_body(&parsed.program.statements, specifier, line);
 
         self.module_loading.pop();
         let exports = std::mem::replace(&mut self.current_exports, previous_exports);
@@ -1150,6 +1166,32 @@ impl Interpreter {
         let exports = Rc::new(exports);
         self.module_exports.insert(path, exports.clone());
         Ok(exports)
+    }
+
+    /// Evaluate an imported module's top level on the engine that is
+    /// driving.
+    ///
+    /// A module is MRT source like any other, so the engine running the
+    /// program should run it: otherwise `--vm` compiles the entry file and
+    /// walks everything it imports. Both engines are held to the same corpus,
+    /// so this changes no answer -- but "which engine ran this program" should
+    /// have one answer rather than one per file.
+    fn run_module_body(&mut self, statements: &[Stmt], specifier: &str, line: u32) -> Exec {
+        if self.engine == Engine::TreeWalker {
+            return self.run_top_level(statements);
+        }
+        let chunk = vm::compile_program(statements).map_err(|vm::Unsupported(what)| {
+            // Named the same way the entry file's refusal is named, with the
+            // module said out loud: a gap is a gap wherever the source lives.
+            Signal::error(
+                Kind::RuntimeError,
+                format!("Module {}: {what}", json_quote(specifier)),
+            )
+            .at(Some(line))
+        })?;
+        let mut machine = vm::Vm::new(self);
+        machine.run(chunk)?;
+        Ok(())
     }
 
     /// Run a file's top-level statements: declarations first so they can
@@ -1172,7 +1214,7 @@ impl Interpreter {
         Ok(())
     }
 
-    fn execute_import(
+    pub(crate) fn execute_import(
         &mut self,
         names: &[(Name, Name)],
         namespace: Option<&Name>,
@@ -1203,7 +1245,7 @@ impl Interpreter {
 
     /// `export { a };` re-exports a local name; `export { a } from "./m.mrt";`
     /// forwards another module's export without binding it here.
-    fn execute_export_names(
+    pub(crate) fn execute_export_names(
         &mut self,
         names: &[(Name, Name)],
         specifier: Option<&str>,

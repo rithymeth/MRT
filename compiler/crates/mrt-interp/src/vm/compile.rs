@@ -13,7 +13,7 @@ use mrt_ast::*;
 
 use crate::value::Value;
 use crate::vm::capture::captured_names;
-use crate::vm::chunk::{Chunk, Op, Proto};
+use crate::vm::chunk::{Chunk, ExportNamesSpec, ImportSpec, Op, Proto};
 
 /// A construct the compiler does not handle yet.
 pub struct Unsupported(pub String);
@@ -38,7 +38,7 @@ pub fn compile_program(statements: &[Stmt]) -> Emit<Chunk> {
     };
     // The entry chunk runs top-level code and then returns null; `main` is
     // called by the driver, exactly as the tree-walker does it.
-    compiler.block_body(statements)?;
+    compiler.top_level(statements)?;
     compiler.chunk.emit(Op::Null, 0);
     compiler.chunk.emit(Op::Return, 0);
     Ok(compiler.chunk)
@@ -62,7 +62,7 @@ pub fn compile_function(params: &[Param], body: &[Stmt], name: Option<String>) -
         slots_allowed: false,
         finally_depth: 0,
     };
-    compiler.block_body(body)?;
+    compiler.body(body)?;
     compiler.chunk.emit(Op::Null, 0);
     compiler.chunk.emit(Op::Return, 0);
     Ok(Rc::new(Proto {
@@ -136,14 +136,48 @@ struct Loop {
 impl Compiler {
     // -- statements --------------------------------------------------------
 
-    /// Declarations first, then everything else -- the same hoisting rule the
-    /// tree-walker applies, so a `main` can call what is written below it.
-    fn block_body(&mut self, statements: &[Stmt]) -> Emit<()> {
-        let hoisted = |s: &Stmt| matches!(s.kind, StmtKind::Function { .. });
+    /// A file's top-level statements: declarations first so they can refer to
+    /// each other regardless of order, then everything else in source order.
+    ///
+    /// The rule is the tree-walker's `run_top_level`, down to unwrapping
+    /// `export`: `export func f()` is an `Export` statement wrapping a
+    /// function, and it hoists because the function inside it does. Anything
+    /// else would make a name's visibility depend on whether it is exported.
+    fn top_level(&mut self, statements: &[Stmt]) -> Emit<()> {
+        let hoisted = |s: &Stmt| {
+            let inner = match &s.kind {
+                StmtKind::Export { declaration, .. } => &declaration.kind,
+                other => other,
+            };
+            matches!(inner, StmtKind::Function { .. } | StmtKind::Struct { .. })
+        };
         for stmt in statements.iter().filter(|s| hoisted(s)) {
             self.statement(stmt, None)?;
         }
         for stmt in statements.iter().filter(|s| !hoisted(s)) {
+            self.statement(stmt, None)?;
+        }
+        Ok(())
+    }
+
+    /// A function body or a block: statements in source order, with no
+    /// hoisting.
+    ///
+    /// Hoisting is the *top level's* rule, not a general one. This used to
+    /// hoist too, which quietly made the VM accept a program the language
+    /// rejects:
+    ///
+    /// ```text
+    /// func main() { print(f()); func f() { return 1; } }
+    /// tree-walker: Undefined variable 'f'
+    /// vm:          1
+    /// ```
+    ///
+    /// A wrong answer in the permissive direction, which is the worse
+    /// direction: code written against the VM would stop working on every
+    /// other implementation.
+    fn body(&mut self, statements: &[Stmt]) -> Emit<()> {
+        for stmt in statements {
             self.statement(stmt, None)?;
         }
         Ok(())
@@ -480,8 +514,33 @@ impl Compiler {
                 let index = self.chunk.pattern(pattern.clone());
                 self.chunk.emit(Op::AssignPattern(index), line);
             }
-            StmtKind::Import { .. } | StmtKind::Export { .. } | StmtKind::ExportNames { .. } => {
-                return Err(Unsupported::of("modules"))
+            StmtKind::Import {
+                names,
+                namespace,
+                specifier,
+            } => {
+                let index = self.chunk.import(ImportSpec {
+                    names: names.clone(),
+                    namespace: namespace.clone(),
+                    specifier: specifier.clone(),
+                });
+                self.chunk.emit(Op::Import(index), line);
+            }
+            StmtKind::Export { declaration, name } => {
+                // The declaration runs as itself; exporting is a second step
+                // that reads the name back out. Capturing the value during
+                // the declaration instead would export the initializer rather
+                // than what the name ended up bound to.
+                self.statement(declaration, None)?;
+                let index = self.chunk.name(&name.text);
+                self.chunk.emit(Op::RecordExport(index), line);
+            }
+            StmtKind::ExportNames { names, specifier } => {
+                let index = self.chunk.export_names(ExportNamesSpec {
+                    names: names.clone(),
+                    specifier: specifier.clone(),
+                });
+                self.chunk.emit(Op::ExportNames(index), line);
             }
         }
         Ok(())
@@ -1062,7 +1121,7 @@ impl Compiler {
                 }
             }
         }
-        inner.block_body(body)?;
+        inner.body(body)?;
         // Falling off the end of a body returns null.
         inner.chunk.emit(Op::Null, line);
         inner.chunk.emit(Op::Return, line);

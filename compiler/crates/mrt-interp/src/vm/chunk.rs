@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use mrt_ast::{BinOp, MatchPattern, Param, Pattern, Stmt};
+use mrt_ast::{BinOp, MatchPattern, Name, Param, Pattern, Stmt};
 
 use crate::value::Value;
 
@@ -96,6 +96,21 @@ pub enum Op {
     /// the stack into it. Jumps when the delegate runs out.
     DelegateNext(u32),
 
+    /// `import ... from "./m.mrt"`, indexed into `Chunk::modules`.
+    ///
+    /// Loading a module is interpreter state -- the path resolution, the
+    /// evaluation cache, the cycle stack -- so the machine hands the whole
+    /// statement back rather than reimplementing any of it. A module system
+    /// with two implementations would be two module systems.
+    Import(u32),
+    /// `export { a as b };` or `export { a } from "./m.mrt";`, indexed into
+    /// `Chunk::module_exports`.
+    ExportNames(u32),
+    /// Record the named binding in the current scope as an export. Emitted
+    /// after the declaration `export` wraps, because `export var x = f();`
+    /// exports whatever `x` ended up bound to.
+    RecordExport(u32),
+
     /// Raise the value on top of the stack as a thrown signal.
     Throw,
 
@@ -180,6 +195,27 @@ pub struct Chunk {
     /// Struct definitions, indexed by the `u32` in `Struct`: the name, its
     /// fields, and its methods as AST.
     pub structs: Vec<(String, Vec<Param>, Vec<Stmt>)>,
+    /// `import` statements, indexed by the `u32` in `Import`. Kept whole and
+    /// as AST for the same reason parameter lists and patterns are: the
+    /// tree-walker executes them, so an import means one thing in both
+    /// engines.
+    pub modules: Vec<ImportSpec>,
+    /// `export { .. }` statements, indexed by the `u32` in `ExportNames`.
+    pub module_exports: Vec<ExportNamesSpec>,
+}
+
+/// An `import` statement, as the tree-walker's `execute_import` wants it.
+pub struct ImportSpec {
+    pub names: Vec<(Name, Name)>,
+    pub namespace: Option<Name>,
+    pub specifier: String,
+}
+
+/// An `export { .. }` statement, with `specifier` set when it re-exports
+/// another module's names rather than binding local ones.
+pub struct ExportNamesSpec {
+    pub names: Vec<(Name, Name)>,
+    pub specifier: Option<String>,
 }
 
 impl Chunk {
@@ -193,6 +229,8 @@ impl Chunk {
             patterns: Vec::new(),
             match_patterns: Vec::new(),
             structs: Vec::new(),
+            modules: Vec::new(),
+            module_exports: Vec::new(),
         }
     }
 
@@ -249,6 +287,16 @@ impl Chunk {
     pub fn struct_def(&mut self, name: String, fields: Vec<Param>, methods: Vec<Stmt>) -> u32 {
         self.structs.push((name, fields, methods));
         (self.structs.len() - 1) as u32
+    }
+
+    pub fn import(&mut self, spec: ImportSpec) -> u32 {
+        self.modules.push(spec);
+        (self.modules.len() - 1) as u32
+    }
+
+    pub fn export_names(&mut self, spec: ExportNamesSpec) -> u32 {
+        self.module_exports.push(spec);
+        (self.module_exports.len() - 1) as u32
     }
 }
 
