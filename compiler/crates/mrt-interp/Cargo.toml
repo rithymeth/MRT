@@ -11,6 +11,14 @@ mrt-ast = { path = "../mrt-ast" }
 mrt-parser = { path = "../mrt-parser" }
 mrt-ai = { path = "../mrt-ai" }
 mrt-game = { path = "../mrt-game" }
+# Optional, and off by default. The window is the only thing in this
+# workspace with a dependency tree, and mrt-interp's is the test suite run
+# most often -- so `cargo test -p mrt-interp` stays hermetic and instant, and
+# the binary that actually needs to show a window turns the feature on.
+mrt-window = { path = "../mrt-window", optional = true }
+
+[features]
+window = ["dep:mrt-window"]
 
 [lints]
 workspace = true

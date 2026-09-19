@@ -1436,6 +1436,55 @@ func main() {
 | `gameColorAt(x, y)` | The colour at a point, or `null` off the screen. |
 | `gameSave(path)` | Writes the frame as a PNG. |
 
+#### The loop belongs to the program
+
+A windowing library usually wants the loop: you hand it a callback and it
+calls you back forever. MRT keeps the loop instead.
+
+```mrt
+while (gameOpen()) {
+    gameClear(sky);
+    // ... draw ...
+    gamePresent();
+}
+```
+
+A callback would mean re-entering the interpreter from inside a built-in once
+per frame, and it would hide a game's main loop inside an engine its author
+cannot read. Keeping it in the source costs one obligation: **`gamePresent`
+and `gameOpen` are what pump the operating system's event queue**, and a
+window that is never pumped is one the desktop marks as not responding. Both
+pump, so a loop that decides to draw nothing on some frame still stays alive.
+
+| Call | Result |
+|------|--------|
+| `gameOpen()` | Opens the window on the first call; then reports whether it is still open. |
+| `gamePresent()` | Puts the current frame on the screen. |
+| `gameDelta()` | Seconds since the previous `gamePresent`. |
+| `gameKeyDown(name)` | Whether a key is held now — `"W"`, `"Left"`, `"Space"`, `"Escape"`. |
+| `gameKeyPressed(name)` | Whether it went down since the last frame, held or not. |
+| `gamePointer()` | `{x, y, down}`. |
+| `gameClose()` | Ends the loop, as the close button would. |
+
+The window opens on the first `gameOpen` rather than at `gameInit`, so a
+program that only draws and saves a PNG runs on a machine with no display at
+all. Asking for a window where there is none is an ordinary catchable error,
+not a crash, which is what lets one program do both:
+
+```mrt
+var live = false;
+try { live = gameOpen(); } catch (e) { print("no window"); }
+```
+
+`gameKeyPressed` exists separately from `gameKeyDown` because a key can go
+down and up inside a single frame; a menu that only asked what is *held*
+would drop that press, which feels like the game ignoring input and cannot be
+reproduced on purpose.
+
+`gameDelta` is for a game a person plays, so that it runs at the same speed on
+fast and slow machines. A simulation that has to be **reproducible** should
+use a fixed step and ignore it: real elapsed time is never the same twice.
+
 Conventions, fixed once: Y points **down** from a top-left origin; a colour
 channel outside 0–255 is an error rather than a clamp; coordinates may be
 fractional and are floored, since a moving thing is rarely on a whole pixel;

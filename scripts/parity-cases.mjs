@@ -784,4 +784,5 @@ export const ENGINE_SPECIFIC_EXAMPLES = new Set([
   'ai_linear.mrt',
   'ai_net.mrt',
   'game_shapes.mrt',
+  'game_bounce.mrt',
 ])

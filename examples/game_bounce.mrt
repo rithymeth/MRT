@@ -1,0 +1,115 @@
+// A game loop, written in MRT.
+//
+// MRT-Game is an engine extension: only the Rust engines have these
+// builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// The loop is *here*, in the program, not inside an engine you cannot read:
+//
+//     while (gameOpen()) { ...draw...; gamePresent(); }
+//
+// This example runs with or without a display. On a desktop it opens a
+// window you can watch and steer with the arrow keys; anywhere else -- a
+// build server, a terminal over ssh -- it simulates the same frames and
+// writes the last one to a PNG. That is what the try/catch around gameOpen()
+// is doing, and it is why the printed output is the same either way.
+
+struct Ball {
+    x;
+    y;
+    dx;
+    dy;
+    radius;
+    color;
+}
+
+// A *fixed* step, not gameDelta(). Real elapsed time is never the same twice,
+// so a simulation driven by it cannot be reproduced -- and this example has
+// to print the same numbers on every machine to be worth testing. A game a
+// person plays should use gameDelta() instead, so it runs at the same speed
+// on fast and slow machines alike.
+var STEP = 1.0 / 60.0;
+var SPEED = 220;
+
+func advance(ball, width, height) {
+    ball.x = ball.x + ball.dx * SPEED * STEP;
+    ball.y = ball.y + ball.dy * SPEED * STEP;
+
+    // Reflect off each wall, and put the ball back inside rather than only
+    // flipping its direction: a ball that is still outside next frame flips
+    // again, and sticks to the wall shivering.
+    if (ball.x - ball.radius < 0) {
+        ball.x = ball.radius;
+        ball.dx = -ball.dx;
+    }
+    if (ball.x + ball.radius > width) {
+        ball.x = width - ball.radius;
+        ball.dx = -ball.dx;
+    }
+    if (ball.y - ball.radius < 0) {
+        ball.y = ball.radius;
+        ball.dy = -ball.dy;
+    }
+    if (ball.y + ball.radius > height) {
+        ball.y = height - ball.radius;
+        ball.dy = -ball.dy;
+    }
+}
+
+func steer(ball) {
+    // No window means no keyboard, and gameKeyDown would rather say so than
+    // quietly answer false forever.
+    try {
+        if (gameKeyDown("Left"))  { ball.dx = -1; }
+        if (gameKeyDown("Right")) { ball.dx = 1; }
+        if (gameKeyDown("Up"))    { ball.dy = -1; }
+        if (gameKeyDown("Down"))  { ball.dy = 1; }
+        if (gameKeyPressed("Escape")) { gameClose(); }
+    } catch (e) {
+        // Nothing to steer with. The ball carries on.
+    }
+}
+
+func main() {
+    var width = 480;
+    var height = 320;
+    gameInit(width, height, "MRT Bounce");
+
+    var sky = gameColor(16, 20, 34);
+    var trail = gameColorAlpha(16, 20, 34, 40);
+    var ball = Ball(60, 80, 1, 1, 16, gameColor(245, 190, 70));
+
+    var live = false;
+    try {
+        live = gameOpen();
+        print("window: open");
+    } catch (e) {
+        print("window: none —", e.kind);
+    }
+
+    gameClear(sky);
+
+    var frames = 0;
+    while (frames < 240) {
+        steer(ball);
+        advance(ball, width, height);
+
+        // Clearing with a translucent colour instead of an opaque one leaves
+        // the previous frames showing faintly: the ball draws its own trail,
+        // and the fade costs nothing because it is the clear.
+        gameRect(0, 0, width, height, trail);
+        gameCircle(ball.x, ball.y, ball.radius, ball.color);
+        gameCircleOutline(ball.x, ball.y, ball.radius, gameColor(255, 255, 255));
+
+        if (live) {
+            gamePresent();
+            live = gameOpen();
+        }
+        frames = frames + 1;
+    }
+
+    print("frames:", frames);
+    print("ball x:", round(ball.x), "y:", round(ball.y));
+    print("bounced off a wall:", ball.dx != 1 || ball.dy != 1);
+    gameSave("game_bounce.png");
+    print("wrote game_bounce.png");
+}

@@ -213,8 +213,35 @@ pub struct Window {
 
 impl Window {
     /// Open a window, or explain why not.
+    ///
+    /// "Explain" rather than "panic": an MRT program that asks for a window
+    /// on a machine without one has to be able to catch that and carry on
+    /// headless, which `examples/game_bounce.mrt` does. A panic would abort
+    /// the process instead -- and this workspace builds release with
+    /// `panic = "abort"`, so no amount of `catch_unwind` upstream could
+    /// soften it.
     pub fn new(width: u32, height: u32, title: &str) -> Result<Window, String> {
-        let event_loop = EventLoop::new().map_err(|e| format!("no window system: {e}"))?;
+        #[allow(unused_mut)]
+        let mut builder = EventLoop::builder();
+
+        // winit panics outright when an event loop is built off the main
+        // thread. On macOS and Windows that requirement is real -- the OS
+        // demands it. On X11 and Wayland it is only a portability warning,
+        // and MRT's interpreter is not guaranteed to be on the main thread:
+        // an embedding may run it anywhere, and `cargo test` certainly does.
+        // Opting in here is what turns a process abort into an ordinary
+        // window on the platform where nothing is actually wrong.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use winit::platform::wayland::EventLoopBuilderExtWayland;
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
+            EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
+        }
+
+        let event_loop = builder
+            .build()
+            .map_err(|e| format!("no window system: {e}"))?;
         event_loop.set_control_flow(ControlFlow::Poll);
         let mut window = Window {
             event_loop,

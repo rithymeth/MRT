@@ -58,3 +58,4 @@ compiler/target/
 
 # Frames written by examples/game_*.mrt, which save into the working directory.
 game_shapes.png
+game_bounce.png

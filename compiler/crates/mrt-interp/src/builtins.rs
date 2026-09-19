@@ -93,6 +93,13 @@ const NAMES: &[&str] = &[
     "gameCircleOutline",
     "gameColorAt",
     "gameSave",
+    "gameOpen",
+    "gamePresent",
+    "gameDelta",
+    "gameKeyDown",
+    "gameKeyPressed",
+    "gamePointer",
+    "gameClose",
 ];
 
 pub fn install(globals: &Env) {
@@ -342,6 +349,44 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 )));
             };
             crate::game::save(&interp.screen, path)
+        }
+
+        // -- the window half: a game's main loop lives in MRT source ---------
+        // `while (gameOpen()) { ...; gamePresent(); }`. See crate::game::live
+        // for why the loop is the program's and not the engine's.
+        "gameOpen" => {
+            exactly(&args, 0, "gameOpen() takes no arguments.")?;
+            crate::game::live::open(&mut interp.screen)
+        }
+        "gamePresent" => {
+            exactly(&args, 0, "gamePresent() takes no arguments.")?;
+            crate::game::live::present(&mut interp.screen)
+        }
+        "gameDelta" => {
+            exactly(&args, 0, "gameDelta() takes no arguments.")?;
+            crate::game::live::delta(&interp.screen)
+        }
+        "gameKeyDown" | "gameKeyPressed" => {
+            one(&args, name)?;
+            let Value::Str(key) = &args[0] else {
+                return Err(type_error(format!(
+                    "{name}() needs a key name, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            if name == "gameKeyDown" {
+                crate::game::live::key_down(&interp.screen, key)
+            } else {
+                crate::game::live::key_pressed(&interp.screen, key)
+            }
+        }
+        "gamePointer" => {
+            exactly(&args, 0, "gamePointer() takes no arguments.")?;
+            crate::game::live::pointer(&interp.screen)
+        }
+        "gameClose" => {
+            exactly(&args, 0, "gameClose() takes no arguments.")?;
+            crate::game::live::close(&mut interp.screen)
         }
 
         "aiTrainLinear" => {

@@ -41,13 +41,18 @@ use mrt_game::{Color, Surface};
 use crate::error::{type_error, value_error, Signal};
 use crate::value::Value;
 
-/// The engine's screen, plus what a window will need when there is one.
+/// The engine's screen: the picture, and the window showing it if one is open.
 pub struct Screen {
     pub surface: Surface,
-    /// Kept from `gameInit` and unused until a window exists to wear it.
-    /// Stored rather than dropped so that adding the window later changes no
-    /// program: a title set today is the title shown then.
     pub title: String,
+    /// The window, once `gameOpen` has made one.
+    ///
+    /// Opened lazily rather than by `gameInit`, which is what lets a program
+    /// that only draws and saves a PNG run on a machine with no display at
+    /// all -- a build server, or this repository's own test suite. A program
+    /// asks for a window by asking whether one is open.
+    #[cfg(feature = "window")]
+    pub window: Option<mrt_window::Window>,
 }
 
 /// The error every drawing call gets before `gameInit` has run.
@@ -130,6 +135,8 @@ pub fn init(width: usize, height: usize, title: &str) -> Result<Screen, Signal> 
     Ok(Screen {
         surface: Surface::new(width as u32, height as u32, mrt_game::BLACK),
         title: title.to_string(),
+        #[cfg(feature = "window")]
+        window: None,
     })
 }
 
@@ -490,6 +497,69 @@ mod tests {
         );
     }
 
+    /// The window built-ins behave differently depending on how the crate
+    /// was built, so the tests do too. Both arrangements are real and both
+    /// ship: `cargo test -p mrt-interp` runs without the feature, and a
+    /// workspace build turns it on through the CLI.
+    #[test]
+    #[cfg(not(feature = "window"))]
+    fn a_build_without_window_support_says_which_it_is() {
+        // Not a quiet `false`. A loop whose gameOpen() silently returned
+        // false would look exactly like a window that closed immediately,
+        // and the author would go hunting in their own program.
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameOpen();"#),
+            "Runtime Error: gameOpen() needs a build with window support; this one was built without it. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameKeyDown("W");"#),
+            "Runtime Error: gameKeyDown() needs a build with window support; this one was built without it. [line 1]"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "window")]
+    fn with_no_display_opening_a_window_is_an_error_a_program_can_catch() {
+        // This is the property examples/game_bounce.mrt is built on: it runs
+        // on a build server by catching this. A panic here would abort the
+        // program instead, and there would be no way to write one game that
+        // runs both places.
+        //
+        // Skipped where a display exists, since there the window opens.
+        if std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            return;
+        }
+        let output = main_of(
+            r#"gameInit(4, 4, "t");
+               try { gameOpen(); } catch (e) { print("caught", e.kind); }"#,
+        );
+        assert_eq!(output, "caught ValueError");
+    }
+
+    #[test]
+    #[cfg(feature = "window")]
+    fn presenting_before_opening_names_the_call_that_fixes_it() {
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gamePresent();"#),
+            "Runtime Error: gamePresent() needs a window; call gameOpen() first. [line 1]"
+        );
+    }
+
+    #[test]
+    fn the_loop_builtins_still_need_a_screen_first() {
+        // Whichever way the crate was built, asking about a window before
+        // there is anything to show reports the missing gameInit rather than
+        // whatever comes second.
+        assert_eq!(
+            main_of("gamePresent();"),
+            "Runtime Error: gamePresent() needs a screen; call gameInit(width, height, title) first. [line 1]"
+        );
+        assert_eq!(
+            main_of("gameClose();"),
+            "Runtime Error: gameClose() needs a screen; call gameInit(width, height, title) first. [line 1]"
+        );
+    }
+
     #[test]
     fn two_programs_do_not_share_a_screen() {
         // The screen is interpreter state rather than a global, which this
@@ -501,5 +571,164 @@ mod tests {
             "Runtime Error: gameWidth() needs a screen; call gameInit(width, height, title) first. [line 1]",
             "the previous program's screen did not leak into this one"
         );
+    }
+}
+
+/// The window half of the extension.
+///
+/// Every function here exists twice: once against a real window, and once as
+/// a refusal for a build without the `window` feature. Two bodies rather than
+/// one that silently does nothing, because a game loop whose `gameOpen`
+/// quietly returned false would look like a window that closed immediately,
+/// and the author would go looking for the bug in their own program.
+pub mod live {
+    use super::*;
+
+    /// The message a build without window support gives.
+    #[cfg(not(feature = "window"))]
+    fn unsupported(who: &str) -> Signal {
+        value_error(format!(
+            "{who}() needs a build with window support; this one was built without it."
+        ))
+    }
+
+    /// Open the window if it is not open yet, and say whether it is still there.
+    ///
+    /// `while (gameOpen())` is the shape a game's main loop takes, so this is
+    /// also where events get pumped on a frame that draws nothing -- an
+    /// unpumped window is one the desktop marks as not responding.
+    #[cfg(feature = "window")]
+    pub fn open(s: &mut Option<Screen>) -> Result<Value, Signal> {
+        let screen = screen(s, "gameOpen")?;
+        if screen.window.is_none() {
+            let window =
+                mrt_window::Window::new(screen.surface.width, screen.surface.height, &screen.title)
+                    .map_err(|e| value_error(format!("gameOpen(): {e}")))?;
+            screen.window = Some(window);
+        }
+        let window = screen.window.as_mut().expect("just opened");
+        Ok(Value::Bool(window.is_open()))
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn open(s: &mut Option<Screen>) -> Result<Value, Signal> {
+        screen(s, "gameOpen")?;
+        Err(unsupported("gameOpen"))
+    }
+
+    /// Put the current frame on the screen.
+    #[cfg(feature = "window")]
+    pub fn present(s: &mut Option<Screen>) -> Result<Value, Signal> {
+        let screen = screen(s, "gamePresent")?;
+        let Some(window) = screen.window.as_mut() else {
+            return Err(value_error(
+                "gamePresent() needs a window; call gameOpen() first.",
+            ));
+        };
+        window
+            .present(&screen.surface)
+            .map_err(|e| value_error(format!("gamePresent(): {e}")))?;
+        Ok(Value::Null)
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn present(s: &mut Option<Screen>) -> Result<Value, Signal> {
+        screen(s, "gamePresent")?;
+        Err(unsupported("gamePresent"))
+    }
+
+    /// Seconds since the previous frame was presented.
+    ///
+    /// What movement is multiplied by, so a thing crossing the screen takes
+    /// the same time on a fast machine and a slow one. A simulation that has
+    /// to be *reproducible* should use a fixed step instead and ignore this:
+    /// real elapsed time is never the same twice.
+    #[cfg(feature = "window")]
+    pub fn delta(s: &Option<Screen>) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameDelta"))?;
+        Ok(Value::Number(
+            screen.window.as_ref().map(|w| w.delta()).unwrap_or(0.0),
+        ))
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn delta(s: &Option<Screen>) -> Result<Value, Signal> {
+        s.as_ref().ok_or_else(|| no_screen("gameDelta"))?;
+        Err(unsupported("gameDelta"))
+    }
+
+    /// Whether a key is held right now.
+    #[cfg(feature = "window")]
+    pub fn key_down(s: &Option<Screen>, key: &str) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameKeyDown"))?;
+        Ok(Value::Bool(
+            screen.window.as_ref().is_some_and(|w| w.key_down(key)),
+        ))
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn key_down(s: &Option<Screen>, _key: &str) -> Result<Value, Signal> {
+        s.as_ref().ok_or_else(|| no_screen("gameKeyDown"))?;
+        Err(unsupported("gameKeyDown"))
+    }
+
+    /// Whether a key went down since the last frame, held or not.
+    ///
+    /// Separate from `key_down` because a key can be pressed and released
+    /// inside one frame, and a menu that only asked what is held would drop
+    /// it -- which feels like the game ignoring input and cannot be
+    /// reproduced on purpose.
+    #[cfg(feature = "window")]
+    pub fn key_pressed(s: &Option<Screen>, key: &str) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameKeyPressed"))?;
+        Ok(Value::Bool(
+            screen.window.as_ref().is_some_and(|w| w.key_pressed(key)),
+        ))
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn key_pressed(s: &Option<Screen>, _key: &str) -> Result<Value, Signal> {
+        s.as_ref().ok_or_else(|| no_screen("gameKeyPressed"))?;
+        Err(unsupported("gameKeyPressed"))
+    }
+
+    /// Where the pointer is, and whether it is held: `{x, y, down}`.
+    #[cfg(feature = "window")]
+    pub fn pointer(s: &Option<Screen>) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gamePointer"))?;
+        let ((x, y), down) = match screen.window.as_ref() {
+            Some(w) => (w.pointer(), w.pointer_down()),
+            None => ((0.0, 0.0), false),
+        };
+        let mut map = crate::value::ObjMap::new();
+        map.insert(crate::value::ObjKey::Str(Rc::from("x")), Value::Number(x));
+        map.insert(crate::value::ObjKey::Str(Rc::from("y")), Value::Number(y));
+        map.insert(
+            crate::value::ObjKey::Str(Rc::from("down")),
+            Value::Bool(down),
+        );
+        Ok(Value::object(map))
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn pointer(s: &Option<Screen>) -> Result<Value, Signal> {
+        s.as_ref().ok_or_else(|| no_screen("gamePointer"))?;
+        Err(unsupported("gamePointer"))
+    }
+
+    /// End the loop, as if the close button had been pressed.
+    #[cfg(feature = "window")]
+    pub fn close(s: &mut Option<Screen>) -> Result<Value, Signal> {
+        let screen = screen(s, "gameClose")?;
+        if let Some(window) = screen.window.as_mut() {
+            window.close();
+        }
+        Ok(Value::Null)
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn close(s: &mut Option<Screen>) -> Result<Value, Signal> {
+        screen(s, "gameClose")?;
+        Err(unsupported("gameClose"))
     }
 }

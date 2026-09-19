@@ -667,6 +667,7 @@ dependencies = [
  "mrt-diagnostics",
  "mrt-game",
  "mrt-parser",
+ "mrt-window",
 ]
 
 [[package]]

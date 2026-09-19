@@ -55,11 +55,30 @@ Run it with:
 `compiler/crates/mrt-interp/src/game.rs`, and the decision worth reading there
 is why the screen is *not* an MRT value when a model is.
 
+## The window
+
+`mrt-window` is a separate crate, and the only one here with dependencies. A
+program reaches it through `gameOpen`, `gamePresent`, `gameKeyDown` and
+friends, with the loop written in MRT rather than owned by an engine:
+
+```mrt
+while (gameOpen()) {
+    gameClear(sky);
+    gameCircle(ball.x, ball.y, 16, gold);
+    gamePresent();
+}
+```
+
+The window opens on the first `gameOpen`, not at `gameInit`, so a program
+that only draws and saves a PNG needs no display at all — and asking for a
+window where there is none is a catchable error rather than a crash, which is
+what lets `examples/game_bounce.mrt` run both on a desktop and on a build
+server and print the same numbers either way.
+
 ## Roadmap
 
-Done: the surface, the drawing primitives, PNG output, and the `game*`
-built-ins that reach them.
+Done: the surface, the drawing primitives, PNG output, the `game*` built-ins,
+a window, input and a frame loop.
 
-Next, and in this order: a window and a frame loop — one problem, not two,
-since a window that does not pump its event queue is a frozen window. Then
-input, sprites and text; then collision; then the CLI that packages a game.
+Next: sprites and a bitmap font — a game with no way to draw its own score is
+not finished. Then collision, then the CLI that packages a game.
