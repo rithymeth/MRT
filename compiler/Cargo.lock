@@ -31,12 +31,17 @@ name = "mrt-diagnostics"
 version = "0.1.0"
 
 [[package]]
+name = "mrt-game"
+version = "0.1.0"
+
+[[package]]
 name = "mrt-interp"
 version = "0.1.0"
 dependencies = [
  "mrt-ai",
  "mrt-ast",
  "mrt-diagnostics",
+ "mrt-game",
  "mrt-parser",
 ]
 

@@ -55,3 +55,6 @@ htmlcov/
 
 # Rust build output for the MRT 2.0 frontend
 compiler/target/
+
+# Frames written by examples/game_*.mrt, which save into the working directory.
+game_shapes.png

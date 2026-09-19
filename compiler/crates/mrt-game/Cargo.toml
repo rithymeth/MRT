@@ -1,0 +1,15 @@
+[package]
+name = "mrt-game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# No dependencies, like every other crate here. A 2D framebuffer is arrays and
+# arithmetic; the one thing that would normally pull a crate in is writing a
+# PNG, and `png.rs` does that in a page of code rather than adding a
+# dependency tree to a workspace whose build is deliberately hermetic.
+[dependencies]
+
+[lints]
+workspace = true

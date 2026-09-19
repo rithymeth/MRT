@@ -1,0 +1,76 @@
+// The 2D drawing surface, from MRT source.
+//
+// MRT-AI's sibling: game* is an engine extension too, so only the Rust
+// engines have these builtins and a program using them is not portable MRT.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// There is no window yet. A frame is drawn into a framebuffer and written out
+// as a PNG, which is how you look at it -- and stays how a *test* looks at it
+// once a window does exist, since nothing can assert about a window.
+
+struct Bar {
+    x;
+    height;
+    color;
+}
+
+func palette() {
+    return {
+        sky: gameColor(18, 22, 38),
+        ink: gameColor(238, 238, 245),
+        warm: gameColor(232, 96, 64),
+        cool: gameColor(72, 168, 224),
+        glow: gameColorAlpha(255, 214, 92, 140)
+    };
+}
+
+// A chart, because a bar chart exercises exactly the thing a game does all
+// frame: compute a rectangle from data and fill it.
+func bars(colors) {
+    var heights = [40, 95, 62, 120, 78, 143, 51];
+    var out = [];
+    for (var i = 0; i < len(heights); i = i + 1) {
+        var color = colors.cool;
+        if (heights[i] > 100) { color = colors.warm; }
+        push(out, Bar(60 + i * 46, heights[i], color));
+    }
+    return out;
+}
+
+func main() {
+    var colors = palette();
+    gameInit(400, 240, "MRT Shapes");
+    gameClear(colors.sky);
+
+    // A border, drawn inside its own bounds so it lines up with the edge.
+    gameRectOutline(0, 0, gameWidth(), gameHeight(), 2, colors.ink);
+
+    // The baseline the bars stand on.
+    gameLine(40, 200, 360, 200, colors.ink);
+
+    for (bar in bars(colors)) {
+        gameRect(bar.x, 200 - bar.height, 32, bar.height, bar.color);
+    }
+
+    // A translucent sun: the blend is visible where it crosses a bar.
+    gameCircle(330, 60, 28, colors.glow);
+    gameCircleOutline(330, 60, 28, colors.ink);
+
+    // Fractional coordinates are ordinary -- a moving thing is rarely on a
+    // whole pixel -- and land on the pixel below and left.
+    gamePixel(200.7, 220.9, colors.ink);
+
+    // The program can read its own drawing back, so it can check itself
+    // rather than asking a person to look at the file.
+    print("size:", gameWidth(), "x", gameHeight());
+    print("baseline drawn:", gameColorAt(200, 200) == colors.ink);
+    print("tallest bar is warm:", gameColorAt(292, 100) == colors.warm);
+    print("air above the bars is sky:", gameColorAt(200, 30) == colors.sky);
+    print("off the surface:", gameColorAt(-1, 0));
+
+    var parts = gameColorParts(colors.glow);
+    print("glow alpha:", parts.alpha, "red:", parts.red);
+
+    gameSave("game_shapes.png");
+    print("wrote game_shapes.png");
+}
