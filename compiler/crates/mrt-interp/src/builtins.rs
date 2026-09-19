@@ -65,6 +65,7 @@ const NAMES: &[&str] = &[
     "toArray",
     "take",
     "print",
+    "aiTrainLinear",
 ];
 
 pub fn install(globals: &Env) {
@@ -75,6 +76,30 @@ pub fn install(globals: &Env) {
 
 pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
     match name {
+        "aiTrainLinear" => {
+            exactly(&args, 4, "aiTrainLinear() takes x, y, epochs, and learningRate.")?;
+            let x = tensor_from_mrt(&args[0], "aiTrainLinear")?;
+            let y = tensor_from_mrt(&args[1], "aiTrainLinear")?;
+            let epochs = number(&args[2], "aiTrainLinear")? as usize;
+            let lr = number(&args[3], "aiTrainLinear")?;
+            if epochs == 0 { return Err(value_error("aiTrainLinear() epochs must be greater than zero.")); }
+            if lr <= 0.0 { return Err(value_error("aiTrainLinear() learningRate must be greater than zero.")); }
+
+            let mut model = mrt_ai::Sequential::new();
+            model.add(mrt_ai::Dense::new(x.cols, y.cols, 42));
+            let mut trainer = mrt_ai::Trainer::new(epochs, lr);
+            let history = trainer.train(&mut model, &x, &y)
+                .map_err(|e| value_error(e.to_string()))?;
+            let prediction = model.forward(&x)
+                .map_err(|e| value_error(e.to_string()))?;
+
+            let mut result = ObjMap::new();
+            result.insert(ObjKey::Str(Rc::from("loss")), Value::Number(*history.last().unwrap_or(&0.0)));
+            result.insert(ObjKey::Str(Rc::from("initialLoss")), Value::Number(history[0]));
+            result.insert(ObjKey::Str(Rc::from("predictions")), tensor_to_mrt(&prediction));
+            result.insert(ObjKey::Str(Rc::from("epochs")), Value::Number(epochs as f64));
+            Ok(Value::object(result))
+        }
         // -- arrays --------------------------------------------------------
         "len" => {
             one(&args, "len")?;
@@ -749,4 +774,33 @@ fn flatten_into(items: &[Value], depth: i64, out: &mut Vec<Value>) {
             other => out.push(other.clone()),
         }
     }
+}
+
+fn tensor_from_mrt(value: &Value, who: &str) -> Result<mrt_ai::Tensor, Signal> {
+    let Value::Array(rows) = value else {
+        return Err(type_error(format!("{who}() expects a 2D array.")));
+    };
+    let rows = rows.borrow();
+    if rows.is_empty() { return Err(value_error(format!("{who}() cannot train on an empty tensor."))); }
+    let mut data = Vec::new();
+    let mut cols = None;
+    for row in rows.iter() {
+        let Value::Array(items) = row else {
+            return Err(type_error(format!("{who}() expects rows to be arrays.")));
+        };
+        let items = items.borrow();
+        if items.is_empty() { return Err(value_error(format!("{who}() rows cannot be empty."))); }
+        if let Some(expected) = cols {
+            if expected != items.len() { return Err(value_error(format!("{who}() rows must have equal lengths."))); }
+        } else { cols = Some(items.len()); }
+        for item in items.iter() { data.push(number(item, who)?); }
+    }
+    mrt_ai::Tensor::from_vec(rows.len(), cols.unwrap(), data)
+        .map_err(|e| value_error(e.to_string()))
+}
+
+fn tensor_to_mrt(t: &mrt_ai::Tensor) -> Value {
+    Value::array((0..t.rows).map(|r| {
+        Value::array((0..t.cols).map(|c| Value::Number(t.get(r,c))).collect())
+    }).collect())
 }
