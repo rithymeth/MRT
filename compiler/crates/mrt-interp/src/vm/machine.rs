@@ -14,6 +14,7 @@ use mrt_ast::BinOp;
 
 use crate::env::Env;
 use crate::error::{type_error, Kind, Signal, Thrown};
+use crate::generator::{Cursor, GenState, Generator, SavedHandler, Suspended};
 use crate::value::{stringify, Compiled, ObjKey, ObjMap, Value};
 use crate::vm::chunk::{Chunk, Op, Proto};
 use crate::Interpreter;
@@ -50,24 +51,29 @@ pub struct Vm<'a> {
     pending: Vec<Pending>,
     /// Live `for`-`in` cursors, innermost last.
     ///
+    /// A cursor is lazy, so `for (n in naturals())` pulls one value per turn
+    /// of the loop rather than trying to collect an endless sequence first.
+    ///
     /// Kept in their own typed stack rather than as a `Value` on the operand
     /// stack: a cursor is machine state, not an MRT value, and putting one
     /// where a program could observe it would be inventing a type the
     /// language does not have.
     cursors: Vec<Cursor>,
-}
-
-/// A `for`-`in` cursor: the materialised items and how far through them the
-/// loop has got.
-struct Cursor {
-    items: Vec<Value>,
-    next: usize,
+    /// True when frame 0 is a generator's body rather than an ordinary call.
+    ///
+    /// Such a frame names itself on a trace as the *generator* -- `<generator
+    /// boom>` -- which `resume_generator` adds as the signal leaves. Without
+    /// this the frame would also contribute its function name and appear
+    /// twice under two spellings.
+    generator_body: bool,
 }
 
 /// Whether the machine should keep stepping.
 enum Step {
     Running,
     Done(Value),
+    /// The running generator parked itself at a `yield`.
+    Yielded(Value),
 }
 
 /// One open `try`.
@@ -126,6 +132,7 @@ impl<'a> Vm<'a> {
             handlers: Vec::new(),
             pending: Vec::new(),
             cursors: Vec::new(),
+            generator_body: false,
         }
     }
 
@@ -143,6 +150,7 @@ impl<'a> Vm<'a> {
                 chunk,
                 slots: 0,
                 simple_params: true,
+                is_generator: false,
             }),
             ip: 0,
             env,
@@ -199,6 +207,10 @@ impl<'a> Vm<'a> {
             match self.step() {
                 Ok(Step::Running) => {}
                 Ok(Step::Done(value)) => return Ok(value),
+                // Reached only if a yield were compiled outside a generator,
+                // which the compiler refuses; running it would be a bug here
+                // rather than a program error.
+                Ok(Step::Yielded(_)) => unreachable!("yield outside a generator"),
                 Err(signal) => self.unwind(signal)?,
             }
         }
@@ -216,12 +228,18 @@ impl<'a> Vm<'a> {
             let frame = self.frames.pop().expect("a frame to unwind");
             // The entry chunk is not a function, so it contributes no name --
             // the same reason the tree-walker's top level does not.
-            if let Some(name) = &frame.proto.name {
-                signal = signal.with_frame(name);
-            } else if self.frames.is_empty() {
-                // The bottom frame is the entry chunk.
-            } else {
-                signal = signal.with_frame("<anonymous>");
+            // The bottom frame names itself only if it is an ordinary call.
+            // A generator body is named by its label as the signal leaves the
+            // machine, and the entry chunk is not a function at all -- the
+            // same reason the tree-walker's top level contributes nothing.
+            let bottom = self.frames.is_empty();
+            if bottom && self.generator_body {
+                continue;
+            }
+            match &frame.proto.name {
+                Some(name) => signal = signal.with_frame(name),
+                None if bottom => {}
+                None => signal = signal.with_frame("<anonymous>"),
             }
         }
         signal
@@ -442,6 +460,14 @@ impl<'a> Vm<'a> {
                     let args = self.pop_n(n as usize);
                     self.interp.print_values(&args);
                 }
+                Op::PrintSpread => {
+                    let gathered = self.pop();
+                    let Value::Array(args) = gathered else {
+                        unreachable!("BeginSpread pushes an array");
+                    };
+                    let args = args.borrow().clone();
+                    self.interp.print_values(&args);
+                }
 
                 Op::Closure(i) => {
                     let proto = self.frame().proto.chunk.protos[i as usize].clone();
@@ -478,16 +504,18 @@ impl<'a> Vm<'a> {
 
                 Op::IterInit => {
                     let iterable = self.pop();
-                    let items = self.interp.iterate(&iterable, Some(line))?;
-                    self.cursors.push(Cursor { items, next: 0 });
+                    let cursor = self.interp.cursor(&iterable, Some(line))?;
+                    self.cursors.push(cursor);
                 }
                 Op::IterNext(target) => {
-                    let cursor = self.cursors.last_mut().expect("a cursor");
-                    match cursor.items.get(cursor.next).cloned() {
-                        Some(item) => {
-                            cursor.next += 1;
-                            self.push(item);
-                        }
+                    // Lifted out for the pull: advancing a generator runs MRT
+                    // code, which needs the interpreter, and leaving the
+                    // cursor in place would hold a borrow across that.
+                    let mut cursor = self.cursors.pop().expect("a cursor");
+                    let item = self.interp.advance(&mut cursor, Some(line));
+                    self.cursors.push(cursor);
+                    match item? {
+                        Some(item) => self.push(item),
                         None => self.jump(target),
                     }
                 }
@@ -602,6 +630,34 @@ impl<'a> Vm<'a> {
                     self.call_with_args_on_stack(callee, argc, line)?;
                 }
 
+                Op::DelegateInit => {
+                    let delegate = self.pop();
+                    let cursor = self.interp.cursor(&delegate, Some(line))?;
+                    self.cursors.push(cursor);
+                }
+                Op::DelegateNext(target) => {
+                    // The sent value is on the stack because the `Yield` that
+                    // received it left it there; it goes into the delegate
+                    // rather than to this frame.
+                    let sent = self.pop();
+                    let mut cursor = self.cursors.pop().expect("a delegate cursor");
+                    let item = self.interp.advance_with(&mut cursor, sent, Some(line));
+                    self.cursors.push(cursor);
+                    match item? {
+                        Some(item) => self.push(item),
+                        None => self.jump(target),
+                    }
+                }
+
+                Op::Yield => {
+                    // Only the generator's own frame can yield: `yield` is
+                    // lexical, so a nested function containing one is its own
+                    // generator and never this one's frame.
+                    debug_assert_eq!(self.frames.len(), 1, "yield outside a generator frame");
+                    let value = self.pop();
+                    return Ok(Step::Yielded(value));
+                }
+
                 Op::Throw => {
                     let value = self.pop();
                     return Err(Signal::Throw(Thrown {
@@ -710,16 +766,38 @@ impl<'a> Vm<'a> {
             return Ok(());
         };
 
+        // Calling a generator function runs none of its body: it hands back
+        // a sequence parked before the first instruction. The arity check
+        // still happens now, at the call, because that is where the reference
+        // implementation reports it and where the program wrote the call.
+        if function.proto.is_generator {
+            if !crate::value::accepts(&function.proto.params, argc) {
+                return Err(arity_error(&function.proto.params, argc, Some(line)));
+            }
+            let args = self.pop_n(argc);
+            self.push(Value::Generator(Rc::new(Generator::starting(
+                generator_label(&function.proto.name),
+                function,
+                args,
+            ))));
+            return Ok(());
+        }
+
+        self.push_call_frame(function, argc, line)
+    }
+
+    /// Push a frame for an ordinary call: check arity, bind parameters, lay
+    /// out slots. Split out from `call_with_args_on_stack` so that resuming a
+    /// generator can reach it without going back through the check that would
+    /// hand it another generator.
+    fn push_call_frame(
+        &mut self,
+        function: Rc<Compiled>,
+        argc: usize,
+        line: u32,
+    ) -> Result<(), Signal> {
         if !crate::value::accepts(&function.proto.params, argc) {
-            return Err(Signal::error(
-                Kind::ArityError,
-                format!(
-                    "Expected {} arguments but got {}.",
-                    crate::value::arity_description(&function.proto.params),
-                    argc
-                ),
-            )
-            .at(Some(line)));
+            return Err(arity_error(&function.proto.params, argc, Some(line)));
         }
 
         let base = self.stack.len() - argc;
@@ -747,4 +825,179 @@ impl<'a> Vm<'a> {
         self.interp.env = scope;
         Ok(())
     }
+
+    // -- generators --------------------------------------------------------
+
+    /// Put a parked frame back into an empty machine, ready to carry on.
+    ///
+    /// The saved depths are absolute within the frame because the frame's
+    /// base is always 0 here: a resumed generator is the only thing on this
+    /// machine, which is what makes restoring it a copy rather than a
+    /// relocation.
+    fn install(&mut self, state: GenState, sent: Value, line: Option<u32>) -> Result<(), Signal> {
+        self.generator_body = true;
+        match state {
+            GenState::Start { function, args } => {
+                let argc = args.len();
+                for arg in args {
+                    self.push(arg);
+                }
+                // The call path does the arity check, parameter binding and
+                // slot layout, so a generator's parameter list means exactly
+                // what any other function's does.
+                self.push_call_frame(function, argc, line.unwrap_or(0))?;
+                // The value sent on the first step is discarded: the body has
+                // not reached a `yield` yet, so there is nothing to receive it.
+                Ok(())
+            }
+            GenState::Suspended(parked) => {
+                let Suspended {
+                    proto,
+                    ip,
+                    env,
+                    stack,
+                    handlers,
+                    cursors,
+                } = *parked;
+                self.stack = stack;
+                self.cursors = cursors;
+                self.handlers = handlers
+                    .into_iter()
+                    .map(|h| Handler {
+                        frame: 1,
+                        stack: h.stack,
+                        cursors: h.cursors,
+                        env: h.env,
+                        catch_ip: h.catch_ip,
+                        finally_ip: h.finally_ip,
+                    })
+                    .collect();
+                self.frames.push(Frame {
+                    proto,
+                    ip,
+                    env: env.clone(),
+                    base: 0,
+                });
+                self.interp.env = env;
+                // The sent value becomes the result of the `yield` the body is
+                // parked at, which is what makes `var got = yield x;` work.
+                self.push(sent);
+                Ok(())
+            }
+            GenState::Running | GenState::Done | GenState::Transform { .. } => {
+                unreachable!("handled before reaching the machine")
+            }
+        }
+    }
+
+    /// Lift the running frame out of the machine and park it in a value.
+    fn park(&mut self) -> Suspended {
+        let frame = self.frames.pop().expect("the generator's frame");
+        Suspended {
+            proto: frame.proto,
+            ip: frame.ip,
+            env: frame.env,
+            stack: std::mem::take(&mut self.stack),
+            handlers: std::mem::take(&mut self.handlers)
+                .into_iter()
+                .map(|h| SavedHandler {
+                    stack: h.stack,
+                    cursors: h.cursors,
+                    env: h.env,
+                    catch_ip: h.catch_ip,
+                    finally_ip: h.finally_ip,
+                })
+                .collect(),
+            cursors: std::mem::take(&mut self.cursors),
+        }
+    }
+
+    /// Step the installed generator body until it yields or finishes.
+    fn drive(&mut self) -> Result<Option<Value>, Signal> {
+        loop {
+            match self.step() {
+                Ok(Step::Running) => {}
+                // `return` inside a generator simply ends the sequence: the
+                // returned value is not an item, because a generator's items
+                // are the ones it yielded.
+                Ok(Step::Done(_)) => return Ok(None),
+                Ok(Step::Yielded(value)) => return Ok(Some(value)),
+                Err(signal) => self.unwind(signal)?,
+            }
+        }
+    }
+}
+
+/// Run a generator's body until its next `yield`.
+///
+/// A fresh machine per step, holding just this generator's frame. That is
+/// affordable because a frame is data: installing one is a move, not a
+/// replay, and it keeps a resumed generator from inheriting the operand
+/// stack of whatever happened to pull from it.
+pub fn resume_generator(
+    interp: &mut Interpreter,
+    generator: &Rc<Generator>,
+    state: GenState,
+    sent: Value,
+    line: Option<u32>,
+) -> Result<Option<Value>, Signal> {
+    // The body and whoever consumes it take turns using the interpreter's
+    // current scope, so the hand-off restores the consumer's.
+    let saved = interp.env.clone();
+    let outcome = {
+        let mut vm = Vm::new(interp);
+        match vm.install(state, sent, line) {
+            Ok(()) => match vm.drive() {
+                Ok(Some(value)) => Ok(Parked::Yielded(value, vm.park())),
+                Ok(None) => Ok(Parked::Finished),
+                Err(signal) => Err(signal),
+            },
+            Err(signal) => Err(signal),
+        }
+    };
+    interp.env = saved;
+
+    match outcome {
+        Ok(Parked::Yielded(value, parked)) => {
+            generator
+                .state
+                .replace(GenState::Suspended(Box::new(parked)));
+            Ok(Some(value))
+        }
+        Ok(Parked::Finished) => {
+            generator.state.replace(GenState::Done);
+            Ok(None)
+        }
+        Err(signal) => {
+            // A generator that failed is finished: there is no resuming a
+            // body that did not reach a `yield`.
+            generator.state.replace(GenState::Done);
+            Err(signal.with_frame(&generator.label))
+        }
+    }
+}
+
+fn arity_error(params: &[mrt_ast::Param], argc: usize, line: Option<u32>) -> Signal {
+    Signal::error(
+        Kind::ArityError,
+        format!(
+            "Expected {} arguments but got {}.",
+            crate::value::arity_description(params),
+            argc
+        ),
+    )
+    .at(line)
+}
+
+/// How a generator names itself when printed or named in a trace.
+pub fn generator_label(name: &Option<String>) -> String {
+    match name {
+        Some(name) => format!("<generator {name}>"),
+        None => "<generator>".into(),
+    }
+}
+
+enum Parked {
+    Yielded(Value, Suspended),
+    Finished,
 }

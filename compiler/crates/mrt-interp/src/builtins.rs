@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use crate::env::Env;
 use crate::error::{arity_error, type_error, value_error, Eval, Kind, Signal};
+use crate::generator::{step_result, Generator, Transform};
 use crate::value::*;
 use crate::{is_iterable, object_fields, Interpreter};
 
@@ -64,6 +65,8 @@ const NAMES: &[&str] = &[
     "sort",
     "toArray",
     "take",
+    "next",
+    "send",
     "print",
     "aiTrainLinear",
 ];
@@ -526,6 +529,31 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 2,
                 format!("{name}() takes a sequence and a function."),
             )?;
+            if !is_iterable(&args[0]) {
+                return Err(type_error(format!(
+                    "{name}() needs something iterable, not {}.",
+                    type_name(&args[0])
+                )));
+            }
+            let kind = if name == "map" {
+                Transform::Map
+            } else {
+                Transform::Filter
+            };
+            // Over a generator the result is itself lazy, so `map` over an
+            // endless sequence is usable -- and, just as importantly, applies
+            // the function only to the items something actually pulls. Over an
+            // eager sequence the answer is an array, because that is what the
+            // source was: laziness is inherited, not imposed.
+            if matches!(&args[0], Value::Generator(_)) {
+                let source = interp.cursor(&args[0], None)?;
+                return Ok(Value::Generator(Rc::new(Generator::transform(
+                    format!("<generator {name}>"),
+                    kind,
+                    source,
+                    args[1].clone(),
+                ))));
+            }
             let items = items_arg(interp, &args[0], name)?;
             let mut out = Vec::new();
             for item in items {
@@ -654,10 +682,51 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
             if count < 0.0 {
                 return Err(value_error("take() count must not be negative."));
             }
-            let items = interp.iterate(&args[0], None)?;
-            Ok(Value::array(
-                items.into_iter().take(count as usize).collect(),
-            ))
+            // Pulled one at a time rather than collected and sliced: `take`
+            // over an endless generator is the whole reason it exists, and it
+            // must leave the generator parked where it stopped.
+            // No iterability check of its own: a non-sequence has to report
+            // the language's own "Can only iterate over ..." here, which
+            // building the cursor already does.
+            let mut cursor = interp.cursor(&args[0], None)?;
+            let mut items = Vec::new();
+            while items.len() < count as usize {
+                match interp.advance(&mut cursor, None)? {
+                    Some(item) => items.push(item),
+                    None => break,
+                }
+            }
+            Ok(Value::array(items))
+        }
+
+        // -- driving a generator by hand ------------------------------------
+        // `for`-`in` is the usual way to consume a sequence; these are for
+        // when a program wants one value at a time, and `send` for when it
+        // wants to pass something back in. Both report `{done, value}` rather
+        // than a bare item, because "the sequence ended" and "the sequence
+        // yielded null" are different answers.
+        "next" | "send" => {
+            let sent = if name == "next" {
+                exactly(&args, 1, "next() takes a generator.")?;
+                Value::Null
+            } else {
+                exactly(&args, 2, "send() takes a generator and a value.")?;
+                args[1].clone()
+            };
+            let Value::Generator(generator) = &args[0] else {
+                return Err(type_error(format!(
+                    "{name}() needs a generator, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            // Stepping a generator that has run out is not an error -- only
+            // *iterating* one is. A hand-driven consumer has no other way to
+            // ask whether there is more.
+            let generator = generator.clone();
+            match interp.step_generator(&generator, sent, None)? {
+                Some(value) => Ok(step_result(false, value)),
+                None => Ok(step_result(true, Value::Null)),
+            }
         }
 
         // -- randomness -----------------------------------------------------

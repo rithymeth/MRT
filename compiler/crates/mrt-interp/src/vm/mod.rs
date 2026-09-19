@@ -36,8 +36,8 @@ pub mod compile;
 pub mod machine;
 
 pub use chunk::{Chunk, Op, Proto};
-pub use compile::{compile_program, Unsupported};
-pub use machine::Vm;
+pub use compile::{compile_function, compile_program, Unsupported};
+pub use machine::{generator_label, resume_generator, Vm};
 
 #[cfg(test)]
 mod tests {
@@ -552,9 +552,161 @@ mod tests {
             vm("import { x } from \"./m.mrt\";\nfunc main() { }"),
             "Runtime Error: modules is not compiled by the VM yet."
         );
+    }
+
+    // -- generators --------------------------------------------------------
+    //
+    // The feature the machine exists for, so these test the *mechanism* --
+    // what a parked frame carries with it -- rather than restating the corpus.
+
+    #[test]
+    fn calling_a_generator_runs_none_of_its_body() {
         assert_eq!(
-            vm("func g() { yield 1; } func main() { }"),
-            "Runtime Error: generators is not compiled by the VM yet."
+            agree("func g() { print(\"ran\"); yield 1; } func main() { var it = g(); print(\"made\"); print(next(it).value); }"),
+            "made\nran\n1"
+        );
+    }
+
+    #[test]
+    fn an_endless_generator_is_consumed_only_as_far_as_asked() {
+        // The property the whole design is for: this program does not
+        // terminate under any implementation that materialises first.
+        assert_eq!(
+            agree("func nat() { var n = 0; while (true) { yield n; n += 1; } } func main() { for (n in nat()) { if (n > 3) { break; } print(n); } }"),
+            "0\n1\n2\n3"
+        );
+    }
+
+    #[test]
+    fn a_generator_resumes_where_an_earlier_consumer_stopped() {
+        assert_eq!(
+            agree("func g() { var i = 0; while (i < 6) { yield i; i += 1; } } func main() { var it = g(); for (x in it) { if (x == 2) { break; } print(x); } for (x in it) { print(x); } }"),
+            "0\n1\n3\n4\n5"
+        );
+    }
+
+    #[test]
+    fn a_parked_frame_keeps_its_locals() {
+        // Slots live on the operand stack, so parking has to carry the
+        // frame's whole stack region or the locals come back as null.
+        assert_eq!(
+            agree("func g() { var a = 1; var b = 10; yield a; a += 1; b += 10; yield a + b; } func main() { for (x in g()) { print(x); } }"),
+            "1\n22"
+        );
+    }
+
+    #[test]
+    fn yield_is_an_expression_that_receives_what_was_sent() {
+        assert_eq!(
+            agree("func echo() { var got = yield 1; print(\"got\", got); yield got; } func main() { var it = echo(); print(next(it).value); print(send(it, \"x\").value); }"),
+            "1\ngot x\nx"
+        );
+    }
+
+    #[test]
+    fn a_generator_parked_inside_a_try_keeps_its_handler() {
+        // The handler stack is frame state: park it with the frame or the
+        // `catch` is gone when the body resumes.
+        assert_eq!(
+            agree("func g() { try { yield 1; throw \"boom\"; } catch (e) { yield \"caught \" + e; } finally { yield \"cleanup\"; } } func main() { for (x in g()) { print(x); } }"),
+            "1\ncaught boom\ncleanup"
+        );
+    }
+
+    #[test]
+    fn a_generator_parked_inside_a_for_in_keeps_its_cursor() {
+        // Cursors are frame state too, and a cursor can itself be over
+        // another generator -- so parking nests.
+        assert_eq!(
+            agree("func inner() { yield 1; yield 2; } func outer() { for (x in inner()) { yield x * 10; } } func main() { for (y in outer()) { print(y); } }"),
+            "10\n20"
+        );
+    }
+
+    #[test]
+    fn a_generator_is_single_use() {
+        assert_eq!(
+            agree("func g() { yield 1; } func main() { var it = g(); for (x in it) { print(x); } for (x in it) { print(x); } }"),
+            "1\nRuntime Error: <generator g> has already been iterated; a generator can only be used once. [line 1]"
+        );
+    }
+
+    #[test]
+    fn resuming_a_generator_from_inside_itself_is_an_error() {
+        assert_eq!(
+            agree("func g() { yield next(self).value; } var self = null; func main() { self = g(); print(next(self).value); }"),
+            "Runtime Error: <generator g> is already running; a generator can't be resumed from inside itself. [line 1]"
+        );
+    }
+
+    #[test]
+    fn an_error_out_of_a_generator_names_the_generator() {
+        // The generator, not the function: a suspended frame is named by the
+        // sequence a consumer is holding, which is what a reader of the trace
+        // is looking for.
+        assert_eq!(
+            agree("func g() { yield 1; var xs = []; print(xs[9]); } func main() { try { for (x in g()) { print(x); } } catch (e) { print(e.stack); } }"),
+            "1\n[<generator g>]"
+        );
+    }
+
+    #[test]
+    fn delegation_forwards_items_and_sent_values() {
+        assert_eq!(
+            agree("func inner() { var got = yield \"i\"; yield \"saw \" + got; } func outer() { yield* inner(); yield \"done\"; } func main() { var it = outer(); print(next(it).value); print(send(it, \"v\").value); print(next(it).value); }"),
+            "i\nsaw v\ndone"
+        );
+    }
+
+    #[test]
+    fn delegation_accepts_any_iterable() {
+        assert_eq!(
+            agree("func g() { yield* [1, 2]; yield* \"ab\"; yield 3; } func main() { for (x in g()) { print(x); } }"),
+            "1\n2\na\nb\n3"
+        );
+    }
+
+    #[test]
+    fn a_generator_method_sees_this() {
+        // Methods are AST closures the tree-walker runs, so this is the path
+        // where the *tree-walker* has to produce a parked frame.
+        assert_eq!(
+            agree("struct Span { lo, hi; func iter() { var n = this.lo; while (n < this.hi) { yield n; n += 1; } } } func main() { for (x in Span(2, 5)) { print(x); } }"),
+            "2\n3\n4"
+        );
+    }
+
+    #[test]
+    fn map_and_filter_over_a_generator_stay_lazy() {
+        assert_eq!(
+            agree("func nat() { var n = 0; while (true) { yield n; n += 1; } } func main() { print(type(map(nat(), func(x) { return x * 2; }))); print(take(filter(nat(), func(x) { return x % 3 == 0; }), 3)); }"),
+            "generator\n[0, 3, 6]"
+        );
+    }
+
+    #[test]
+    fn each_call_makes_an_independent_sequence() {
+        assert_eq!(
+            agree("func g() { yield 1; yield 2; } func main() { var a = g(); var b = g(); print(next(a).value); print(next(b).value); print(a == b); }"),
+            "1\n1\nfalse"
+        );
+    }
+
+    #[test]
+    fn return_ends_the_sequence_early() {
+        assert_eq!(
+            agree("func g() { yield 1; return; yield 2; } func main() { for (x in g()) { print(x); } }"),
+            "1"
+        );
+    }
+
+    #[test]
+    fn an_uncompilable_construct_is_still_refused_by_name() {
+        // Modules are the last gap, and the harness tells "cannot compile
+        // this yet" apart from "compiles it wrongly" purely by this text.
+        assert_eq!(
+            vm("import { x } from \"./m.mrt\";\nfunc main() { }"),
+            "Runtime Error: modules is not compiled by the VM yet."
         );
     }
 }

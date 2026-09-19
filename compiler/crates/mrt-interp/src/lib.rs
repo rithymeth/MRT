@@ -37,6 +37,7 @@
 pub mod builtins;
 pub mod env;
 pub mod error;
+pub mod generator;
 pub mod value;
 pub mod vm;
 
@@ -52,6 +53,7 @@ use crate::env::Env;
 use crate::error::{
     arity_error, type_error, value_error, Eval, Exec, Kind, RuntimeError, Signal, Thrown,
 };
+use crate::generator::{already_iterated, already_running, Cursor, GenState, Generator, Transform};
 use crate::value::*;
 
 pub struct Interpreter {
@@ -367,10 +369,13 @@ impl Interpreter {
                 body,
             } => {
                 let iterable = self.evaluate(iterable)?;
-                let items = self.iterate(&iterable, Some(stmt.line))?;
+                // Pulled one at a time, not collected: the loop has to be able
+                // to walk an endless generator and to stop early, leaving it
+                // parked where it stopped for the next consumer.
+                let mut cursor = self.cursor(&iterable, Some(stmt.line))?;
                 let previous = self.env.clone();
                 let result = (|| -> Exec {
-                    for item in items {
+                    while let Some(item) = self.advance(&mut cursor, Some(stmt.line))? {
                         // A fresh scope per iteration, so a closure made in
                         // the body captures this item rather than sharing one
                         // slot with every other iteration.
@@ -768,12 +773,25 @@ impl Interpreter {
                 self.construct(&struct_type, args, line)
             }
             Value::Function(function) => {
+                // Only the machine can suspend, so an AST generator -- a
+                // struct's generator method, or any generator reached while
+                // the tree-walker is driving -- is compiled here and handed
+                // back as a parked frame. The alternative is a language whose
+                // generators depend on which engine happened to run the file,
+                // which is exactly the drift the corpus exists to prevent.
                 if function.is_generator {
-                    return Err(Signal::error(
-                        Kind::RuntimeError,
-                        "Generators are not implemented in this interpreter yet.",
-                    )
-                    .at(line));
+                    if !function.accepts(args.len()) {
+                        return Err(Signal::error(
+                            Kind::ArityError,
+                            format!(
+                                "Expected {} arguments but got {}.",
+                                function.arity_description(),
+                                args.len()
+                            ),
+                        )
+                        .at(line));
+                    }
+                    return self.make_generator(&function, args, line);
                 }
                 if !function.accepts(args.len()) {
                     return Err(Signal::error(
@@ -1341,46 +1359,254 @@ impl Interpreter {
 
     /// A value's items, materialised.
     ///
-    /// The existing implementations pull lazily so an endless generator is
-    /// usable; without generators there is nothing endless to pull from, so
-    /// this collects. Restoring laziness is part of whatever answers the
-    /// generator question.
+    /// Only for consumers that genuinely need all of them -- `list()`,
+    /// `sorted()`, spread. Anything that consumes in order should take a
+    /// `cursor` instead, because this one does not return on an endless
+    /// generator.
     pub fn iterate(&mut self, value: &Value, line: Option<u32>) -> Result<Vec<Value>, Signal> {
+        let mut cursor = self.cursor(value, line)?;
+        let mut items = Vec::new();
+        while let Some(item) = self.advance(&mut cursor, line)? {
+            items.push(item);
+        }
+        Ok(items)
+    }
+
+    /// A cursor over a value's items, pulling only as far as it is asked.
+    ///
+    /// Laziness is not an optimisation here, it is the feature: `for (n in
+    /// naturals())` over an endless generator has to run, and materialising
+    /// first would simply hang. Eager sources keep the representation they
+    /// already had, so nothing pays for laziness that has none to offer.
+    pub fn cursor(&mut self, value: &Value, line: Option<u32>) -> Result<Cursor, Signal> {
         match value {
-            Value::Array(items) => Ok(items.borrow().clone()),
-            Value::Str(s) => Ok(s.chars().map(|c| Value::str(c.to_string())).collect()),
-            Value::Instance(instance) => {
-                if let Some(method) = instance.struct_type.method("iter") {
-                    let bound = self.bind_method(instance, method);
-                    let sequence = self.call_value(bound, Vec::new(), line)?;
-                    if let Value::Instance(other) = &sequence {
-                        if Rc::ptr_eq(other, instance) {
-                            return Err(value_error(format!(
-                                "{}.iter() returned the struct itself, which would iterate forever.",
-                                instance.struct_type.name
-                            ))
-                            .at(line));
-                        }
-                    }
-                    if !is_iterable(&sequence) {
-                        return Err(type_error(format!(
-                            "{}.iter() returned {}, which isn't iterable.",
-                            instance.struct_type.name,
-                            type_name(&sequence)
-                        ))
-                        .at(line));
-                    }
-                    return self.iterate(&sequence, line);
+            Value::Generator(generator) => {
+                // Single use, and the message has to distinguish "used up"
+                // from "never started" -- a finished generator is an error to
+                // iterate rather than a silently empty loop.
+                if generator.is_done() {
+                    return Err(already_iterated(&generator.label, line));
+                }
+                Ok(Cursor::Gen(generator.clone()))
+            }
+            // The iterator protocol resolves here rather than in the eager
+            // collector, so a struct whose `iter()` hands back a generator is
+            // as lazy as the generator is -- which is the whole point of
+            // letting a struct supply one.
+            Value::Instance(instance) => match instance.struct_type.method("iter") {
+                Some(method) => {
+                    let sequence = self.call_iter(instance, method, line)?;
+                    self.cursor(&sequence, line)
                 }
                 // A struct without `iter()` iterates its field names, exactly
                 // as a plain object does.
-                Ok(instance
-                    .fields
-                    .borrow()
-                    .iter()
-                    .map(|(k, _)| Value::str(k.as_str()))
-                    .collect())
+                None => Ok(Cursor::items(
+                    instance
+                        .fields
+                        .borrow()
+                        .iter()
+                        .map(|(k, _)| Value::str(k.as_str()))
+                        .collect(),
+                )),
+            },
+            other => Ok(Cursor::items(self.collect_eager(other, line)?)),
+        }
+    }
+
+    /// Call a struct's `iter()` and check what it handed back.
+    ///
+    /// The two rejections are the language's, not defensive coding: a struct
+    /// returning *itself* would iterate forever, and one returning something
+    /// that is not a sequence has to say so against the struct rather than
+    /// failing somewhere further along.
+    fn call_iter(
+        &mut self,
+        instance: &Rc<Instance>,
+        method: &Rc<Function>,
+        line: Option<u32>,
+    ) -> Result<Value, Signal> {
+        let bound = self.bind_method(instance, method);
+        let sequence = self.call_value(bound, Vec::new(), line)?;
+        if let Value::Instance(other) = &sequence {
+            if Rc::ptr_eq(other, instance) {
+                return Err(value_error(format!(
+                    "{}.iter() returned the struct itself, which would iterate forever.",
+                    instance.struct_type.name
+                ))
+                .at(line));
             }
+        }
+        if !is_iterable(&sequence) {
+            return Err(type_error(format!(
+                "{}.iter() returned {}, which isn't iterable.",
+                instance.struct_type.name,
+                type_name(&sequence)
+            ))
+            .at(line));
+        }
+        Ok(sequence)
+    }
+
+    /// Pull the next item, or `None` once the sequence has run out.
+    pub fn advance(
+        &mut self,
+        cursor: &mut Cursor,
+        line: Option<u32>,
+    ) -> Result<Option<Value>, Signal> {
+        self.advance_with(cursor, Value::Null, line)
+    }
+
+    /// Pull the next item, passing a sent value into the sequence.
+    ///
+    /// Only `yield*` sends anything: delegation has to forward what was sent
+    /// into the *outer* generator on to the inner one, or a two-way protocol
+    /// stops working the moment it is factored into a delegate. An eager
+    /// sequence has nothing to receive it, so it is dropped there.
+    pub fn advance_with(
+        &mut self,
+        cursor: &mut Cursor,
+        sent: Value,
+        line: Option<u32>,
+    ) -> Result<Option<Value>, Signal> {
+        match cursor {
+            Cursor::Items { items, next } => {
+                let item = items.get(*next).cloned();
+                if item.is_some() {
+                    *next += 1;
+                }
+                Ok(item)
+            }
+            Cursor::Gen(generator) => {
+                let generator = generator.clone();
+                self.step_generator(&generator, sent, line)
+            }
+        }
+    }
+
+    /// Compile an AST generator function's body and park it in a value.
+    ///
+    /// Nothing of the body runs: calling a generator function hands back a
+    /// sequence, and the first instruction waits for the first pull. The
+    /// compiled body is not cached on the function, so two calls of one
+    /// generator function compile twice -- correct, and the cost is paid once
+    /// per call rather than once per step.
+    fn make_generator(
+        &mut self,
+        function: &Rc<Function>,
+        args: Vec<Value>,
+        line: Option<u32>,
+    ) -> Result<Value, Signal> {
+        let proto = vm::compile_function(&function.params, &function.body, function.name.clone())
+            .map_err(|unsupported| {
+            // A generator body using something the compiler does not
+            // handle yet fails here, by name, rather than somewhere
+            // downstream wearing a misleading message.
+            // `Unsupported` already carries the whole sentence.
+            Signal::error(Kind::RuntimeError, unsupported.0).at(line)
+        })?;
+        let compiled = Rc::new(Compiled {
+            proto,
+            closure: function.closure.clone(),
+        });
+        Ok(Value::Generator(Rc::new(Generator::starting(
+            vm::generator_label(&function.name),
+            compiled,
+            args,
+        ))))
+    }
+
+    /// Pull one value from a generator, running its body until it yields.
+    ///
+    /// `Ok(None)` means the sequence has run out. `sent` becomes the value of
+    /// the `yield` the body is parked at -- discarded on the first step,
+    /// because the body has not reached a `yield` yet to receive it.
+    pub fn step_generator(
+        &mut self,
+        generator: &Rc<Generator>,
+        sent: Value,
+        line: Option<u32>,
+    ) -> Result<Option<Value>, Signal> {
+        // Take the state out for the duration of the step. That is what makes
+        // `Running` observable: a body that resumes its own generator finds
+        // it, and gets the language's error instead of a borrow panic from
+        // the host.
+        let state = generator.state.replace(GenState::Running);
+        match state {
+            GenState::Done => {
+                generator.state.replace(GenState::Done);
+                Ok(None)
+            }
+            GenState::Running => {
+                generator.state.replace(GenState::Running);
+                Err(already_running(&generator.label, line))
+            }
+            GenState::Transform { kind, source, f } => {
+                let outcome = self.step_transform(kind, source, f, generator, line);
+                if matches!(outcome, Ok(None) | Err(_)) {
+                    generator.state.replace(GenState::Done);
+                }
+                outcome
+            }
+            started => {
+                // The body runs on the machine: suspending is the one thing
+                // only it can do. Whatever the step leaves behind -- parked
+                // at the next `yield`, or finished -- is written back by the
+                // resumer.
+                vm::resume_generator(self, generator, started, sent, line)
+            }
+        }
+    }
+
+    /// One step of a lazy `map` or `filter`.
+    ///
+    /// Only the pulling is lazy: the function is the language's, so it runs
+    /// through `call_value` exactly as an eager `map` would, and a transform
+    /// over an eager source is still a generator that nothing has to
+    /// materialise.
+    fn step_transform(
+        &mut self,
+        kind: Transform,
+        mut source: Box<Cursor>,
+        f: Value,
+        generator: &Rc<Generator>,
+        line: Option<u32>,
+    ) -> Result<Option<Value>, Signal> {
+        loop {
+            let Some(item) = self.advance(&mut source, line)? else {
+                return Ok(None);
+            };
+            match kind {
+                Transform::Map => {
+                    let mapped = self.call_value(f.clone(), vec![item], line)?;
+                    generator.state.replace(GenState::Transform {
+                        kind,
+                        source,
+                        f: f.clone(),
+                    });
+                    return Ok(Some(mapped));
+                }
+                Transform::Filter => {
+                    let keep = self.call_value(f.clone(), vec![item.clone()], line)?;
+                    if keep.is_truthy() {
+                        generator.state.replace(GenState::Transform {
+                            kind,
+                            source,
+                            f: f.clone(),
+                        });
+                        return Ok(Some(item));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The items of an eager sequence: nothing here can be endless, so
+    /// collecting is safe. Generators and the `iter()` protocol are resolved
+    /// by `cursor` before reaching this.
+    fn collect_eager(&mut self, value: &Value, line: Option<u32>) -> Result<Vec<Value>, Signal> {
+        match value {
+            Value::Array(items) => Ok(items.borrow().clone()),
+            Value::Str(s) => Ok(s.chars().map(|c| Value::str(c.to_string())).collect()),
             Value::Object(map) => Ok(map.borrow().keys().map(|k| k.to_value()).collect()),
             _ => Err(
                 type_error("Can only iterate over an array, string, object, or generator.")
@@ -1691,7 +1917,11 @@ pub fn object_fields(value: &Value) -> Option<Vec<(String, Value)>> {
 pub fn is_iterable(value: &Value) -> bool {
     matches!(
         value,
-        Value::Array(_) | Value::Str(_) | Value::Object(_) | Value::Instance(_)
+        Value::Array(_)
+            | Value::Str(_)
+            | Value::Object(_)
+            | Value::Instance(_)
+            | Value::Generator(_)
     )
 }
 
@@ -1872,12 +2102,18 @@ mod tests {
     }
 
     #[test]
-    fn a_generator_function_reports_that_it_is_not_implemented() {
-        // Pinned deliberately: the interpreter must refuse clearly rather
-        // than silently doing something else, for as long as this is true.
+    fn the_tree_walker_produces_a_generator_by_compiling_it() {
+        // This used to assert the opposite -- that generators were refused.
+        // The tree-walker still cannot *suspend* one, and never will: it
+        // compiles the body and hands back a parked machine frame, so a
+        // generator means the same thing whichever engine ran the file.
         assert_eq!(
             go("func g() { yield 1; }\nfunc main() { print(g()); }"),
-            "Runtime Error: Generators are not implemented in this interpreter yet. [line 2]"
+            "<generator g>"
+        );
+        assert_eq!(
+            go("func g() { yield 1; yield 2; }\nfunc main() { for (x in g()) { print(x); } }"),
+            "1\n2"
         );
     }
 

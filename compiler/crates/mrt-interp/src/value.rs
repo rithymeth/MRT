@@ -37,6 +37,10 @@ pub enum Value {
     Builtin(Rc<Builtin>),
     Struct(Rc<StructType>),
     Instance(Rc<Instance>),
+    /// A suspended computation. Only the VM can make one -- suspending is
+    /// the thing a tree-walker structurally cannot do -- but every engine
+    /// can hold, print and compare one.
+    Generator(Rc<crate::generator::Generator>),
 }
 
 impl Value {
@@ -85,6 +89,7 @@ pub fn type_name(value: &Value) -> String {
         Value::Object(_) => "object".into(),
         Value::Function(_) | Value::Compiled(_) | Value::Builtin(_) => "function".into(),
         Value::Struct(_) => "struct".into(),
+        Value::Generator(_) => "generator".into(),
         // An instance reports its own struct's name, so `type(p) == "Point"`.
         Value::Instance(i) => i.struct_type.name.clone(),
     }
@@ -124,6 +129,8 @@ pub fn stringify(value: &Value) -> String {
         // implementations.
         Value::Builtin(_) => "<builtin>".into(),
         Value::Struct(s) => format!("<struct {}>", s.name),
+        // The label carries the generator's own name: `<generator counter>`.
+        Value::Generator(g) => g.label.clone(),
         Value::Instance(i) => {
             let rendered: Vec<String> = i
                 .fields
@@ -213,6 +220,9 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Compiled(x), Value::Compiled(y)) => Rc::ptr_eq(x, y),
         (Value::Builtin(x), Value::Builtin(y)) => Rc::ptr_eq(x, y),
         (Value::Struct(x), Value::Struct(y)) => Rc::ptr_eq(x, y),
+        // Identity, like a function: two calls of one generator function
+        // are two independent sequences, so they are not equal.
+        (Value::Generator(x), Value::Generator(y)) => Rc::ptr_eq(x, y),
         _ => false,
     }
 }
@@ -489,6 +499,7 @@ impl fmt::Debug for Value {
             Value::Builtin(b) => write!(f, "<builtin {}>", b.name),
             Value::Struct(s) => write!(f, "<struct {}>", s.name),
             Value::Instance(i) => write!(f, "<{}>", i.struct_type.name),
+            Value::Generator(g) => write!(f, "{}", g.label),
         }
     }
 }
