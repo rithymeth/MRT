@@ -25,6 +25,7 @@
 //! walk out of shot -- so an off-screen rectangle is ordinary, not an error,
 //! and must no more panic than it should wrap around to the other side.
 
+pub mod font;
 pub mod png;
 
 use std::io;
@@ -283,6 +284,77 @@ impl Surface {
         }
     }
 
+    /// Draw a line of text, its top-left corner at `x, y`.
+    ///
+    /// `scale` is whole-number pixel doubling, not interpolation: at 2 every
+    /// pixel becomes a 2x2 block. A bitmap font resampled to a fractional
+    /// size turns to mush, and the honest options are the sizes it actually
+    /// has.
+    ///
+    /// Newlines start a new line at the original `x`, so a multi-line string
+    /// lays out the way it reads in source.
+    pub fn text(&mut self, x: i32, y: i32, text: &str, scale: i32, color: Color) {
+        if scale <= 0 {
+            return;
+        }
+        let (mut pen_x, mut pen_y) = (x, y);
+        for c in text.chars() {
+            if c == '\n' {
+                pen_x = x;
+                pen_y += (font::HEIGHT + 1) * scale;
+                continue;
+            }
+            for (row, pixels) in font::glyph(c).iter().enumerate() {
+                for (column, pixel) in pixels.chars().enumerate() {
+                    if pixel != '#' {
+                        continue;
+                    }
+                    // One rect per lit pixel: at scale 1 that is a single
+                    // pixel, and at larger scales it is the block. Going
+                    // through fill_rect means the clipping is the same
+                    // clipping everything else uses.
+                    self.fill_rect(
+                        pen_x + column as i32 * scale,
+                        pen_y + row as i32 * scale,
+                        scale,
+                        scale,
+                        color,
+                    );
+                }
+            }
+            pen_x += font::ADVANCE * scale;
+        }
+    }
+
+    /// How wide `text` will be, for laying something out around it.
+    ///
+    /// The trailing gap after the last character is not counted: a caller
+    /// centring text would otherwise put it half a space to the left, which
+    /// is the kind of thing that looks like carelessness rather than a bug.
+    pub fn text_width(text: &str, scale: i32) -> i32 {
+        if scale <= 0 || text.is_empty() {
+            return 0;
+        }
+        let longest = text
+            .split('\n')
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0) as i32;
+        if longest == 0 {
+            return 0;
+        }
+        (longest * font::ADVANCE - 1) * scale
+    }
+
+    /// How tall `text` will be: one line, or several separated by a row.
+    pub fn text_height(text: &str, scale: i32) -> i32 {
+        if scale <= 0 {
+            return 0;
+        }
+        let lines = text.split('\n').count() as i32;
+        (lines * font::HEIGHT + (lines - 1)) * scale
+    }
+
     /// Draw another surface at a point, blending each pixel.
     pub fn blit(&mut self, source: &Surface, x: i32, y: i32) {
         for row in 0..source.height as i32 {
@@ -505,6 +577,65 @@ mod tests {
         assert_eq!(screen.get(1, 1), Some(RED));
         assert_eq!(screen.get(2, 1), Some(BLACK), "transparent left it alone");
         assert_eq!(screen.get(2, 2).unwrap().red(), 128, "half over black");
+    }
+
+    #[test]
+    fn text_lands_where_it_is_asked_and_is_the_size_it_reports() {
+        let mut surface = Surface::new(80, 20, BLACK);
+        surface.text(2, 3, "Hi", 1, RED);
+        // 'H' is a full-height bar in its first column, so the top-left lit
+        // pixel is exactly at the origin asked for.
+        assert_eq!(surface.get(2, 3), Some(RED));
+        assert_eq!(surface.get(1, 3), Some(BLACK), "nothing to the left");
+        assert_eq!(surface.get(2, 2), Some(BLACK), "nothing above");
+        assert_eq!(Surface::text_width("Hi", 1), 11, "two cells, one gap");
+        assert_eq!(Surface::text_height("Hi", 1), 7);
+    }
+
+    #[test]
+    fn scaling_text_multiplies_whole_pixels() {
+        let mut one = Surface::new(40, 20, BLACK);
+        let mut two = Surface::new(80, 40, BLACK);
+        one.text(0, 0, "L", 1, RED);
+        two.text(0, 0, "L", 2, RED);
+        assert_eq!(count(&two, RED), 4 * count(&one, RED), "every pixel a 2x2");
+        assert_eq!(Surface::text_width("L", 2), 2 * Surface::text_width("L", 1));
+    }
+
+    #[test]
+    fn several_lines_stack_without_touching() {
+        let text = "A\nA";
+        assert_eq!(Surface::text_height(text, 1), 15, "7 + gap + 7");
+        assert_eq!(
+            Surface::text_width(text, 1),
+            5,
+            "as wide as its widest line"
+        );
+
+        let mut surface = Surface::new(20, 20, BLACK);
+        surface.text(0, 0, text, 1, RED);
+        // The row between the two lines has to be empty, or descenders and
+        // capitals from neighbouring lines collide.
+        let blank = (0..20).all(|x| surface.get(x, 7) == Some(BLACK));
+        assert!(blank, "the gap row is not blank");
+    }
+
+    #[test]
+    fn text_clips_like_everything_else() {
+        let mut surface = Surface::new(8, 8, BLACK);
+        surface.text(-100, -100, "hello", 1, RED);
+        surface.text(1000, 2, "hello", 1, RED);
+        surface.text(6, 2, "hello", 3, RED);
+        assert_eq!(surface.width, 8, "and none of that panicked");
+    }
+
+    #[test]
+    fn a_nonsense_scale_draws_nothing_rather_than_looping() {
+        let mut surface = Surface::new(8, 8, BLACK);
+        surface.text(0, 0, "x", 0, RED);
+        surface.text(0, 0, "x", -4, RED);
+        assert_eq!(count(&surface, RED), 0);
+        assert_eq!(Surface::text_width("x", 0), 0);
     }
 
     #[test]

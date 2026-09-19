@@ -100,6 +100,15 @@ func main() {
         gameCircle(ball.x, ball.y, ball.radius, ball.color);
         gameCircleOutline(ball.x, ball.y, ball.radius, gameColor(255, 255, 255));
 
+        // A heads-up display: the thing every game needs and no game can draw
+        // without a font. Right-aligned by measuring the text first, which is
+        // what gameTextWidth is for.
+        var ink = gameColor(235, 238, 245);
+        gameText(8, 8, "MRT BOUNCE", 2, ink);
+        var counter = "frame ${frames}";
+        gameText(width - gameTextWidth(counter, 1) - 8, 10, counter, 1, ink);
+        gameText(8, height - 18, "arrow keys steer, escape quits", 1, ink);
+
         if (live) {
             gamePresent();
             live = gameOpen();
@@ -110,6 +119,7 @@ func main() {
     print("frames:", frames);
     print("ball x:", round(ball.x), "y:", round(ball.y));
     print("bounced off a wall:", ball.dx != 1 || ball.dy != 1);
+    print("hud width:", gameTextWidth("MRT BOUNCE", 2));
     gameSave("game_bounce.png");
     print("wrote game_bounce.png");
 }

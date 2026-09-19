@@ -1433,8 +1433,17 @@ func main() {
 | `gameRectOutline(x, y, w, h, thickness, color)` | Its outline, drawn *inside* those bounds. |
 | `gameLine(x1, y1, x2, y2, color)` | A one-pixel line. |
 | `gameCircle(x, y, radius, color)` / `gameCircleOutline(...)` | Filled and hollow circles. |
+| `gameText(x, y, text, scale, color)` | Draws text. `scale` doubles whole pixels; `\n` starts a new line. |
+| `gameTextWidth(text, scale)` / `gameTextHeight(...)` | How big that text will be — needs no screen, so a layout can be computed before one exists. |
 | `gameColorAt(x, y)` | The colour at a point, or `null` off the screen. |
 | `gameSave(path)` | Writes the frame as a PNG. |
+
+The font is 5x7, covering printable ASCII, and a character it has no glyph for
+draws as `?` rather than as nothing: text that silently loses characters reads
+as a bug in the program's own logic and sends its author looking in the wrong
+place. `scale` is whole-number pixel doubling rather than interpolation — a
+bitmap font resampled to a fractional size turns to mush, so the honest
+options are the sizes it has.
 
 #### The loop belongs to the program
 

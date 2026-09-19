@@ -75,10 +75,27 @@ window where there is none is a catchable error rather than a crash, which is
 what lets `examples/game_bounce.mrt` run both on a desktop and on a build
 server and print the same numbers either way.
 
+## The font
+
+`font.rs` is a 5x7 bitmap font for printable ASCII, and each glyph is written
+as the shape it draws:
+
+```rust
+('A',  [" ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"]),
+```
+
+A bitmap font is normally a wall of hex, which is compact, unreadable, and
+impossible to check by eye — one wrong nibble is a letter with a hole in it
+and you find out by rendering. Five bytes a row instead of one, in a constant,
+in a program about to allocate a megabyte for a framebuffer, is no cost at
+all. What it buys is that a reader can check the font without running it, and
+can add a glyph by drawing one.
+
 ## Roadmap
 
 Done: the surface, the drawing primitives, PNG output, the `game*` built-ins,
-a window, input and a frame loop.
+a window, input, a frame loop, and text.
 
-Next: sprites and a bitmap font — a game with no way to draw its own score is
-not finished. Then collision, then the CLI that packages a game.
+Next: sprites — `blit` exists here, but nothing in MRT can yet make an
+offscreen surface to blit *from*. Then collision, then the CLI that packages
+a game.

@@ -92,6 +92,9 @@ const NAMES: &[&str] = &[
     "gameCircle",
     "gameCircleOutline",
     "gameColorAt",
+    "gameText",
+    "gameTextWidth",
+    "gameTextHeight",
     "gameSave",
     "gameOpen",
     "gamePresent",
@@ -339,6 +342,46 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 Some(c) => Value::Number(c.0 as f64),
                 None => Value::Null,
             })
+        }
+        "gameText" => {
+            exactly(
+                &args,
+                5,
+                "gameText() takes x, y, the text, a scale, and a colour.",
+            )?;
+            let Value::Str(text) = &args[2] else {
+                return Err(type_error(format!(
+                    "gameText() needs the text to be a string, not {}.",
+                    type_name(&args[2])
+                )));
+            };
+            let text = text.clone();
+            crate::game::draw::text(
+                &mut interp.screen,
+                coord(&args[0], "gameText", "x")?,
+                coord(&args[1], "gameText", "y")?,
+                &text,
+                coord(&args[3], "gameText", "the scale")?,
+                color(&args[4], "gameText")?,
+            )
+        }
+        "gameTextWidth" | "gameTextHeight" => {
+            // Measuring needs no screen: it is arithmetic on the font, and a
+            // program laying out a menu before it opens a window should not
+            // have to call gameInit to find out how wide a word is.
+            exactly(&args, 2, format!("{name}() takes the text and a scale."))?;
+            let Value::Str(text) = &args[0] else {
+                return Err(type_error(format!(
+                    "{name}() needs the text to be a string, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            let scale = coord(&args[1], name, "the scale")?;
+            Ok(Value::Number(if name == "gameTextWidth" {
+                mrt_game::Surface::text_width(text, scale) as f64
+            } else {
+                mrt_game::Surface::text_height(text, scale) as f64
+            }))
         }
         "gameSave" => {
             one(&args, "gameSave")?;

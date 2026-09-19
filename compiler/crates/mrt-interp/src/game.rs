@@ -246,6 +246,18 @@ pub mod draw {
         Ok(Value::Null)
     }
 
+    pub fn text(
+        s: &mut Option<Screen>,
+        x: i32,
+        y: i32,
+        text: &str,
+        scale: i32,
+        c: Color,
+    ) -> Result<Value, Signal> {
+        screen(s, "gameText")?.surface.text(x, y, text, scale, c);
+        Ok(Value::Null)
+    }
+
     pub fn circle_outline(
         s: &mut Option<Screen>,
         x: i32,
@@ -542,6 +554,59 @@ mod tests {
         assert_eq!(
             main_of(r#"gameInit(4, 4, "t"); gamePresent();"#),
             "Runtime Error: gamePresent() needs a window; call gameOpen() first. [line 1]"
+        );
+    }
+
+    #[test]
+    fn text_draws_and_measures() {
+        assert_eq!(
+            drawing(
+                r#"var ink = gameColor(255, 255, 255);
+                   gameText(0, 0, "L", 1, ink);
+                   print(gameColorAt(0, 0) == ink, gameColorAt(4, 6) == ink);
+                   print(gameColorAt(4, 0) == ink);"#
+            ),
+            "true true\nfalse",
+            "an L is a full left bar and a full bottom bar, and nothing top-right"
+        );
+    }
+
+    #[test]
+    fn measuring_text_needs_no_screen() {
+        // A program laying out a menu before it opens a window should not
+        // have to call gameInit to find out how wide a word is.
+        assert_eq!(
+            main_of(r#"print(gameTextWidth("Hi", 1), gameTextHeight("Hi", 1));"#),
+            "11 7"
+        );
+        assert_eq!(
+            main_of(r#"print(gameTextWidth("Hi", 3), gameTextHeight("a\nb", 2));"#),
+            "33 30"
+        );
+        assert_eq!(
+            main_of(r#"print(gameTextWidth("", 2));"#),
+            "0",
+            "nothing is no wide"
+        );
+    }
+
+    #[test]
+    fn an_unknown_character_is_visible_rather_than_silently_dropped() {
+        // Text that quietly loses characters reads as a bug in the program's
+        // own logic, and sends the author looking in the wrong place.
+        assert_eq!(
+            drawing(
+                r#"var ink = gameColor(255, 255, 255);
+                   gameText(0, 0, "\t", 1, ink);
+                   var lit = 0;
+                   for (var y = 0; y < 7; y = y + 1) {
+                       for (var x = 0; x < 5; x = x + 1) {
+                           if (gameColorAt(x, y) == ink) { lit = lit + 1; }
+                       }
+                   }
+                   print(lit > 0);"#
+            ),
+            "true"
         );
     }
 
