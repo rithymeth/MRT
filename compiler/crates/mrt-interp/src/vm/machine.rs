@@ -658,6 +658,38 @@ impl<'a> Vm<'a> {
                     return Ok(Step::Yielded(value));
                 }
 
+                Op::Import(index) => {
+                    // The loader is interpreter state -- path resolution, the
+                    // evaluation cache, the cycle stack -- so the statement
+                    // goes back to the tree-walker whole. Names it binds land
+                    // in `interp.env`, which the seam invariant guarantees is
+                    // this frame's scope.
+                    let proto = self.frame().proto.clone();
+                    let spec = &proto.chunk.modules[index as usize];
+                    self.interp.execute_import(
+                        &spec.names,
+                        spec.namespace.as_ref(),
+                        &spec.specifier,
+                        line,
+                    )?;
+                }
+                Op::ExportNames(index) => {
+                    let proto = self.frame().proto.clone();
+                    let spec = &proto.chunk.module_exports[index as usize];
+                    self.interp.execute_export_names(
+                        &spec.names,
+                        spec.specifier.as_deref(),
+                        line,
+                    )?;
+                }
+                Op::RecordExport(index) => {
+                    // Read back rather than captured: `export var x = f();`
+                    // exports whatever `x` ended up bound to.
+                    let name = self.frame().proto.chunk.names[index as usize].clone();
+                    let value = self.interp.env.get(&name, Some(line))?;
+                    self.interp.record_export(&name, value);
+                }
+
                 Op::Throw => {
                     let value = self.pop();
                     return Err(Signal::Throw(Thrown {

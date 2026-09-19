@@ -4,12 +4,17 @@
 // scripts/parity-cases.mjs -- the same corpus the other three implementations
 // are held to.
 //
-// The VM compiles a subset of MRT and refuses the rest by name, so most of
-// the corpus is recorded as *unsupported* rather than as a mismatch. That is
-// a hole big enough to hide a regression in, so the unsupported set is a
-// ratchet: the harness fails both when a case newly stops compiling and when
-// a listed case starts working. Widening the compiler is therefore expected
-// to fail this script once, on purpose, until the list is shortened.
+// A construct the VM cannot compile is recorded as *unsupported* rather than
+// as a mismatch. That is a hole big enough to hide a regression in, so the
+// unsupported set is a ratchet: the harness fails both when a case newly
+// stops compiling and when a listed case starts working. Widening the
+// compiler is therefore expected to fail this script once, on purpose, until
+// the list is shortened.
+//
+// That list is now empty. The VM compiles the whole language -- the same
+// point the tree-walker reached -- which is exactly when the ratchet starts
+// earning its keep: from here there is nowhere for a regression to hide as
+// "not implemented yet".
 //
 // What matters here is the other number: of the cases the VM *does* compile,
 // every one must match the reference byte for byte. A VM that runs less of
