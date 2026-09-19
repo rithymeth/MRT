@@ -253,7 +253,7 @@ tree-walker.
 instruction vector, and a loop that steps it. It runs a growing subset of the
 language and refuses the rest **by name**, so the conformance harness can
 tell "does not compile this yet" apart from "compiles it wrongly". Still
-outstanding: `match`, structs, modules, destructuring, spread, generators.
+outstanding: modules and generators.
 
 ```bash
 node scripts/check-vm-conformance.mjs   # or: npm run check:vm
@@ -333,6 +333,28 @@ One case is refused rather than approximated: a `break` or `continue` that
 jumps out of a `try` with a `finally`. Running the block on the way past
 needs machinery this compiler does not have, and jumping over it would be
 silently wrong.
+
+### One seam worth knowing about
+
+The two engines share more than values. The tree-walker's helpers *are* the
+VM's semantics — binding a parameter list, taking a value apart through a
+pattern, testing a match pattern — and some of them read
+`Interpreter::env` rather than taking a scope. Resolving the struct name in
+`case Point(x, y):` is one.
+
+So while the VM runs, the interpreter's current scope has to **be** the
+running frame's scope. The invariant is maintained wherever a frame's scope
+changes — entering and leaving a block, calling, returning, unwinding —
+which is cheaper to get right than remembering it at every delegation. Until
+it was, a struct pattern reported "undefined variable" instead of the
+language's own "not a struct, so it can't be used as a pattern".
+
+A related rule governs slots: a name the tree-walker will reach **by name**
+cannot live in one. That covers captured names, pattern-assignment targets
+(`[a, b] = [b, a]`), and the struct names a match pattern mentions. Names a
+pattern *binds* go in the environment too, and are still recorded in the
+compiler's scope so they shadow an outer slot of the same name — without
+that, `catch (e)` inside a function with a slotted `e` reads the wrong one.
 
 ### What it deliberately does not own
 

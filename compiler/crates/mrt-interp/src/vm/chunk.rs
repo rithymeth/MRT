@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use mrt_ast::{BinOp, Param, Pattern};
+use mrt_ast::{BinOp, MatchPattern, Param, Pattern, Stmt};
 
 use crate::value::Value;
 
@@ -93,6 +93,33 @@ pub enum Op {
     },
     /// Leave a `try` normally.
     PopHandler,
+    /// Declare a struct type from its definition, closing over the current
+    /// environment for its methods.
+    Struct(u32),
+    /// Test the value on top of the stack against a match pattern, binding
+    /// what it captures. Pushes the verdict and leaves the value in place
+    /// for the next case.
+    MatchPattern(u32),
+    /// Fail a `match` that ran out of cases, naming the value that matched
+    /// nothing.
+    NoMatch,
+
+    /// Bind the value on top of the stack through a pattern, declaring the
+    /// names it introduces. Pops the value; a pattern that cannot take it
+    /// apart is an error, unlike `BindCatch`.
+    BindPattern(u32),
+    /// Assign through a pattern to variables that already exist.
+    AssignPattern(u32),
+    /// Append the iterable on top of the stack to the array below it -- how
+    /// `...xs` is spread into a call's arguments or an array literal.
+    SpreadInto,
+    /// Start collecting a spread argument list: push an empty array.
+    BeginSpread,
+    /// Append the value on top of the stack to the array below it.
+    PushInto,
+    /// Call with the argument array on top of the stack.
+    CallSpread,
+
     /// Bind the value on top of the stack through a catch clause's pattern,
     /// pushing `true` if it bound and `false` if the clause does not apply.
     /// The value itself stays on the stack for the next clause to try.
@@ -126,10 +153,18 @@ pub struct Chunk {
     pub names: Vec<Rc<str>>,
     /// Nested function prototypes, indexed by the `u32` in `Closure`.
     pub protos: Vec<Rc<Proto>>,
-    /// Catch-clause patterns, indexed by the `u32` in `BindCatch`. Kept as
-    /// AST and bound by the tree-walker, so a pattern means one thing in
-    /// both engines -- the same reason parameter lists are kept whole.
+    /// Catch-clause and destructuring patterns, indexed by the `u32` in
+    /// `BindCatch`, `BindPattern` and `AssignPattern`. Kept as AST and bound
+    /// by the tree-walker, so a pattern means one thing in both engines --
+    /// the same reason parameter lists are kept whole.
     pub patterns: Vec<Pattern>,
+    /// Match patterns, indexed by the `u32` in `MatchPattern`. A separate
+    /// list because they are a separate language: a binding pattern takes a
+    /// value apart and fails loudly, a match pattern *tests* one.
+    pub match_patterns: Vec<MatchPattern>,
+    /// Struct definitions, indexed by the `u32` in `Struct`: the name, its
+    /// fields, and its methods as AST.
+    pub structs: Vec<(String, Vec<Param>, Vec<Stmt>)>,
 }
 
 impl Chunk {
@@ -141,6 +176,8 @@ impl Chunk {
             names: Vec::new(),
             protos: Vec::new(),
             patterns: Vec::new(),
+            match_patterns: Vec::new(),
+            structs: Vec::new(),
         }
     }
 
@@ -187,6 +224,16 @@ impl Chunk {
     pub fn pattern(&mut self, pattern: Pattern) -> u32 {
         self.patterns.push(pattern);
         (self.patterns.len() - 1) as u32
+    }
+
+    pub fn match_pattern(&mut self, pattern: MatchPattern) -> u32 {
+        self.match_patterns.push(pattern);
+        (self.match_patterns.len() - 1) as u32
+    }
+
+    pub fn struct_def(&mut self, name: String, fields: Vec<Param>, methods: Vec<Stmt>) -> u32 {
+        self.structs.push((name, fields, methods));
+        (self.structs.len() - 1) as u32
     }
 }
 

@@ -1,5 +1,8 @@
-//! Which names a function body's *nested* functions mention.
+//! Which of a function body's names cannot live in a frame slot.
 //!
+//! Two reasons disqualify a name.
+//!
+//! **A nested function mentions it.**
 //! A variable can live in a frame slot only if nothing outlives the frame.
 //! MRT closures capture by reference -- `var n = 1; var f = func(){return n;};
 //! n = 2;` makes `f()` answer 2 -- so a captured variable has to stay in the
@@ -11,12 +14,16 @@
 //! referring to the outer one. Being wrong in this direction costs a slot;
 //! being wrong in the other direction would make a closure read a stale copy,
 //! which is a silent wrong answer.
+//!
+//! **A pattern assigns to it.** `[a, b] = [b, a]` is performed by the
+//! tree-walker, which reaches variables through the environment, so a target
+//! it cannot find there is an undefined-variable error rather than a swap.
 
 use std::collections::HashSet;
 
 use mrt_ast::*;
 
-/// Every identifier mentioned anywhere inside a nested function of `body`.
+/// Every name in `body` that has to live in the environment.
 pub fn captured_names(body: &[Stmt]) -> HashSet<String> {
     let mut found = HashSet::new();
     for stmt in body {
@@ -41,7 +48,9 @@ fn scan_stmt(stmt: &Stmt, inside: bool, found: &mut HashSet<String>) {
             }
         }
         StmtKind::DestructureAssign { pattern, value } => {
-            scan_pattern(pattern, inside, found);
+            // Always, not only inside a nested function: the assignment
+            // itself needs these names reachable by name.
+            scan_pattern(pattern, true, found);
             scan_expr(value, inside, found);
         }
         StmtKind::Block(body) => body.iter().for_each(|s| scan_stmt(s, inside, found)),
@@ -116,6 +125,9 @@ fn scan_stmt(stmt: &Stmt, inside: bool, found: &mut HashSet<String>) {
         StmtKind::Match { subject, cases } => {
             scan_expr(subject, inside, found);
             for case in cases {
+                if let Some(pattern) = &case.pattern {
+                    scan_match_pattern(pattern, found);
+                }
                 if let Some(guard) = &case.guard {
                     scan_expr(guard, inside, found);
                 }
@@ -202,12 +214,43 @@ fn scan_expr(expr: &Expr, inside: bool, found: &mut HashSet<String>) {
         ExprKind::Match { subject, arms } => {
             scan_expr(subject, inside, found);
             for arm in arms {
+                if let Some(pattern) = &arm.pattern {
+                    scan_match_pattern(pattern, found);
+                }
                 if let Some(guard) = &arm.guard {
                     scan_expr(guard, inside, found);
                 }
                 scan_expr(&arm.value, inside, found);
             }
         }
+    }
+}
+
+/// The struct names a match pattern mentions.
+///
+/// `case Point(x, y):` looks `Point` up by name at match time, through the
+/// environment, so a slotted `Point` would not be found -- and the error
+/// would be "undefined variable" rather than the language's own "not a
+/// struct, so it can't be used as a pattern".
+fn scan_match_pattern(pattern: &MatchPattern, found: &mut HashSet<String>) {
+    match pattern {
+        MatchPattern::Struct { name, elements, .. } => {
+            found.insert(name.text.clone());
+            for element in elements {
+                scan_match_pattern(element, found);
+            }
+        }
+        MatchPattern::Array { elements, .. } => {
+            for element in elements {
+                scan_match_pattern(element, found);
+            }
+        }
+        MatchPattern::Object { entries, .. } => {
+            for (_, value) in entries {
+                scan_match_pattern(value, found);
+            }
+        }
+        MatchPattern::Literal { .. } | MatchPattern::Bind { .. } => {}
     }
 }
 

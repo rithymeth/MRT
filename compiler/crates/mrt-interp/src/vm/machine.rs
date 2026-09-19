@@ -94,6 +94,30 @@ enum Pending {
 }
 
 impl<'a> Vm<'a> {
+    /// Point the interpreter at the running frame's scope.
+    ///
+    /// The two engines share more than values: the tree-walker's helpers are
+    /// the VM's semantics, and some of them read `Interpreter::env` rather
+    /// than taking a scope -- resolving a struct name in a match pattern,
+    /// for one. So while the VM runs, the interpreter's notion of the
+    /// current scope has to *be* the running frame's, or a delegated helper
+    /// quietly looks names up in the wrong place. Keeping the invariant
+    /// wherever the frame's scope changes is cheaper to get right than
+    /// remembering it at every call site.
+    fn set_env(&mut self, env: Env) {
+        self.interp.env = env.clone();
+        if let Some(frame) = self.frames.last_mut() {
+            frame.env = env;
+        }
+    }
+
+    /// Restore the interpreter's scope from the frame that is now on top.
+    fn resync_env(&mut self) {
+        if let Some(frame) = self.frames.last() {
+            self.interp.env = frame.env.clone();
+        }
+    }
+
     pub fn new(interp: &'a mut Interpreter) -> Vm<'a> {
         Vm {
             interp,
@@ -110,7 +134,8 @@ impl<'a> Vm<'a> {
     /// function body are the same kind of thing to the machine -- there is
     /// one frame representation, not two.
     pub fn run(&mut self, chunk: Chunk) -> Result<Value, Signal> {
-        let env = self.interp.env.clone();
+        let entry = self.interp.env.clone();
+        let env = entry.clone();
         self.frames.push(Frame {
             proto: Rc::new(Proto {
                 name: None,
@@ -123,7 +148,10 @@ impl<'a> Vm<'a> {
             env,
             base: 0,
         });
-        self.execute()
+        let result = self.execute();
+        // The machine borrowed the interpreter's scope; hand it back.
+        self.interp.env = entry;
+        result
     }
 
     /// Call an already-evaluated callable and run it to completion.
@@ -133,12 +161,16 @@ impl<'a> Vm<'a> {
     pub fn call_and_run(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, Signal> {
         match callee {
             Value::Compiled(_) => {
+                let entry = self.interp.env.clone();
                 let argc = args.len();
                 for arg in args {
                     self.push(arg);
                 }
-                self.call_with_args_on_stack(callee, argc, 0)?;
-                self.execute()
+                let result = self
+                    .call_with_args_on_stack(callee, argc, 0)
+                    .and_then(|()| self.execute());
+                self.interp.env = entry;
+                result
             }
             // Anything else is the tree-walker's to run anyway.
             other => self.interp.call_value(other, args, None),
@@ -214,6 +246,7 @@ impl<'a> Vm<'a> {
                 break;
             };
             frame.env = handler.env.clone();
+            self.interp.env = handler.env.clone();
 
             if let Some(catch_ip) = handler.catch_ip {
                 // The value a clause sees: a thrown one as thrown, and an
@@ -358,12 +391,12 @@ impl<'a> Vm<'a> {
                 }
 
                 Op::PushScope => {
-                    let frame = self.frames.last_mut().expect("a frame");
-                    frame.env = frame.env.child();
+                    let child = self.frame().env.child();
+                    self.set_env(child);
                 }
                 Op::PopScope => {
-                    let frame = self.frames.last_mut().expect("a frame");
-                    frame.env = frame.env.parent().expect("a scope to leave");
+                    let parent = self.frame().env.parent().expect("a scope to leave");
+                    self.set_env(parent);
                 }
 
                 Op::Array(n) => {
@@ -462,6 +495,113 @@ impl<'a> Vm<'a> {
                     self.cursors.pop();
                 }
 
+                Op::Struct(index) => {
+                    let (name, fields, methods) =
+                        self.frame().proto.chunk.structs[index as usize].clone();
+                    let env = self.frame().env.clone();
+                    // Methods stay AST closures, so they run on the
+                    // tree-walker. Nothing observable turns on which engine
+                    // runs a method body, and keeping one representation of
+                    // `StructType` means `this`-binding, field access and
+                    // instance printing have one implementation.
+                    let methods = methods
+                        .iter()
+                        .filter_map(|m| match &m.kind {
+                            mrt_ast::StmtKind::Function {
+                                name,
+                                params,
+                                body,
+                                is_generator,
+                            } => Some((
+                                name.text.clone(),
+                                Rc::new(crate::value::Function {
+                                    name: Some(name.text.clone()),
+                                    params: params.clone(),
+                                    body: body.clone(),
+                                    closure: env.clone(),
+                                    is_generator: *is_generator,
+                                }),
+                            )),
+                            _ => None,
+                        })
+                        .collect();
+                    self.push(Value::Struct(Rc::new(crate::value::StructType {
+                        name,
+                        fields,
+                        methods,
+                    })));
+                }
+
+                Op::MatchPattern(index) => {
+                    let pattern = self.frame().proto.chunk.match_patterns[index as usize].clone();
+                    // The subject stays on the stack: a case that does not
+                    // match leaves the next one something to test.
+                    let subject = self.stack.last().expect("a match subject").clone();
+                    let scope = self.frame().env.clone();
+                    let matched = self.interp.match_pattern(&pattern, &subject, &scope)?;
+                    self.push(Value::Bool(matched));
+                }
+
+                Op::NoMatch => {
+                    let subject = self.pop();
+                    return Err(crate::error::value_error(format!(
+                        "No case matched {} in this match, and there is no 'default'.",
+                        stringify(&subject)
+                    ))
+                    .at(Some(line)));
+                }
+
+                Op::BindPattern(index) | Op::AssignPattern(index) => {
+                    // `declare` distinguishes the two: a declaration
+                    // introduces names, an assignment reaches existing ones.
+                    let declare = matches!(op, Op::BindPattern(_));
+                    let pattern = self.frame().proto.chunk.patterns[index as usize].clone();
+                    let value = self.pop();
+                    let scope = self.frame().env.clone();
+                    self.interp
+                        .bind_pattern(&pattern, Some(value), &scope, Some(line), declare)?;
+                }
+
+                Op::BeginSpread => self.push(Value::array(Vec::new())),
+                Op::PushInto => {
+                    let value = self.pop();
+                    let Value::Array(items) = self.stack.last().expect("a gather array") else {
+                        unreachable!("BeginSpread pushes an array");
+                    };
+                    items.borrow_mut().push(value);
+                }
+                Op::SpreadInto => {
+                    let spread = self.pop();
+                    // Arrays only, and not merely "anything iterable": `...`
+                    // over a string or an object is a type error in MRT, with
+                    // its own message. Reaching for `iterate` here would make
+                    // the VM accept programs the language rejects.
+                    let Value::Array(items) = spread else {
+                        return Err(
+                            type_error("Can only spread an array with '...'.").at(Some(line))
+                        );
+                    };
+                    let taken = items.borrow().clone();
+                    let Value::Array(gathered) = self.stack.last().expect("a gather array") else {
+                        unreachable!("BeginSpread pushes an array");
+                    };
+                    gathered.borrow_mut().extend(taken);
+                }
+                Op::CallSpread => {
+                    let gathered = self.pop();
+                    let Value::Array(items) = gathered else {
+                        unreachable!("BeginSpread pushes an array");
+                    };
+                    let args = items.borrow().clone();
+                    let argc = args.len();
+                    for arg in args {
+                        self.push(arg);
+                    }
+                    let at = self.stack.len() - argc - 1;
+                    let callee = self.stack.remove(at);
+                    self.call_with_args_on_stack(callee, argc, line)?;
+                }
+
                 Op::Throw => {
                     let value = self.pop();
                     return Err(Signal::Throw(Thrown {
@@ -540,6 +680,7 @@ impl<'a> Vm<'a> {
         if self.frames.is_empty() {
             return Step::Done(value);
         }
+        self.resync_env();
         self.push(value);
         Step::Running
     }
@@ -600,9 +741,10 @@ impl<'a> Vm<'a> {
         self.frames.push(Frame {
             proto: function.proto.clone(),
             ip: 0,
-            env: scope,
+            env: scope.clone(),
             base,
         });
+        self.interp.env = scope;
         Ok(())
     }
 }
