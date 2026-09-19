@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "mrt-run"
 path = "src/run.rs"
 
+[[bin]]
+name = "mrt"
+path = "src/run.rs"
+
 [dependencies]
 mrt-diagnostics = { path = "../crates/mrt-diagnostics" }
 mrt-lexer = { path = "../crates/mrt-lexer" }

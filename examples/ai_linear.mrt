@@ -1,0 +1,21 @@
+// Train a small linear model directly from MRT source code.
+var x = [
+    [0],
+    [1],
+    [2],
+    [3]
+];
+
+var y = [
+    [1],
+    [3],
+    [5],
+    [7]
+];
+
+var result = aiTrainLinear(x, y, 500, 0.05);
+
+print("MRT-AI training complete");
+print("initial loss:", result.initialLoss);
+print("final loss:", result.loss);
+print("predictions:", result.predictions);
