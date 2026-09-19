@@ -9,12 +9,13 @@ license.workspace = true
 name = "mrt-check"
 path = "src/main.rs"
 
+# Deliberately `mrt-run`, not `mrt`. The bare name belongs to the console
+# script the PyPI package installs (`mrt = "mrt.__main__:main"`), and a second
+# program answering to it puts two different interpreters on one PATH -- whose
+# output wins then depends on PATH order rather than on what anyone asked for.
+# Cargo also warns on every build when one source file backs two bin targets.
 [[bin]]
 name = "mrt-run"
-path = "src/run.rs"
-
-[[bin]]
-name = "mrt"
 path = "src/run.rs"
 
 [dependencies]
