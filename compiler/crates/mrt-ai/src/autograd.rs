@@ -72,6 +72,55 @@ enum Op {
     Sum(Var),
     /// Every element averaged into a 1x1 value.
     Mean(Var),
+    /// The same values under a different shape. A view, so its backward is
+    /// the reverse view.
+    Reshape(Var, usize, usize),
+    /// Lay each convolution window out as a row, so that a convolution is a
+    /// matrix multiply. See `Tape::im2col`.
+    Im2Col(Var, Window),
+    /// Reorder a convolution's output from one-row-per-window to
+    /// one-row-per-image with the channels laid out in planes. See
+    /// `Tape::planar`. Carries `(batch, spatial, channels)`.
+    Planar(Var, usize, usize, usize),
+}
+
+/// How a convolution window moves over an image.
+///
+/// Held on the tape rather than passed around because the backward pass needs
+/// exactly the same geometry the forward pass used: a gradient scattered back
+/// through a different stride would be silently wrong rather than wrong in a
+/// way that shows.
+#[derive(Clone, Copy, Debug)]
+pub struct Window {
+    pub batch: usize,
+    pub channels: usize,
+    pub height: usize,
+    pub width: usize,
+    pub kernel_h: usize,
+    pub kernel_w: usize,
+    pub stride: usize,
+}
+
+impl Window {
+    /// The output height and width this window produces. No padding: an
+    /// image that does not divide evenly simply yields fewer positions, which
+    /// is the convention every other part of this crate would have to agree
+    /// with before padding is worth adding.
+    pub fn output(&self) -> (usize, usize) {
+        (
+            (self.height - self.kernel_h) / self.stride + 1,
+            (self.width - self.kernel_w) / self.stride + 1,
+        )
+    }
+
+    /// How many values one window covers: the width of an im2col row.
+    pub fn patch(&self) -> usize {
+        self.channels * self.kernel_h * self.kernel_w
+    }
+
+    fn fits(&self) -> bool {
+        self.kernel_h <= self.height && self.kernel_w <= self.width && self.stride > 0
+    }
 }
 
 struct Node {
@@ -250,6 +299,116 @@ impl Tape {
         Ok(self.push(value, Op::Mean(a)))
     }
 
+    /// The same values under a different shape.
+    pub fn reshape(&mut self, a: Var, rows: usize, cols: usize) -> Result<Var, AiError> {
+        let x = self.value(a);
+        if rows * cols != x.data.len() {
+            return Err(AiError::Shape(format!(
+                "cannot reshape {} values into ({rows}, {cols})",
+                x.data.len()
+            )));
+        }
+        let value = Tensor::from_vec(rows, cols, x.data.clone())?;
+        Ok(self.push(value, Op::Reshape(a, x.rows, x.cols)))
+    }
+
+    /// Lay every convolution window out as a row.
+    ///
+    /// This is what makes a convolution cheap to add: once the windows are
+    /// rows, convolving *is* `matmul`, and the gradient of the whole layer
+    /// falls out of the rules already here. The only genuinely new derivative
+    /// is this one, and it is the reverse of the copy the forward pass does --
+    /// scatter the gradients back to the pixels each window took, adding where
+    /// windows overlap. Overlap is the part worth stating: a pixel covered by
+    /// four windows receives four contributions, and summing them is not an
+    /// optimisation but the chain rule.
+    ///
+    /// Input is `(batch, channels * height * width)`, one image per row.
+    /// Output is `(batch * out_h * out_w, channels * kernel_h * kernel_w)`.
+    pub fn im2col(&mut self, a: Var, window: Window) -> Result<Var, AiError> {
+        if !window.fits() {
+            return Err(AiError::Shape(format!(
+                "a {}x{} kernel with stride {} does not fit a {}x{} image",
+                window.kernel_h, window.kernel_w, window.stride, window.height, window.width
+            )));
+        }
+        let x = self.value(a);
+        let image = window.channels * window.height * window.width;
+        if x.rows != window.batch || x.cols != image {
+            return Err(AiError::Shape(format!(
+                "im2col expects ({}, {image}), got ({}, {})",
+                window.batch, x.rows, x.cols
+            )));
+        }
+
+        let (out_h, out_w) = window.output();
+        let patch = window.patch();
+        let mut value = Tensor::zeros(window.batch * out_h * out_w, patch);
+        for n in 0..window.batch {
+            for oy in 0..out_h {
+                for ox in 0..out_w {
+                    let row = (n * out_h + oy) * out_w + ox;
+                    for c in 0..window.channels {
+                        for ky in 0..window.kernel_h {
+                            for kx in 0..window.kernel_w {
+                                let iy = oy * window.stride + ky;
+                                let ix = ox * window.stride + kx;
+                                let col = (c * window.kernel_h + ky) * window.kernel_w + kx;
+                                let at = c * window.height * window.width + iy * window.width + ix;
+                                value.data[row * patch + col] = x.data[n * image + at];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(self.push(value, Op::Im2Col(a, window)))
+    }
+
+    /// Turn a convolution's output into the layout its input arrived in.
+    ///
+    /// `matmul` over `im2col` rows produces `(batch * positions, channels)`:
+    /// one row per window position, one column per filter. Flattening that
+    /// directly gives a channel per position -- interleaved -- while `im2col`
+    /// reads channels as *planes*, one whole image per channel. So a second
+    /// convolution fed the first one's output would read pixels of different
+    /// filters as neighbouring pixels of one filter, quietly, and train to
+    /// something meaningless rather than fail.
+    ///
+    /// This is the permutation that makes them agree, and therefore the reason
+    /// convolutions can be stacked at all. Its backward is the inverse
+    /// permutation: no value is combined or dropped, so every gradient goes
+    /// back to exactly one place.
+    ///
+    /// `(batch * spatial, channels)` becomes `(batch, channels * spatial)`.
+    pub fn planar(
+        &mut self,
+        a: Var,
+        batch: usize,
+        spatial: usize,
+        channels: usize,
+    ) -> Result<Var, AiError> {
+        let x = self.value(a);
+        if x.rows != batch * spatial || x.cols != channels {
+            return Err(AiError::Shape(format!(
+                "planar expects ({}, {channels}), got ({}, {})",
+                batch * spatial,
+                x.rows,
+                x.cols
+            )));
+        }
+        let mut value = Tensor::zeros(batch, channels * spatial);
+        for n in 0..batch {
+            for s in 0..spatial {
+                for c in 0..channels {
+                    value.data[n * channels * spatial + c * spatial + s] =
+                        x.data[(n * spatial + s) * channels + c];
+                }
+            }
+        }
+        Ok(self.push(value, Op::Planar(a, batch, spatial, channels)))
+    }
+
     /// Mean squared error, as a composition rather than a primitive.
     ///
     /// Built from `sub`, `mul` and `mean`, so it needs no backward rule of its
@@ -416,6 +575,64 @@ impl Tape {
                             cols: x.cols,
                         },
                     );
+                }
+                Op::Reshape(a, rows, cols) => {
+                    // A view both ways: the values are the same, so the
+                    // gradient is the same numbers under the original shape.
+                    accumulate(
+                        &mut grads,
+                        *a,
+                        &Tensor {
+                            data: g.data.clone(),
+                            rows: *rows,
+                            cols: *cols,
+                        },
+                    );
+                }
+                Op::Im2Col(a, window) => {
+                    // col2im: send each window's gradient back to the pixels
+                    // it copied, *adding* where windows overlapped.
+                    let image = window.channels * window.height * window.width;
+                    let (out_h, out_w) = window.output();
+                    let patch = window.patch();
+                    let mut d = Tensor::zeros(window.batch, image);
+                    for n in 0..window.batch {
+                        for oy in 0..out_h {
+                            for ox in 0..out_w {
+                                let row = (n * out_h + oy) * out_w + ox;
+                                for c in 0..window.channels {
+                                    for ky in 0..window.kernel_h {
+                                        for kx in 0..window.kernel_w {
+                                            let iy = oy * window.stride + ky;
+                                            let ix = ox * window.stride + kx;
+                                            let col =
+                                                (c * window.kernel_h + ky) * window.kernel_w + kx;
+                                            let at = c * window.height * window.width
+                                                + iy * window.width
+                                                + ix;
+                                            d.data[n * image + at] += g.data[row * patch + col];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    accumulate(&mut grads, *a, &d);
+                }
+                Op::Planar(a, batch, spatial, channels) => {
+                    // The inverse permutation. Assignment rather than
+                    // accumulation is right here precisely because the forward
+                    // pass moved each value exactly once.
+                    let mut d = Tensor::zeros(batch * spatial, *channels);
+                    for n in 0..*batch {
+                        for s in 0..*spatial {
+                            for c in 0..*channels {
+                                d.data[(n * spatial + s) * channels + c] =
+                                    g.data[n * channels * spatial + c * spatial + s];
+                            }
+                        }
+                    }
+                    accumulate(&mut grads, *a, &d);
                 }
                 Op::Mean(a) => {
                     let x = &self.nodes[a.0].value;
