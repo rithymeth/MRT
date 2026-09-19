@@ -28,7 +28,12 @@ struct Frame {
     proto: Rc<Proto>,
     ip: usize,
     env: Env,
-    /// Where this frame's operands begin in the shared stack.
+    /// Where this frame's slots begin in the shared stack.
+    ///
+    /// `stack[base .. base + proto.slots]` are the frame's locals; operands
+    /// push above them. Laying slots out on the shared stack rather than in a
+    /// per-frame `Vec` is what makes a call free of allocation, and makes the
+    /// arguments a caller already pushed *be* the callee's first slots.
     base: usize,
 }
 
@@ -73,6 +78,8 @@ impl<'a> Vm<'a> {
                 name: None,
                 params: Vec::new(),
                 chunk,
+                slots: 0,
+                simple_params: true,
             }),
             ip: 0,
             env,
@@ -88,7 +95,11 @@ impl<'a> Vm<'a> {
     pub fn call_and_run(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, Signal> {
         match callee {
             Value::Compiled(_) => {
-                self.call(callee, args, 0)?;
+                let argc = args.len();
+                for arg in args {
+                    self.push(arg);
+                }
+                self.call_with_args_on_stack(callee, argc, 0)?;
                 self.execute()
             }
             // Anything else is the tree-walker's to run anyway.
@@ -148,6 +159,22 @@ impl<'a> Vm<'a> {
                     let name = Rc::clone(&self.frame().proto.chunk.names[i as usize]);
                     let value = self.pop();
                     self.frame().env.define(&name, value);
+                }
+
+                Op::GetLocal(slot) => {
+                    let at = self.frame().base + slot as usize;
+                    let value = self.stack[at].clone();
+                    self.push(value);
+                }
+                Op::SetLocal(slot) => {
+                    // Assignment is an expression, so the value stays on the
+                    // stack as its result.
+                    let at = self.frame().base + slot as usize;
+                    self.stack[at] = self.stack.last().expect("a value to assign").clone();
+                }
+                Op::DefineLocal(slot) => {
+                    let at = self.frame().base + slot as usize;
+                    self.stack[at] = self.pop();
                 }
 
                 Op::Pop => {
@@ -259,9 +286,12 @@ impl<'a> Vm<'a> {
                 }
 
                 Op::Call(argc) => {
-                    let args = self.pop_n(argc as usize);
-                    let callee = self.pop();
-                    self.call(callee, args, line)?;
+                    // The callee sits just below its arguments. Lifting it
+                    // out leaves the arguments where a simple-parameter
+                    // callee's slots want them: no copying, no binding.
+                    let at = self.stack.len() - argc as usize - 1;
+                    let callee = self.stack.remove(at);
+                    self.call_with_args_on_stack(callee, argc as usize, line)?;
                 }
 
                 Op::Return => {
@@ -306,43 +336,57 @@ impl<'a> Vm<'a> {
         self.interp.binary(left, op, right, line)
     }
 
-    /// Call a value. A compiled function pushes a frame; anything else the
-    /// language can call is handed to the interpreter, which already knows
-    /// how.
-    fn call(&mut self, callee: Value, args: Vec<Value>, line: u32) -> Result<(), Signal> {
-        match callee {
-            Value::Compiled(function) => {
-                if !crate::value::accepts(&function.proto.params, args.len()) {
-                    return Err(Signal::error(
-                        Kind::ArityError,
-                        format!(
-                            "Expected {} arguments but got {}.",
-                            crate::value::arity_description(&function.proto.params),
-                            args.len()
-                        ),
-                    )
-                    .at(Some(line)));
-                }
-                let scope = function.closure.child();
-                // Parameter binding -- defaults, rest, destructuring -- runs
-                // through the tree-walker, so a parameter list means one
-                // thing in both engines.
-                self.interp
-                    .bind_params(&function.proto.params, args, &scope, Some(line))?;
-                let base = self.stack.len();
-                self.frames.push(Frame {
-                    proto: function.proto.clone(),
-                    ip: 0,
-                    env: scope,
-                    base,
-                });
-                Ok(())
-            }
-            other => {
-                let value = self.interp.call_value(other, args, Some(line))?;
-                self.push(value);
-                Ok(())
-            }
+    /// Call a value whose `argc` arguments are already on top of the stack.
+    ///
+    /// A compiled function pushes a frame; anything else the language can
+    /// call is handed to the interpreter, which already knows how.
+    fn call_with_args_on_stack(
+        &mut self,
+        callee: Value,
+        argc: usize,
+        line: u32,
+    ) -> Result<(), Signal> {
+        let Value::Compiled(function) = callee else {
+            let args = self.pop_n(argc);
+            let value = self.interp.call_value(callee, args, Some(line))?;
+            self.push(value);
+            return Ok(());
+        };
+
+        if !crate::value::accepts(&function.proto.params, argc) {
+            return Err(Signal::error(
+                Kind::ArityError,
+                format!(
+                    "Expected {} arguments but got {}.",
+                    crate::value::arity_description(&function.proto.params),
+                    argc
+                ),
+            )
+            .at(Some(line)));
         }
+
+        let base = self.stack.len() - argc;
+        let scope = if function.proto.simple_params {
+            // The arguments are already slots 0..argc. Nothing to bind.
+            function.closure.child()
+        } else {
+            // Defaults, rest and destructuring run through the tree-walker,
+            // so a parameter list means one thing in both engines.
+            let args = self.stack.split_off(base);
+            let scope = function.closure.child();
+            self.interp
+                .bind_params(&function.proto.params, args, &scope, Some(line))?;
+            scope
+        };
+        // Slots the body declares start as null; the body's `DefineLocal`s
+        // fill them before any read the compiler will emit.
+        self.stack.resize(base + function.proto.slots, Value::Null);
+        self.frames.push(Frame {
+            proto: function.proto.clone(),
+            ip: 0,
+            env: scope,
+            base,
+        });
+        Ok(())
     }
 }

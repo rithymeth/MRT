@@ -130,52 +130,83 @@ site.
 ## The bytecode VM, measured
 
 The VM (`compiler/crates/mrt-interp/src/vm`) compiles a subset of MRT so far,
-so it runs seven of the ten benchmarks. Best of 5, in-process, same machine:
+so it runs seven of the ten benchmarks. Best of 5, in-process:
 
 ```
-benchmark            tree-walker          vm    tw/vm
------------------------------------------------------
-arrays                   57.2 ms     60.6 ms    0.94x
-closures                 43.4 ms     42.6 ms    1.02x
-fib                      33.0 ms     30.2 ms    1.09x
-loops                    56.3 ms     59.6 ms    0.95x
-scopes_deep             106.0 ms    114.3 ms    0.93x
-scopes_shallow           84.8 ms     93.2 ms    0.91x
-strings                  46.1 ms     47.5 ms    0.97x
------------------------------------------------------
-TOTAL                   426.8 ms    447.8 ms    0.95x
+benchmark                 python   typescript       rust         vm   py/ts   py/rs   ts/rs   rs/vm
+---------------------------------------------------------------------------------------------------
+arrays                 1424.6 ms      73.7 ms    57.8 ms    26.3 ms   19.3x   24.7x    1.3x    2.2x
+closures               1141.1 ms     239.0 ms    44.2 ms    15.2 ms    4.8x   25.8x    5.4x    2.9x
+fib                    1139.0 ms     298.1 ms    32.3 ms    13.2 ms    3.8x   35.3x    9.2x    2.4x
+generators              929.1 ms     268.5 ms        n/a        n/a    3.5x       -       -       -
+loops                  1697.3 ms      60.8 ms    57.1 ms    20.7 ms   27.9x   29.7x    1.1x    2.8x
+matching               1392.3 ms     206.2 ms    61.7 ms        n/a    6.8x   22.6x    3.3x       -
+scopes_deep            2734.6 ms     151.1 ms   105.1 ms    32.5 ms   18.1x   26.0x    1.4x    3.2x
+scopes_shallow         2346.0 ms      94.8 ms    84.0 ms    32.4 ms   24.7x   27.9x    1.1x    2.6x
+strings                 854.2 ms      61.7 ms    47.5 ms    30.5 ms   13.8x   18.0x    1.3x    1.6x
+structs                1425.2 ms     219.7 ms    90.1 ms        n/a    6.5x   15.8x    2.4x       -
+---------------------------------------------------------------------------------------------------
+TOTAL                 15083.4 ms    1673.5 ms   579.7 ms   170.8 ms    9.0x   24.4x    2.4x    2.5x
 ```
 
-**The VM is not faster.** It wins slightly on the two call-heavy benchmarks
-(`fib` 1.09x, `closures` 1.02x) and loses everywhere else, for 0.95x overall.
+**The VM is 2.5x the Rust tree-walker.** But the interesting part is how it got
+there, because the first version of it was *slower*.
 
-That contradicts finding 2 above, and the contradiction is the useful part.
-The Python profile put AST dispatch at ~66% and name lookup at ~10%, and
-bytecode is exactly a way to delete dispatch. But that split was measured in
-*Python*, where walking a tree means a chain of method calls and attribute
-lookups. In Rust, walking a tree is a match on an enum — already close to
-free — so deleting it buys almost nothing, while the operand-stack traffic
-and frame indirection the VM adds cost about as much as it saves.
+### Bytecode alone was worth nothing. Slots were worth all of it.
 
-What is left is `Env`: a name-keyed `HashMap` chain, which both engines pay
-identically. **A conclusion drawn from profiling one implementation did not
-survive being ported to another**, which is a reason to re-measure after a
-language change rather than carry the old proportions forward.
+| VM version | vs the tree-walker |
+|---|---|
+| bytecode, variables resolved by name through `Env` | **0.95x** — slightly slower |
+| the same bytecode, function locals in frame slots | **2.5x** |
 
-Two things follow:
+The first row is the one worth keeping. Replacing AST-walking with an
+instruction loop — the entire textbook case for bytecode — **bought nothing**.
+It was a wash, and before an unrelated fix it was 0.75x.
 
-* The VM's justification is **resumability**, not speed. Generators need an
-  explicit instruction pointer; that argument is unaffected by these numbers.
-* The speed case for bytecode rests on what this VM deliberately does not do
-  yet: resolving variables to **frame slots**. The resolver already computes
-  them and neither engine uses them. That is now the next measurable step,
-  with a number to beat instead of a projection.
+That contradicted this file's own finding 2, which put AST dispatch at ~66% of
+run time and name lookup at ~10%. The catch is that the split was measured in
+**Python**, where walking a tree means chains of method calls and attribute
+lookups. In Rust, walking a tree is a match on an enum, already close to free.
+Deleting it saved almost nothing while the operand-stack traffic a VM adds cost
+about as much.
 
-An earlier draft of the machine was **0.75x** rather than 0.95x, because it
-cloned a `String` for every variable access and an `Op` for every
-instruction. Making `Op` `Copy` and interning names as `Rc<str>` was the
-whole difference. Worth recording: the first measurement of a new execution
-engine is as likely to be measuring its allocator traffic as its design.
+What was actually expensive, in both engines equally, was `Env`: a hash lookup
+per scope per variable access. Resolving function locals to a fixed offset —
+an index into the operand stack — is the entire 2.5x. **The proportions from
+profiling one implementation did not survive being ported to another**, which
+is a reason to re-measure after a language change rather than carry the old
+numbers forward.
+
+An earlier draft of the machine measured 0.75x rather than 0.95x because it
+cloned a `String` for every variable access and an `Op` for every instruction.
+Making `Op` `Copy` and interning names as `Rc<str>` was the whole difference.
+The first measurement of a new engine is as likely to be measuring its
+allocator traffic as its design.
+
+### What is still on the slow path
+
+Slots apply only where a binding cannot outlive its frame. Anything a nested
+closure captures stays in `Env`, because MRT closures capture by reference and
+the frame and the closure must see one cell. So do globals, top-level `var`s,
+and the parameters of any function whose parameter list is not plain names
+(defaults, rest and destructuring bind through the tree-walker, so that a
+parameter list means one thing in both engines).
+
+`strings` gains least (1.6x) because most of its time is inside builtin string
+functions, which both engines call identically. That is the shape of the
+remaining headroom: the VM is now fast enough that the shared runtime is
+visible in the profile.
+
+### A second, unplanned result
+
+    func deep(n) { if (n <= 0) { return 0; } return 1 + deep(n - 1); }
+    deep(50000)   tree-walker: stack overflow
+                  vm:          50000
+
+MRT frames are heap data in the VM rather than Rust stack frames, so recursion
+depth is bounded by memory instead of by the host's call stack. That is the
+same property that makes suspension possible — it showed up here first as deep
+recursion simply working.
 
 ## What this means for the bytecode VM
 
@@ -190,9 +221,9 @@ the ones a VM would attack directly, and those are the ones where an
 unoptimised Rust tree-walker is already at the JIT's level.
 
 So a bytecode VM is not obviously the next 10x. The section above now puts a
-number on it: on the benchmarks it can run, the VM is 0.95x — not a speedup
-at all until variables resolve to slots. What the measurement does say
-clearly is that generators — the one feature this
+number on it: **2.5x on the benchmarks it can run — and 0.95x before frame
+slots**, which says the win was never the bytecode. What the measurement also
+says clearly is that generators — the one feature this
 interpreter cannot implement without a resumable evaluator — argue for the VM
 more strongly than the timings do: in Rust the natural way to suspend
 execution *is* an explicit instruction pointer over a flat program. The

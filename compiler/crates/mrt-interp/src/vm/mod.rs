@@ -30,6 +30,7 @@
 //! than approximating it, so the conformance harness records an unsupported
 //! program as unsupported instead of as a wrong answer.
 
+pub mod capture;
 pub mod chunk;
 pub mod compile;
 pub mod machine;
@@ -170,6 +171,108 @@ mod tests {
         assert_eq!(
             agree("func main() {\n  var a = [1];\n  print(a[7]);\n}"),
             "Runtime Error: Array index 7 out of bounds for array of length 1. [line 3]"
+        );
+    }
+
+    // -- frame slots -------------------------------------------------------
+    //
+    // Slots are where a compiler silently gets scoping wrong, so each of
+    // these asserts the two engines agree rather than asserting a literal.
+
+    #[test]
+    fn an_inner_declaration_shadows_an_outer_one_and_restores_it() {
+        assert_eq!(
+            agree(
+                r#"func f() { var x = "outer"; { var x = "inner"; print(x); } print(x); return x; }
+                   func main() { print(f()); }"#
+            ),
+            "inner\nouter\nouter"
+        );
+    }
+
+    #[test]
+    fn sibling_blocks_reuse_slots_without_leaking_values() {
+        assert_eq!(
+            agree(
+                "func f() { { var a = 1; print(a); } { var b = 2; print(b); } \
+                 { var c = 3; var d = 4; print(c, d); } } func main() { f(); }"
+            ),
+            "1\n2\n3 4"
+        );
+    }
+
+    #[test]
+    fn a_captured_variable_stays_shared_while_its_neighbour_is_slotted() {
+        // `kept` is captured so it must live in the Env where both the frame
+        // and the closure see one cell; `plain` next to it is still a slot.
+        // Getting this wrong gives the closure a stale copy -- a silent wrong
+        // answer rather than a crash.
+        assert_eq!(
+            agree(
+                "func f() { var kept = 0; var g = func() { kept = kept + 1; return kept; }; \
+                 var plain = 100; print(g(), g(), plain); return kept; } \
+                 func main() { print(f()); }"
+            ),
+            "1 2 100\n2"
+        );
+    }
+
+    #[test]
+    fn a_captured_parameter_falls_back_to_full_binding() {
+        // Capturing a parameter disqualifies the whole fast path: the
+        // arguments can no longer just *be* the slots.
+        assert_eq!(
+            agree(
+                "func f(a, b) { var g = func() { return a; }; return g() + b; } \
+                 func main() { print(f(5, 6)); }"
+            ),
+            "11"
+        );
+    }
+
+    #[test]
+    fn defaults_and_rest_still_bind_through_the_tree_walker() {
+        assert_eq!(
+            agree(
+                "func f(a, b = 10, ...rest) { return a + b + len(rest); } \
+                 func main() { print(f(1), f(1, 2), f(1, 2, 3, 4)); }"
+            ),
+            "11 3 5"
+        );
+    }
+
+    #[test]
+    fn a_parameter_can_be_shadowed_by_a_local_of_the_same_name() {
+        assert_eq!(
+            agree("func f(x) { { var x = x + 1; return x; } } func main() { print(f(41)); }"),
+            "42"
+        );
+    }
+
+    #[test]
+    fn break_and_continue_still_work_when_locals_are_slotted() {
+        assert_eq!(
+            agree(
+                "func f() { var hits = 0; for (var i = 0; i < 6; i = i + 1) { \
+                 { var t = i * 2; if (t > 6) { break; } if (t == 2) { continue; } hits = hits + t; } } \
+                 return hits; } func main() { print(f()); }"
+            ),
+            "10"
+        );
+    }
+
+    #[test]
+    fn recursion_goes_far_deeper_than_the_tree_walker_can() {
+        // Not a conformance claim -- a consequence of the design. MRT frames
+        // are heap data here, so depth is bounded by memory rather than by
+        // the Rust call stack, which the tree-walker overflows well before
+        // this. It is the same property that makes suspension possible.
+        assert_eq!(
+            vm(
+                "func deep(n) { if (n <= 0) { return 0; } return 1 + deep(n - 1); } \
+                func main() { print(deep(20000)); }"
+            ),
+            "20000"
         );
     }
 

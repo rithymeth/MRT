@@ -6,11 +6,13 @@
 //! wrong answer, so the ratchet says exactly how much of the language this
 //! machine really runs.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use mrt_ast::*;
 
 use crate::value::Value;
+use crate::vm::capture::captured_names;
 use crate::vm::chunk::{Chunk, Op, Proto};
 
 /// A construct the compiler does not handle yet.
@@ -28,6 +30,10 @@ pub fn compile_program(statements: &[Stmt]) -> Emit<Chunk> {
     let mut compiler = Compiler {
         chunk: Chunk::new(),
         scope_depth: 0,
+        locals: Vec::new(),
+        max_slots: 0,
+        captured: HashSet::new(),
+        slots_allowed: false,
     };
     // The entry chunk runs top-level code and then returns null; `main` is
     // called by the driver, exactly as the tree-walker does it.
@@ -41,6 +47,25 @@ struct Compiler {
     chunk: Chunk,
     /// How many `PushScope`s are currently open in this function body.
     scope_depth: usize,
+    /// Slotted locals of the function being compiled, innermost last.
+    locals: Vec<Local>,
+    /// The high-water mark of `locals`, which is how many slots the frame
+    /// needs. Slots are reused as blocks close, so this is not the number of
+    /// variables the function declares.
+    max_slots: usize,
+    /// Names a nested function mentions. These cannot be slotted: MRT
+    /// closures capture by reference, so the binding has to live somewhere
+    /// both the frame and the closure can see.
+    captured: HashSet<String>,
+    /// Top-level code is compiled with no slots at all -- a module's
+    /// top-level `var` is a global, reachable by name from every function in
+    /// the file, so putting one in a frame slot would hide it.
+    slots_allowed: bool,
+}
+
+struct Local {
+    name: String,
+    depth: usize,
 }
 
 /// Where a `break` or `continue` jump has to be patched to once the loop's
@@ -104,8 +129,7 @@ impl Compiler {
                         self.chunk.emit(Op::Null, line);
                     }
                 }
-                let slot = self.chunk.name(&name.text);
-                self.chunk.emit(Op::DefineVar(slot), line);
+                self.emit_define(&name.text, line);
             }
             StmtKind::Block(body) => {
                 self.push_scope(line);
@@ -206,8 +230,7 @@ impl Compiler {
                 // A fresh scope per iteration, so a closure made inside the
                 // body captures that turn's binding and not a shared one.
                 self.push_scope(line);
-                let slot = self.chunk.name(&name.text);
-                self.chunk.emit(Op::DefineVar(slot), line);
+                self.emit_define(&name.text, line);
                 let result = self.statement(body, Some(&mut loops));
                 self.pop_scope(line);
                 result?;
@@ -232,8 +255,7 @@ impl Compiler {
                     return Err(Unsupported::of("generators"));
                 }
                 self.function(Some(name.text.clone()), params, body, line)?;
-                let slot = self.chunk.name(&name.text);
-                self.chunk.emit(Op::DefineVar(slot), line);
+                self.emit_define(&name.text, line);
             }
             StmtKind::Return(value) => {
                 match value {
@@ -285,6 +307,71 @@ impl Compiler {
     fn pop_scope(&mut self, line: u32) {
         self.chunk.emit(Op::PopScope, line);
         self.scope_depth -= 1;
+        // Slots of the closing block become free for the next one.
+        while self
+            .locals
+            .last()
+            .is_some_and(|local| local.depth > self.scope_depth)
+        {
+            self.locals.pop();
+        }
+    }
+
+    /// Can `name` live in a slot here?
+    fn slottable(&self, name: &str) -> bool {
+        self.slots_allowed && !self.captured.contains(name)
+    }
+
+    /// Give `name` a slot in the current block, returning its index.
+    fn declare_local(&mut self, name: &str) -> u32 {
+        let slot = self.locals.len() as u32;
+        self.locals.push(Local {
+            name: name.to_string(),
+            depth: self.scope_depth,
+        });
+        self.max_slots = self.max_slots.max(self.locals.len());
+        slot
+    }
+
+    /// The slot `name` resolves to, innermost first so an inner declaration
+    /// shadows an outer one.
+    fn resolve_local(&self, name: &str) -> Option<u32> {
+        self.locals
+            .iter()
+            .rposition(|local| local.name == name)
+            .map(|i| i as u32)
+    }
+
+    /// Emit a read of `name`, through a slot where possible.
+    fn emit_get(&mut self, name: &str, line: u32) {
+        match self.resolve_local(name) {
+            Some(slot) => self.chunk.emit(Op::GetLocal(slot), line),
+            None => {
+                let index = self.chunk.name(name);
+                self.chunk.emit(Op::GetVar(index), line)
+            }
+        };
+    }
+
+    fn emit_set(&mut self, name: &str, line: u32) {
+        match self.resolve_local(name) {
+            Some(slot) => self.chunk.emit(Op::SetLocal(slot), line),
+            None => {
+                let index = self.chunk.name(name);
+                self.chunk.emit(Op::SetVar(index), line)
+            }
+        };
+    }
+
+    /// Emit a declaration of `name`, whose value is on top of the stack.
+    fn emit_define(&mut self, name: &str, line: u32) {
+        if self.slottable(name) {
+            let slot = self.declare_local(name);
+            self.chunk.emit(Op::DefineLocal(slot), line);
+        } else {
+            let index = self.chunk.name(name);
+            self.chunk.emit(Op::DefineVar(index), line);
+        }
     }
 
     /// Close every scope opened since `depth`, without changing the
@@ -330,14 +417,10 @@ impl Compiler {
                     }
                 };
             }
-            ExprKind::Variable(name) => {
-                let slot = self.chunk.name(&name.text);
-                self.chunk.emit(Op::GetVar(slot), line);
-            }
+            ExprKind::Variable(name) => self.emit_get(&name.text, line),
             ExprKind::Assign { name, value } => {
                 self.expression(value)?;
-                let slot = self.chunk.name(&name.text);
-                self.chunk.emit(Op::SetVar(slot), line);
+                self.emit_set(&name.text, line);
             }
             ExprKind::Binary { left, op, right } => {
                 self.expression(left)?;
@@ -438,10 +521,37 @@ impl Compiler {
         body: &[Stmt],
         line: u32,
     ) -> Emit<()> {
+        // Which of this body's names a *nested* function mentions. Computed
+        // once per function rather than per reference.
+        let captured = captured_names(body);
+
+        // Parameters can be slots only when binding them is trivial: a plain
+        // name, no default, no rest, no destructuring, and not captured. Then
+        // the arguments already on the operand stack are slots 0..n and a
+        // call does no binding work at all.
+        let simple_params = params.iter().all(|p| {
+            !p.rest
+                && matches!(
+                    &p.pattern,
+                    Pattern::Name { name, default: None } if !captured.contains(&name.text)
+                )
+        });
+
         let mut inner = Compiler {
             chunk: Chunk::new(),
             scope_depth: 0,
+            locals: Vec::new(),
+            max_slots: 0,
+            captured,
+            slots_allowed: true,
         };
+        if simple_params {
+            for param in params {
+                if let Pattern::Name { name, .. } = &param.pattern {
+                    inner.declare_local(&name.text);
+                }
+            }
+        }
         inner.block_body(body)?;
         // Falling off the end of a body returns null.
         inner.chunk.emit(Op::Null, line);
@@ -450,6 +560,8 @@ impl Compiler {
             name,
             params: params.to_vec(),
             chunk: inner.chunk,
+            slots: inner.max_slots,
+            simple_params,
         });
         let index = self.chunk.proto(proto);
         self.chunk.emit(Op::Closure(index), line);

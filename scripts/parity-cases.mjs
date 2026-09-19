@@ -559,6 +559,28 @@ export const REGRESSION_CASES = [
   },
 
   {
+    // Scoping cases that a compiler resolving names to frame slots is the
+    // first thing to get wrong, and that produce a plausible-looking wrong
+    // answer rather than a crash when it does.
+    name: 'shadowing, slot reuse and capture live together correctly',
+    src: [
+      'func shadow() { var x = "outer"; { var x = "inner"; print(x); } print(x); return x; }',
+      'func siblings() { { var a = 1; print(a); } { var b = 2; print(b); } { var c = 3; var d = 4; print(c, d); } }',
+      'func mixed() { var kept = 0; var g = func() { kept = kept + 1; return kept; }; var plain = 100; print(g(), g(), plain); return kept; }',
+      'func capturedParam(a, b) { var g = func() { return a; }; return g() + b; }',
+      'func shadowParam(x) { { var x = x + 1; return x; } }',
+      'func main() { print(shadow()); siblings(); print(mixed()); print(capturedParam(5, 6)); print(shadowParam(41)); }',
+    ].join('\n'),
+  },
+  {
+    name: 'a C-style loop variable is shared, a for-in one is per iteration',
+    src: [
+      'func cStyle() { var fs = []; for (var i = 0; i < 3; i = i + 1) { push(fs, func() { return i; }); } return map(fs, func(g) { return g(); }); }',
+      'func forIn() { var fs = []; for (n in [1, 2, 3]) { push(fs, func() { return n; }); } return map(fs, func(g) { return g(); }); }',
+      'func main() { print(cStyle()); print(forIn()); }',
+    ].join('\n'),
+  },
+  {
     name: 'pipeline combining closures, for-in, interpolation and stdlib',
     src: 'func main() { var people = [{name: "Ada", age: 36}, {name: "Bob", age: 17}, {name: "Cy", age: 44}]; var adults = filter(people, func(p) { return p.age >= 18; }); var names = sort(map(adults, func(p) { return p.name; })); for (n in names) { print("adult: ${n}"); } print("total age ${ reduce(map(people, func(p){ return p.age; }), func(a,b){ return a+b; }) }"); }',
   },
