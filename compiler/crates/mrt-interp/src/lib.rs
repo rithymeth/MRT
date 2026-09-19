@@ -60,6 +60,9 @@ pub struct Interpreter {
     pub globals: Env,
     pub env: Env,
     pub output: Vec<String>,
+    /// What became of a top-level `main`. Read by a CLI to explain a file
+    /// that ran correctly and printed nothing.
+    pub entry: Entry,
 
     /// The file currently being evaluated. `import` specifiers resolve
     /// against its directory, so this is swapped while a module runs and
@@ -99,6 +102,25 @@ pub struct Outcome {
     /// The error text, if the program stopped early. Rendered exactly as
     /// `python -m mrt` prints it.
     pub error: Option<String>,
+    /// What became of a top-level `main`.
+    ///
+    /// Carried out so a CLI can explain a file that ran correctly and did
+    /// nothing, which is otherwise indistinguishable from a broken install.
+    /// Deliberately not part of `output`: that is the printed stream four
+    /// implementations are held to match byte for byte.
+    pub entry: Entry,
+}
+
+/// What became of a top-level `main`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Entry {
+    /// Declared, and called.
+    Ran,
+    /// The file defines none, so only its top-level statements ran.
+    Missing,
+    /// The name is taken by something that cannot be called. A different
+    /// mistake from having no `main`, and worth telling apart.
+    NotCallable(String),
 }
 
 pub fn run(file: &SourceFile) -> Outcome {
@@ -114,6 +136,7 @@ pub fn run(file: &SourceFile) -> Outcome {
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),
+            entry: Entry::Missing,
         };
     }
     // The SourceFile's name is the path the program was loaded from, which
@@ -123,6 +146,7 @@ pub fn run(file: &SourceFile) -> Outcome {
     Outcome {
         output: interp.output,
         error,
+        entry: interp.entry,
     }
 }
 
@@ -144,6 +168,7 @@ pub fn run_vm(file: &SourceFile) -> Outcome {
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),
+            entry: Entry::Missing,
         };
     }
 
@@ -153,6 +178,7 @@ pub fn run_vm(file: &SourceFile) -> Outcome {
             return Outcome {
                 output: Vec::new(),
                 error: Some(format!("Runtime Error: {what}")),
+                entry: Entry::Missing,
             }
         }
     };
@@ -163,12 +189,14 @@ pub fn run_vm(file: &SourceFile) -> Outcome {
         machine.run(chunk)?;
         // `main` is called if one was declared, exactly as the tree-walker
         // does it.
-        let main = interp.globals.get("main", None);
-        if let Ok(main) = main {
-            if matches!(main, Value::Function(_) | Value::Compiled(_)) {
+        match interp.globals.get("main", None) {
+            Ok(main) if matches!(main, Value::Function(_) | Value::Compiled(_)) => {
+                interp.entry = Entry::Ran;
                 let mut machine = vm::Vm::new(&mut interp);
                 machine.call_and_run(main, Vec::new())?;
             }
+            Ok(other) => interp.entry = Entry::NotCallable(type_name(&other)),
+            Err(_) => interp.entry = Entry::Missing,
         }
         Ok(())
     })();
@@ -185,6 +213,7 @@ pub fn run_vm(file: &SourceFile) -> Outcome {
     Outcome {
         output: interp.output,
         error,
+        entry: interp.entry,
     }
 }
 
@@ -222,6 +251,7 @@ impl Interpreter {
             env: globals.clone(),
             globals,
             output: Vec::new(),
+            entry: Entry::Missing,
             module_path: path.map(|p| absolute(&p)),
             module_exports: HashMap::new(),
             module_loading: Vec::new(),
@@ -238,10 +268,13 @@ impl Interpreter {
             self.run_top_level(&program.statements)?;
             // A `main` is called if one was declared, matching the reference
             // implementation's entry convention.
-            if let Ok(main) = self.globals.get("main", None) {
-                if matches!(main, Value::Function(_)) {
+            match self.globals.get("main", None) {
+                Ok(main) if matches!(main, Value::Function(_)) => {
+                    self.entry = Entry::Ran;
                     self.call_value(main, Vec::new(), None)?;
                 }
+                Ok(other) => self.entry = Entry::NotCallable(type_name(&other)),
+                Err(_) => self.entry = Entry::Missing,
             }
             Ok(())
         })();
@@ -1952,6 +1985,62 @@ mod tests {
 
     /// Run a program and return everything it printed, plus its error text if
     /// it stopped early -- the same stream a reader of the terminal sees.
+    /// What became of `main`, on both engines -- they must agree, since a
+    /// file's entry point cannot depend on which one ran it.
+    fn entry_of(source: &str) -> Entry {
+        let file = SourceFile::new("test.mrt", source);
+        let walked = run(&file).entry;
+        let compiled = run_vm(&file).entry;
+        assert_eq!(walked, compiled, "engines disagree on the entry point");
+        walked
+    }
+
+    #[test]
+    fn a_declared_main_is_recorded_as_having_run() {
+        assert_eq!(entry_of("func main() { print(1); }"), Entry::Ran);
+    }
+
+    #[test]
+    fn a_file_of_only_declarations_has_no_entry_point() {
+        // It runs correctly and prints nothing, which reads as a broken
+        // install unless the command says otherwise.
+        assert_eq!(entry_of("struct Place { name; }"), Entry::Missing);
+        assert_eq!(
+            entry_of("func outer() { func main() { print(1); } }"),
+            Entry::Missing,
+            "a nested main never reaches the globals"
+        );
+        assert_eq!(
+            entry_of("func Main() { print(1); }"),
+            Entry::Missing,
+            "names are case-sensitive"
+        );
+    }
+
+    #[test]
+    fn an_uncallable_main_is_told_apart_from_a_missing_one() {
+        // A different mistake: the name is taken by something that is not a
+        // function, and saying "no main" would send the reader looking for
+        // something that is right there.
+        assert_eq!(
+            entry_of("var main = 5;"),
+            Entry::NotCallable("number".into())
+        );
+        assert_eq!(
+            entry_of("struct P { x; } var main = P;"),
+            Entry::NotCallable("struct".into())
+        );
+    }
+
+    #[test]
+    fn the_entry_point_does_not_reach_the_printed_output() {
+        // The note is the CLI's, on stderr. `output` is the stream four
+        // implementations are held to match byte for byte, and nothing here
+        // may appear in it.
+        assert_eq!(go("struct Place { name; }"), "");
+        assert_eq!(go("var main = 5;"), "");
+    }
+
     fn go(source: &str) -> String {
         let file = SourceFile::new("test.mrt", source);
         let outcome = run(&file);
