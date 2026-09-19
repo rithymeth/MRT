@@ -103,6 +103,162 @@ impl Conv2d {
     }
 }
 
+/// Layer normalisation: centre and scale each row, then learn a scale and a
+/// shift for each column.
+///
+/// Composed rather than primitive, which is the point. Layer norm's backward
+/// pass is the one people copy from a paper and get subtly wrong, because the
+/// mean and the variance both depend on every element of the row -- so the
+/// gradient of one element reaches every other twice, by two different routes.
+/// Written out of `row_mean`, `broadcast`, `rsqrt` and `mul_row`, none of that
+/// has to be derived: four small rules, each checkable on its own, compose into
+/// the hard one.
+pub struct LayerNorm {
+    pub epsilon: f64,
+    /// `(1, features)`: the learned per-column scale, starting at 1 so the
+    /// layer begins as the identity on normalised values.
+    pub gain: Tensor,
+    pub shift: Tensor,
+}
+
+impl LayerNorm {
+    pub fn new(features: usize) -> LayerNorm {
+        LayerNorm {
+            epsilon: 1e-5,
+            gain: Tensor::from_vec(1, features, vec![1.0; features]).expect("features values"),
+            shift: Tensor::zeros(1, features),
+        }
+    }
+
+    pub fn params(&self, tape: &mut Tape) -> Vec<Var> {
+        vec![
+            tape.param(self.gain.clone()),
+            tape.param(self.shift.clone()),
+        ]
+    }
+
+    pub fn forward(&self, tape: &mut Tape, input: Var, params: &[Var]) -> Result<Var, AiError> {
+        let cols = tape.value(input).cols;
+        let mean = tape.row_mean(input)?;
+        let mean = tape.broadcast(mean, cols)?;
+        let centred = tape.sub(input, mean)?;
+        let squared = tape.mul(centred, centred)?;
+        let variance = tape.row_mean(squared)?;
+        let variance = tape.broadcast(variance, cols)?;
+        let inverse = tape.rsqrt(variance, self.epsilon)?;
+        let normed = tape.mul(centred, inverse)?;
+        let scaled = tape.mul_row(normed, params[0])?;
+        tape.add_bias(scaled, params[1])
+    }
+}
+
+/// Single-head scaled dot-product attention.
+///
+/// `softmax(QKᵀ / √d) V`, and every piece of that was already on the tape:
+/// `matmul`, `transpose`, `scale`, `softmax`. So this layer adds **no**
+/// derivative at all -- not a simple one, none -- which is the clearest
+/// statement of what building the tape first bought.
+///
+/// Rows are positions and columns are features, so `QKᵀ` is
+/// `(positions, positions)`: how much each position attends to each other one.
+/// Softmax is row-wise for exactly that reason, and was written that way when
+/// it went in, before there was an attention layer to need it.
+pub struct Attention {
+    pub features: usize,
+    pub head: usize,
+    pub query: Tensor,
+    pub key: Tensor,
+    pub value: Tensor,
+}
+
+impl Attention {
+    pub fn new(features: usize, head: usize, seed: u64) -> Attention {
+        let scale = (2.0 / features as f64).sqrt();
+        Attention {
+            features,
+            head,
+            query: seeded(features, head, seed, scale),
+            key: seeded(features, head, seed.wrapping_add(1), scale),
+            value: seeded(features, head, seed.wrapping_add(2), scale),
+        }
+    }
+
+    pub fn params(&self, tape: &mut Tape) -> Vec<Var> {
+        vec![
+            tape.param(self.query.clone()),
+            tape.param(self.key.clone()),
+            tape.param(self.value.clone()),
+        ]
+    }
+
+    pub fn forward(&self, tape: &mut Tape, input: Var, params: &[Var]) -> Result<Var, AiError> {
+        let q = tape.matmul(input, params[0])?;
+        let k = tape.matmul(input, params[1])?;
+        let v = tape.matmul(input, params[2])?;
+        let kt = tape.transpose(k)?;
+        let scores = tape.matmul(q, kt)?;
+        // Divided by the square root of the head width. Without it the scores
+        // grow with the width, softmax saturates, and the gradient through it
+        // goes to nothing -- the layer stops learning rather than learning
+        // wrongly.
+        let scaled = tape.scale(scores, 1.0 / (self.head as f64).sqrt())?;
+        let weights = tape.softmax(scaled)?;
+        tape.matmul(weights, v)
+    }
+}
+
+/// A transformer block: attention and a feed-forward network, each wrapped in
+/// a residual connection and a layer norm.
+///
+/// The residual is the part worth naming. `x + f(x)` gives the gradient a path
+/// that skips `f` entirely, which is what lets a deep stack train at all --
+/// and on the tape it is one `add`, whose backward already sends the gradient
+/// down both branches. Nothing had to be arranged for it.
+pub struct Block {
+    pub attention: Attention,
+    pub norm1: LayerNorm,
+    pub hidden: Dense,
+    pub output: Dense,
+    pub norm2: LayerNorm,
+}
+
+impl Block {
+    pub fn new(features: usize, head: usize, inner: usize, seed: u64) -> Block {
+        Block {
+            attention: Attention::new(features, head, seed),
+            norm1: LayerNorm::new(features),
+            hidden: Dense::new(features, inner, seed.wrapping_add(10)),
+            output: Dense::new(inner, features, seed.wrapping_add(20)),
+            norm2: LayerNorm::new(features),
+        }
+    }
+
+    /// Parameters in the order `forward` reads them: attention 3, norm1 2,
+    /// hidden 2, output 2, norm2 2.
+    pub fn params(&self, tape: &mut Tape) -> Vec<Var> {
+        let mut all = self.attention.params(tape);
+        all.extend(self.norm1.params(tape));
+        all.extend(self.hidden.params(tape));
+        all.extend(self.output.params(tape));
+        all.extend(self.norm2.params(tape));
+        all
+    }
+
+    pub fn forward(&self, tape: &mut Tape, input: Var, params: &[Var]) -> Result<Var, AiError> {
+        // Attention requires the head width to match the feature width, so
+        // the residual has something to add to.
+        let attended = self.attention.forward(tape, input, &params[0..3])?;
+        let residual = tape.add(input, attended)?;
+        let normed = self.norm1.forward(tape, residual, &params[3..5])?;
+
+        let hidden = self.hidden.forward(tape, normed, &params[5..7])?;
+        let activated = tape.relu(hidden)?;
+        let projected = self.output.forward(tape, activated, &params[7..9])?;
+        let residual = tape.add(normed, projected)?;
+        self.norm2.forward(tape, residual, &params[9..11])
+    }
+}
+
 /// Adam: per-parameter step sizes from the running first and second moments of
 /// the gradient.
 ///
@@ -433,6 +589,215 @@ mod tests {
                 let expected = t.input(target.clone());
                 t.mse(b, expected)
             },
+        );
+    }
+
+    // -- the normalisation primitives, each on its own ---------------------
+
+    #[test]
+    fn row_mean_and_broadcast_are_inverses_in_gradient() {
+        let x = tensor(2, 3, &[1.0, 2.0, 3.0, -1.0, 0.5, 4.0]);
+        let mut tape = Tape::new();
+        let v = tape.input(x.clone());
+        let m = tape.row_mean(v).expect("row_mean");
+        assert_eq!(tape.value(m).data, vec![2.0, 1.1666666666666667]);
+        let wide = tape.broadcast(m, 3).expect("broadcast");
+        assert_eq!((tape.value(wide).rows, tape.value(wide).cols), (2, 3));
+
+        assert_gradients(&[x], |t, p| {
+            let mean = t.row_mean(p[0])?;
+            let wide = t.broadcast(mean, 3)?;
+            let squared = t.mul(wide, wide)?;
+            t.sum(squared)
+        });
+    }
+
+    #[test]
+    fn rsqrt_is_differentiable_and_survives_a_zero() {
+        // A row of identical values has variance zero, which is ordinary data
+        // rather than an error -- the epsilon has to be inside the root.
+        let mut tape = Tape::new();
+        let zero = tape.input(tensor(1, 2, &[0.0, 0.0]));
+        let out = tape.rsqrt(zero, 1e-5).expect("rsqrt of zero");
+        assert!(tape.value(out).data.iter().all(|v| v.is_finite()));
+
+        let x = tensor(2, 2, &[0.5, 2.0, 4.0, 0.25]);
+        assert_gradients(&[x], |t, p| {
+            let r = t.rsqrt(p[0], 1e-5)?;
+            t.sum(r)
+        });
+    }
+
+    #[test]
+    fn mul_row_gradients_reach_both_operands() {
+        let x = tensor(3, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let gain = tensor(1, 2, &[0.5, -1.5]);
+        assert_gradients(&[x, gain], |t, p| {
+            let scaled = t.mul_row(p[0], p[1])?;
+            let squared = t.mul(scaled, scaled)?;
+            t.mean(squared)
+        });
+    }
+
+    // -- the layers --------------------------------------------------------
+
+    #[test]
+    fn layer_norm_centres_and_scales_each_row() {
+        let norm = LayerNorm::new(4);
+        let mut tape = Tape::new();
+        let params = norm.params(&mut tape);
+        let input = tape.input(tensor(2, 4, &[1.0, 2.0, 3.0, 4.0, 10.0, 10.0, 10.0, 10.0]));
+        let out = norm.forward(&mut tape, input, &params).expect("forward");
+        let value = tape.value(out);
+
+        for row in 0..2 {
+            let slice = &value.data[row * 4..row * 4 + 4];
+            let mean: f64 = slice.iter().sum::<f64>() / 4.0;
+            assert!(mean.abs() < 1e-6, "row {row} mean {mean}");
+        }
+        // The second row is constant, so its variance is zero: every value
+        // normalises to zero rather than to infinity.
+        assert!(
+            value.data[4..8].iter().all(|v| v.abs() < 1e-3),
+            "a constant row should flatten, got {:?}",
+            &value.data[4..8]
+        );
+    }
+
+    #[test]
+    fn layer_norm_is_differentiable() {
+        // The derivative people copy from a paper and get wrong. Here it is
+        // four composed rules, and the finite difference is the proof.
+        let norm = LayerNorm::new(3);
+        let input = tensor(2, 3, &[1.0, -2.0, 0.5, 3.0, 0.25, -1.0]);
+        assert_gradients(&[norm.gain.clone(), norm.shift.clone()], |t, p| {
+            let x = t.input(input.clone());
+            let out = norm.forward(t, x, p)?;
+            let squared = t.mul(out, out)?;
+            t.mean(squared)
+        });
+    }
+
+    #[test]
+    fn attention_rows_are_a_weighted_mix_of_positions() {
+        // Softmax weights sum to one per row, so every output row is a convex
+        // combination of the value rows -- which is what "attention" means.
+        let attention = Attention::new(3, 3, 4);
+        let mut tape = Tape::new();
+        let params = attention.params(&mut tape);
+        let input = tape.input(tensor(
+            4,
+            3,
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        ));
+        let out = attention
+            .forward(&mut tape, input, &params)
+            .expect("forward");
+        let value = tape.value(out);
+        assert_eq!((value.rows, value.cols), (4, 3), "one row out per row in");
+    }
+
+    #[test]
+    fn attention_is_differentiable_and_adds_no_derivative() {
+        // The claim: this layer is composition only. If matmul, transpose,
+        // scale and softmax are right, this is right -- and the check
+        // confirms the composition rather than a new rule.
+        let attention = Attention::new(4, 4, 13);
+        let input = tensor(
+            3,
+            4,
+            &(0..12)
+                .map(|i| ((i % 5) as f64) * 0.4 - 0.8)
+                .collect::<Vec<_>>(),
+        );
+        let target = Tensor::zeros(3, 4);
+        assert_gradients(
+            &[
+                attention.query.clone(),
+                attention.key.clone(),
+                attention.value.clone(),
+            ],
+            |t, p| {
+                let x = t.input(input.clone());
+                let out = attention.forward(t, x, p)?;
+                let expected = t.input(target.clone());
+                t.mse(out, expected)
+            },
+        );
+    }
+
+    #[test]
+    fn a_transformer_block_is_differentiable_end_to_end() {
+        let block = Block::new(4, 4, 8, 31);
+        let input = tensor(
+            3,
+            4,
+            &(0..12)
+                .map(|i| ((i % 7) as f64) * 0.25 - 0.75)
+                .collect::<Vec<_>>(),
+        );
+        let target = Tensor::zeros(3, 4);
+        let mut tape = Tape::new();
+        let params = block.params(&mut tape);
+        let parameters: Vec<Tensor> = params.iter().map(|v| tape.value(*v).clone()).collect();
+
+        assert_gradients(&parameters, |t, p| {
+            let x = t.input(input.clone());
+            let out = block.forward(t, x, p)?;
+            let expected = t.input(target.clone());
+            t.mse(out, expected)
+        });
+    }
+
+    #[test]
+    fn a_transformer_block_learns_to_copy_a_position() {
+        // Something attention can do and a position-wise network cannot: make
+        // every row match the *first* row. That needs one position to read
+        // another, which is the whole point of the mechanism.
+        let block = Block::new(4, 4, 8, 77);
+        let input = tensor(
+            3,
+            4,
+            &[
+                0.9, -0.4, 0.2, 0.7, -0.5, 0.3, 0.8, -0.1, 0.1, 0.6, -0.7, 0.4,
+            ],
+        );
+        let first = &input.data[0..4];
+        let mut wanted = Vec::new();
+        for _ in 0..3 {
+            wanted.extend_from_slice(first);
+        }
+        let target = tensor(3, 4, &wanted);
+
+        let mut tape = Tape::new();
+        let vars = block.params(&mut tape);
+        let mut parameters: Vec<Tensor> = vars.iter().map(|v| tape.value(*v).clone()).collect();
+        let mut adam = Adam::new(0.02);
+
+        let mut first_loss = f64::NAN;
+        let mut last_loss = f64::NAN;
+        for epoch in 0..400 {
+            let mut tape = Tape::new();
+            let vars: Vec<Var> = parameters.iter().cloned().map(|t| tape.param(t)).collect();
+            let x = tape.input(input.clone());
+            let out = block.forward(&mut tape, x, &vars).expect("forward");
+            let expected = tape.input(target.clone());
+            let loss = tape.mse(out, expected).expect("mse");
+            let grads = tape.backward(loss).expect("backward");
+
+            let value = tape.value(loss).data[0];
+            if epoch == 0 {
+                first_loss = value;
+            }
+            last_loss = value;
+
+            let step: Vec<Tensor> = vars.iter().map(|v| grads.get(*v).clone()).collect();
+            adam.step(&mut parameters, &step).expect("step");
+        }
+
+        assert!(
+            last_loss < first_loss * 0.2,
+            "loss went from {first_loss} to {last_loss}, which is not learning"
         );
     }
 

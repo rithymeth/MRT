@@ -82,6 +82,15 @@ enum Op {
     /// one-row-per-image with the channels laid out in planes. See
     /// `Tape::planar`. Carries `(batch, spatial, channels)`.
     Planar(Var, usize, usize, usize),
+    /// Each row averaged into a single column.
+    RowMean(Var, usize),
+    /// A one-column value repeated across `cols` columns.
+    Broadcast(Var, usize),
+    /// `1 / sqrt(x + epsilon)`, elementwise.
+    Rsqrt(Var, f64),
+    /// `rows x cols` times a `1 x cols` row, broadcast down the rows. The
+    /// multiplicative counterpart of `AddBias`.
+    MulRow(Var, Var),
 }
 
 /// How a convolution window moves over an image.
@@ -409,6 +418,82 @@ impl Tape {
         Ok(self.push(value, Op::Planar(a, batch, spatial, channels)))
     }
 
+    /// The mean of each row, as a single column.
+    ///
+    /// Distinct from `mean`, which reduces the whole tensor: normalising acts
+    /// per row, and a whole-tensor mean would mix rows that have nothing to do
+    /// with each other.
+    pub fn row_mean(&mut self, a: Var) -> Result<Var, AiError> {
+        let x = self.value(a);
+        if x.cols == 0 {
+            return Err(AiError::Shape("cannot average a row of no values".into()));
+        }
+        let mut value = Tensor::zeros(x.rows, 1);
+        for row in 0..x.rows {
+            let start = row * x.cols;
+            value.data[row] = x.data[start..start + x.cols].iter().sum::<f64>() / x.cols as f64;
+        }
+        let cols = x.cols;
+        Ok(self.push(value, Op::RowMean(a, cols)))
+    }
+
+    /// Repeat a one-column value across `cols` columns.
+    ///
+    /// The other half of `row_mean`: a per-row statistic has to be widened
+    /// before it can be subtracted from the row it came from. Its backward is
+    /// a row sum, which is what makes the pair add up to the identity.
+    pub fn broadcast(&mut self, a: Var, cols: usize) -> Result<Var, AiError> {
+        let x = self.value(a);
+        if x.cols != 1 {
+            return Err(AiError::Shape(format!(
+                "broadcast expects one column, got {}",
+                x.cols
+            )));
+        }
+        let mut value = Tensor::zeros(x.rows, cols);
+        for row in 0..x.rows {
+            for col in 0..cols {
+                value.data[row * cols + col] = x.data[row];
+            }
+        }
+        Ok(self.push(value, Op::Broadcast(a, cols)))
+    }
+
+    /// `1 / sqrt(x + epsilon)`, elementwise.
+    ///
+    /// One operation rather than a square root and a division, because the
+    /// epsilon belongs *inside* the root: a variance of zero is an ordinary
+    /// input -- a row whose values are all equal -- and dividing by its root
+    /// afterwards would produce an infinity from perfectly reasonable data.
+    pub fn rsqrt(&mut self, a: Var, epsilon: f64) -> Result<Var, AiError> {
+        let x = self.value(a);
+        if x.data.iter().any(|v| v + epsilon <= 0.0) {
+            return Err(AiError::Shape(
+                "rsqrt needs every value above -epsilon".into(),
+            ));
+        }
+        let value = x.map(|v| 1.0 / (v + epsilon).sqrt());
+        Ok(self.push(value, Op::Rsqrt(a, epsilon)))
+    }
+
+    /// Multiply every row by a `1 x cols` row. The counterpart of `add_bias`.
+    pub fn mul_row(&mut self, a: Var, row: Var) -> Result<Var, AiError> {
+        let (x, r) = (self.value(a), self.value(row));
+        if r.rows != 1 || r.cols != x.cols {
+            return Err(AiError::Shape(format!(
+                "mul_row expects (1, {}), got ({}, {})",
+                x.cols, r.rows, r.cols
+            )));
+        }
+        let mut value = x.clone();
+        for i in 0..value.rows {
+            for j in 0..value.cols {
+                value.data[i * value.cols + j] *= r.data[j];
+            }
+        }
+        Ok(self.push(value, Op::MulRow(a, row)))
+    }
+
     /// Mean squared error, as a composition rather than a primitive.
     ///
     /// Built from `sub`, `mul` and `mean`, so it needs no backward rule of its
@@ -633,6 +718,59 @@ impl Tape {
                         }
                     }
                     accumulate(&mut grads, *a, &d);
+                }
+                Op::RowMean(a, cols) => {
+                    // Each input contributed 1/cols of its row's mean.
+                    let mut d = Tensor::zeros(g.rows, *cols);
+                    for row in 0..g.rows {
+                        let share = g.data[row] / *cols as f64;
+                        for col in 0..*cols {
+                            d.data[row * cols + col] = share;
+                        }
+                    }
+                    accumulate(&mut grads, *a, &d);
+                }
+                Op::Broadcast(a, cols) => {
+                    // The value took part in every column of its row, so the
+                    // gradient is the row's sum -- the mirror of `row_mean`
+                    // spreading one value across a row.
+                    let mut d = Tensor::zeros(g.rows, 1);
+                    for row in 0..g.rows {
+                        d.data[row] = g.data[row * cols..row * cols + cols].iter().sum();
+                    }
+                    accumulate(&mut grads, *a, &d);
+                }
+                Op::Rsqrt(a, epsilon) => {
+                    // d/dx (x + e)^-1/2 = -1/2 (x + e)^-3/2
+                    let x = &self.nodes[a.0].value;
+                    let d = Tensor {
+                        data: g
+                            .data
+                            .iter()
+                            .zip(x.data.iter())
+                            .map(|(d, v)| -0.5 * d * (v + epsilon).powf(-1.5))
+                            .collect(),
+                        rows: g.rows,
+                        cols: g.cols,
+                    };
+                    accumulate(&mut grads, *a, &d);
+                }
+                Op::MulRow(a, row) => {
+                    let (x, r) = (&self.nodes[a.0].value, &self.nodes[row.0].value);
+                    // Each element scaled by its column's factor.
+                    let mut da = Tensor::zeros(g.rows, g.cols);
+                    // The factor took part in every row, so its gradient is a
+                    // column sum -- weighted by the values it multiplied.
+                    let mut dr = Tensor::zeros(1, g.cols);
+                    for i in 0..g.rows {
+                        for j in 0..g.cols {
+                            let at = i * g.cols + j;
+                            da.data[at] = g.data[at] * r.data[j];
+                            dr.data[j] += g.data[at] * x.data[at];
+                        }
+                    }
+                    accumulate(&mut grads, *a, &da);
+                    accumulate(&mut grads, *row, &dr);
                 }
                 Op::Mean(a) => {
                     let x = &self.nodes[a.0].value;
