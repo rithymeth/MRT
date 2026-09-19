@@ -765,3 +765,18 @@ export const MODULE_CASES = [
     },
   },
 ]
+
+// -- Examples outside the shared corpus --------------------------------------
+// An example lands in the corpus by existing in examples/, which is what keeps
+// the directory honest: every program shipped as documentation is a program all
+// four implementations agree on. These are the exceptions, and each one is a
+// divergence recorded rather than resolved.
+//
+// `ai_linear.mrt` calls `aiTrainLinear`, a builtin only the Rust engine has
+// (compiler/crates/mrt-ai). On the reference it is an undefined variable, so
+// the Rust engine is currently a strict superset of the language its own
+// conformance harness defines. Either the reference grows these builtins or
+// they are declared an engine extension with a home in the spec; until then the
+// Rust harnesses skip the example rather than report a mismatch they cannot
+// act on.
+export const ENGINE_SPECIFIC_EXAMPLES = new Set(['ai_linear.mrt'])

@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { REGRESSION_CASES, MODULE_CASES } from './parity-cases.mjs'
+import { REGRESSION_CASES, MODULE_CASES, ENGINE_SPECIFIC_EXAMPLES } from './parity-cases.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '..')
@@ -120,6 +120,7 @@ function main() {
   const examplesDir = path.join(repoRoot, 'examples')
   for (const file of readdirSync(examplesDir).sort()) {
     if (!file.endsWith('.mrt')) continue
+    if (ENGINE_SPECIFIC_EXAMPLES.has(file)) continue
     checkFile(`example: ${file}`, path.join(examplesDir, file))
   }
   for (const { name, src } of REGRESSION_CASES) {
