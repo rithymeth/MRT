@@ -1,0 +1,19 @@
+[package]
+name = "mrt-window"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The one crate in this workspace with dependencies, and the reason it is its
+# own crate: showing a framebuffer needs platform FFI, and there is no
+# zero-dependency path to it. Confining that to a leaf keeps `cargo test -p
+# mrt-game` -- where all the drawing logic actually lives -- hermetic and
+# fast.
+[dependencies]
+winit = "0.30"
+softbuffer = "0.4"
+mrt-game = { path = "../mrt-game" }
+
+[lints]
+workspace = true
