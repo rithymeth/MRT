@@ -38,7 +38,11 @@ def run(source: str, path: str = None) -> int:
     interpreter = Interpreter(module_path=path)
     interpreter.interpret(statements)
     explain_if_nothing_ran(interpreter, path)
-    return 0
+    # 70 matches the Rust CLI's EX_SOFTWARE for the same case (sysexits.h),
+    # and is what makes `mrt program.mrt` fail loudly enough for a shell
+    # script or CI step checking `$?` to notice. Before this, a program that
+    # stopped on a runtime error still reported success.
+    return 70 if interpreter.had_error else 0
 
 
 def explain_if_nothing_ran(interpreter: Interpreter, path: str = None) -> None:
