@@ -765,6 +765,7 @@ dependencies = [
  "mrt-diagnostics",
  "mrt-game",
  "mrt-parser",
+ "mrt-resolver",
  "mrt-speaker",
  "mrt-window",
 ]

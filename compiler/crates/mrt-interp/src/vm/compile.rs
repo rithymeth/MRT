@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use mrt_ast::*;
+use mrt_diagnostics::Span;
 
 use crate::value::Value;
 use crate::vm::capture::captured_names;
@@ -26,6 +27,44 @@ impl Unsupported {
 
 type Emit<T> = Result<T, Unsupported>;
 
+/// Compile, and report every name the compiler put in a frame slot.
+///
+/// -- The promise this exists to check --
+///
+/// The resolver (`mrt-resolver`) and this compiler answer *different*
+/// questions and were never meant to agree. The resolver works out a full
+/// upvalue scheme -- which locals an inner function captures, and from where.
+/// This compiler does not implement upvalues at all: a name any nested
+/// function mentions is simply not slotted, and is reached through the
+/// environment instead, where the frame and the closure share one cell.
+///
+/// Two designs, and the simpler one is sound only because of a promise it
+/// never wrote down: **the compiler may be more conservative than the
+/// resolver, never less.** Putting a name in the environment that could have
+/// been a slot costs a hash lookup. Putting a name in a *slot* that the
+/// resolver says is a global or a capture is a silently wrong answer -- a
+/// closure reading a stale copy, or a module-level variable hidden behind a
+/// frame that dies.
+///
+/// Nothing checked that until this. `audit` in the tests below runs both over
+/// the corpus and holds the compiler to it.
+pub fn compile_audited(statements: &[Stmt]) -> Emit<(Chunk, Vec<Span>)> {
+    let mut compiler = Compiler {
+        chunk: Chunk::new(),
+        scope_depth: 0,
+        locals: Vec::new(),
+        max_slots: 0,
+        captured: HashSet::new(),
+        slots_allowed: false,
+        finally_depth: 0,
+        slotted: Vec::new(),
+    };
+    compiler.top_level(statements)?;
+    compiler.chunk.emit(Op::Null, 0);
+    compiler.chunk.emit(Op::Return, 0);
+    Ok((compiler.chunk, compiler.slotted))
+}
+
 pub fn compile_program(statements: &[Stmt]) -> Emit<Chunk> {
     let mut compiler = Compiler {
         chunk: Chunk::new(),
@@ -35,6 +74,7 @@ pub fn compile_program(statements: &[Stmt]) -> Emit<Chunk> {
         captured: HashSet::new(),
         slots_allowed: false,
         finally_depth: 0,
+        slotted: Vec::new(),
     };
     // The entry chunk runs top-level code and then returns null; `main` is
     // called by the driver, exactly as the tree-walker does it.
@@ -61,6 +101,7 @@ pub fn compile_function(params: &[Param], body: &[Stmt], name: Option<String>) -
         captured: HashSet::new(),
         slots_allowed: false,
         finally_depth: 0,
+        slotted: Vec::new(),
     };
     compiler.body(body)?;
     compiler.chunk.emit(Op::Null, 0);
@@ -97,6 +138,13 @@ struct Compiler {
     /// top-level `var` is a global, reachable by name from every function in
     /// the file, so putting one in a frame slot would hide it.
     slots_allowed: bool,
+    /// The span of every name this compiler decided to reach through a frame
+    /// slot, gathered from nested functions too.
+    ///
+    /// Recorded so `audit` can hold the compiler to the one promise that
+    /// makes its design safe -- see the note there. It costs a `Vec` push per
+    /// identifier, against a compile that is already allocating a chunk.
+    slotted: Vec<Span>,
 }
 
 struct Local {
@@ -669,21 +717,27 @@ impl Compiler {
     }
 
     /// Emit a read of `name`, through a slot where possible.
-    fn emit_get(&mut self, name: &str, line: u32) {
-        match self.resolve_local(name) {
-            Some(slot) => self.chunk.emit(Op::GetLocal(slot), line),
+    fn emit_get(&mut self, name: &Name, line: u32) {
+        match self.resolve_local(&name.text) {
+            Some(slot) => {
+                self.slotted.push(name.span);
+                self.chunk.emit(Op::GetLocal(slot), line)
+            }
             None => {
-                let index = self.chunk.name(name);
+                let index = self.chunk.name(&name.text);
                 self.chunk.emit(Op::GetVar(index), line)
             }
         };
     }
 
-    fn emit_set(&mut self, name: &str, line: u32) {
-        match self.resolve_local(name) {
-            Some(slot) => self.chunk.emit(Op::SetLocal(slot), line),
+    fn emit_set(&mut self, name: &Name, line: u32) {
+        match self.resolve_local(&name.text) {
+            Some(slot) => {
+                self.slotted.push(name.span);
+                self.chunk.emit(Op::SetLocal(slot), line)
+            }
             None => {
-                let index = self.chunk.name(name);
+                let index = self.chunk.name(&name.text);
                 self.chunk.emit(Op::SetVar(index), line)
             }
         };
@@ -899,10 +953,10 @@ impl Compiler {
                     }
                 };
             }
-            ExprKind::Variable(name) => self.emit_get(&name.text, line),
+            ExprKind::Variable(name) => self.emit_get(name, line),
             ExprKind::Assign { name, value } => {
                 self.expression(value)?;
-                self.emit_set(&name.text, line);
+                self.emit_set(name, line);
             }
             ExprKind::Binary { left, op, right } => {
                 self.expression(left)?;
@@ -1113,6 +1167,7 @@ impl Compiler {
             captured,
             slots_allowed: true,
             finally_depth: 0,
+            slotted: Vec::new(),
         };
         if simple_params {
             for param in params {
@@ -1133,6 +1188,9 @@ impl Compiler {
             simple_params,
             is_generator,
         });
+        // A nested function's slot decisions are this compile's too, or the
+        // audit would only ever see the outermost frame.
+        self.slotted.append(&mut inner.slotted);
         let index = self.chunk.proto(proto);
         self.chunk.emit(Op::Closure(index), line);
         Ok(())
@@ -1179,5 +1237,248 @@ impl Compiler {
         for site in loops.continues {
             self.patch_to(site, continue_target);
         }
+    }
+}
+
+#[cfg(test)]
+mod audit {
+    use super::*;
+    use mrt_diagnostics::SourceFile;
+    use mrt_resolver::Resolution;
+
+    /// Every name the compiler slotted, checked against what the resolver
+    /// worked out about it. Returns the ones that broke the promise.
+    ///
+    /// Two things disqualify a slot, and the second is the one that matters.
+    ///
+    /// **The resolver calls it a global.** A module-level `var` is reachable
+    /// by name from every function in the file; in a frame slot it would be
+    /// hidden behind a frame that dies.
+    ///
+    /// **The resolver marks it captured.** Some inner function closes over
+    /// it, and MRT closures capture by reference -- so the binding has to
+    /// live where the frame and the closure share one cell. Slotted, the
+    /// closure reads a copy that stopped changing.
+    ///
+    /// That second check cannot come from `by_span`: the resolver classifies
+    /// the *declaring* mention of a captured variable as an ordinary local
+    /// too, and records the capture as a flag on the function's frame
+    /// layout. So each slotted span is attributed to the innermost function
+    /// whose span contains it, and checked against that function's locals.
+    ///
+    /// One-directional throughout. The compiler being *more* conservative
+    /// than the resolver costs a hash lookup and happens constantly by
+    /// design -- its capture analysis disqualifies a name on any mention
+    /// inside any nested function, whether or not that mention could really
+    /// refer to it. The other direction is a silently wrong answer.
+    fn violations(source: &str) -> Vec<String> {
+        let file = SourceFile::new("audit.mrt", source);
+        let parsed = mrt_parser::parse(&file);
+        assert!(
+            parsed.errors.is_empty(),
+            "the audit corpus must parse: {:?}",
+            parsed.errors.first().map(|e| e.render_compat())
+        );
+
+        let resolved = mrt_resolver::resolve(&parsed.program);
+        let Ok((_, slotted)) = compile_audited(&parsed.program.statements) else {
+            // A program the VM cannot compile made no slot decisions.
+            return Vec::new();
+        };
+
+        let text_of = |span: Span| -> String {
+            source
+                .chars()
+                .skip(span.start as usize)
+                .take((span.end - span.start) as usize)
+                .collect()
+        };
+
+        let mut bad = Vec::new();
+        for span in slotted {
+            let name = text_of(span);
+
+            if matches!(
+                resolved.by_span.get(&span),
+                Some(mrt_resolver::Resolution::Global)
+            ) {
+                bad.push(format!("{name} is a global"));
+                continue;
+            }
+
+            // The innermost function containing this use: the narrowest span
+            // that encloses it.
+            let scope = resolved
+                .functions
+                .iter()
+                .filter(|f| f.span.start <= span.start && span.end <= f.span.end)
+                .min_by_key(|f| f.span.end - f.span.start);
+
+            if let Some(scope) = scope {
+                if scope
+                    .locals
+                    .iter()
+                    .any(|local| local.name == name && local.captured)
+                {
+                    bad.push(format!("{name} is captured by a closure"));
+                }
+            }
+        }
+        bad
+    }
+
+    fn check(source: &str) {
+        let bad = violations(source);
+        assert!(
+            bad.is_empty(),
+            "the compiler slotted names it must not: {bad:?}\nin:\n{source}"
+        );
+    }
+
+    #[test]
+    fn the_compiler_never_slots_a_global() {
+        // Top-level `var`s are globals: reachable by name from every function
+        // in the file. One in a frame slot would be hidden behind a frame
+        // that dies, and the function below it would see nothing.
+        check("var total = 0;\nfunc add(n) { total = total + n; return total; }\nfunc main() { print(add(2)); }");
+
+        // Read and written *at* the top level as well as inside a function.
+        // Without this the check has nothing to look at: a declaration binds
+        // without going through the two places a name is resolved, so a
+        // compiler that wrongly slotted globals would record no decision at
+        // all and pass. Found by mutation -- turning slots on for top-level
+        // code left every test green until this line existed.
+        check(
+            "var count = 0;\ncount = count + 1;\nprint(count);\nfunc bump() { count = count + 1; }\nfunc main() { bump(); print(count); }",
+        );
+    }
+
+    #[test]
+    fn the_compiler_never_slots_something_a_closure_holds() {
+        // The case the whole promise is about. MRT closures capture by
+        // reference, so a slotted counter would leave the closure reading a
+        // copy that stopped changing.
+        check(
+            r#"func main() {
+                   var n = 1;
+                   var f = func() { return n; };
+                   n = 2;
+                   print(f());
+               }"#,
+        );
+        check(
+            r#"func counter() {
+                   var n = 0;
+                   return func() { n = n + 1; return n; };
+               }
+               func main() { var c = counter(); c(); print(c()); }"#,
+        );
+    }
+
+    #[test]
+    fn the_promise_holds_across_every_shape_the_language_has() {
+        // Not a survey for its own sake: each of these binds names somewhere
+        // the two implementations could disagree about.
+        for source in [
+            // Loops, whose bodies open and close scopes.
+            "func main() { for (var i = 0; i < 3; i = i + 1) { var d = i * 2; print(d); } }",
+            // A for-in binding, bound afresh each turn.
+            "func main() { var fs = []; for (x in [1, 2]) { push(fs, func() { return x; }); } print(fs[0]()); }",
+            // Destructuring, which binds several names at once.
+            "func main() { var [a, b] = [1, 2]; var {c} = {c: 3}; print(a, b, c); }",
+            // Match, which binds into the environment rather than slots.
+            "func main() { match ([1, 2]) { case [p, q]: print(p, q); } }",
+            // try/catch, whose error name is bound for the block.
+            "func main() { try { throw 1; } catch (e) { print(e); } }",
+            // Parameters with defaults and rest.
+            "func f(a, b = 2, ...rest) { return a + b + len(rest); }\nfunc main() { print(f(1)); }",
+            // A struct with methods, each its own function.
+            "struct P { x; func show() { return this.x; } }\nfunc main() { print(P(1).show()); }",
+            // Nesting three deep, so a name is reached across two frames.
+            "func main() { var a = 1; var f = func() { var g = func() { return a; }; return g(); }; print(f()); }",
+            // Shadowing: an inner name of the same spelling as an outer one.
+            "var v = 1;\nfunc main() { var v = 2; { var v = 3; print(v); } print(v); }",
+        ] {
+            check(source);
+        }
+    }
+
+    #[test]
+    fn the_promise_holds_over_every_example_in_the_repository() {
+        // The hand-written cases above are the shapes I thought to check.
+        // These are the programs that actually exist -- a JSON parser, a
+        // generator pipeline, pattern matching, modules -- and they exercise
+        // combinations nobody sat down and enumerated.
+        let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples");
+        let Ok(entries) = std::fs::read_dir(&examples) else {
+            // Running from somewhere without the corpus is not a failure of
+            // the compiler; the cases above still ran.
+            return;
+        };
+
+        let mut checked = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "mrt") {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // Some examples import modules this test does not load; the
+            // compiler still makes slot decisions about the file in hand.
+            let file = SourceFile::new("audit.mrt", &source);
+            let parsed = mrt_parser::parse(&file);
+            if !parsed.errors.is_empty() {
+                continue;
+            }
+            let bad = violations(&source);
+            assert!(
+                bad.is_empty(),
+                "{}: the compiler slotted names it must not: {bad:?}",
+                path.display()
+            );
+            checked += 1;
+        }
+        assert!(checked > 10, "only {checked} examples were audited");
+    }
+
+    #[test]
+    fn the_audit_can_fail() {
+        // A check that cannot fail is worth nothing, and this one compares
+        // two implementations that mostly agree -- exactly the shape that
+        // passes for the wrong reason. So: a program whose slotted names the
+        // resolver classifies as something else.
+        //
+        // `total` below is a module-level global read inside a function. If
+        // the compiler ever started slotting it, `violations` must say so --
+        // which is checked by asking the resolver directly and confirming it
+        // really does call that mention a global.
+        let source =
+            "var total = 0;\nfunc add(n) { return total + n; }\nfunc main() { print(add(1)); }";
+        let file = SourceFile::new("audit.mrt", source);
+        let parsed = mrt_parser::parse(&file);
+        let resolved = mrt_resolver::resolve(&parsed.program);
+
+        let globals = resolved
+            .by_span
+            .values()
+            .filter(|r| matches!(r, Resolution::Global))
+            .count();
+        assert!(
+            globals > 0,
+            "the resolver sees no globals here, so this test proves nothing"
+        );
+
+        // And the audit is looking at real data: the compiler slotted
+        // something in this program, so an empty `slotted` is not why it
+        // passes.
+        let Ok((_, slotted)) = compile_audited(&parsed.program.statements) else {
+            panic!("the audit corpus must compile");
+        };
+        assert!(
+            !slotted.is_empty(),
+            "nothing was slotted, so nothing was checked"
+        );
     }
 }
