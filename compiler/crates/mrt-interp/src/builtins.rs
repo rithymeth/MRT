@@ -117,6 +117,8 @@ const NAMES: &[&str] = &[
     "gameTextWidth",
     "gameTextHeight",
     "gameSave",
+    "gameSaveData",
+    "gameLoadData",
     "netGet",
     "netPost",
     "soundTone",
@@ -609,6 +611,26 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 )));
             };
             crate::game::save(&interp.screen, path)
+        }
+        "gameSaveData" => {
+            exactly(&args, 2, "gameSaveData() takes a path and a value.")?;
+            let Value::Str(path) = &args[0] else {
+                return Err(type_error(format!(
+                    "gameSaveData() needs a path, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            crate::save::save(path, &args[1])
+        }
+        "gameLoadData" => {
+            one(&args, "gameLoadData")?;
+            let Value::Str(path) = &args[0] else {
+                return Err(type_error(format!(
+                    "gameLoadData() needs a path, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            crate::save::load(path)
         }
 
         // -- network --------------------------------------------------------

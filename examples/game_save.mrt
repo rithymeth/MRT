@@ -1,0 +1,54 @@
+// Saving and loading game state, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// MRT has no general file I/O, on purpose -- letting an interpreted
+// program read and write arbitrary paths is a much bigger door to open
+// than a game asking to keep its own save file. gameSaveData/gameLoadData
+// open exactly that one door: a value in, a value back out, the file
+// format itself not a program's concern. Neither needs a screen --
+// persisting progress is arithmetic on a value and a file.
+
+func loadProgress(path) {
+    try {
+        return gameLoadData(path);
+    } catch (e) {
+        // No save yet is not a special case to work around -- it is the
+        // first thing that happens the first time anyone plays.
+        print("no save found, starting fresh");
+        return {level: 1, gold: 0, unlocked: ["sword"]};
+    }
+}
+
+func main() {
+    var path = "mrt_save_example.json";
+
+    var progress = loadProgress(path);
+    print("starting level:", progress.level, "gold:", progress.gold);
+
+    // Play a bit: finish a level, find some gold, unlock something.
+    progress.level = progress.level + 1;
+    progress.gold = progress.gold + 75;
+    push(progress.unlocked, "shield");
+
+    gameSaveData(path, progress);
+    print("saved level:", progress.level, "gold:", progress.gold);
+
+    // A fresh read proves the file actually holds what was saved, not just
+    // what is still sitting in the variable that wrote it.
+    var reloaded = gameLoadData(path);
+    print("reloaded level:", reloaded.level, "gold:", reloaded.gold);
+    print("unlocked:", reloaded.unlocked);
+    print("matches what was saved:", reloaded.level == progress.level && reloaded.gold == progress.gold);
+
+    // A value this extension does not consider data -- a function -- is
+    // refused rather than silently dropped or turned into nonsense.
+    try {
+        gameSaveData(path, loadProgress);
+    } catch (e) {
+        print("a function cannot be saved:", e.kind);
+    }
+
+    print("wrote", path);
+}
