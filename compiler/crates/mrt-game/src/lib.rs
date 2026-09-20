@@ -400,6 +400,14 @@ impl Surface {
     /// pick one rather than to blend one into existence, and that rule does
     /// not change just because the source of the fraction is now a rotation
     /// instead of an integer zoom.
+    ///
+    /// `region` crops the source to one rectangle of it first -- one frame
+    /// of a sprite sheet, addressed the same way every other rectangle in
+    /// this crate is: `(x, y, width, height)` in the source's own pixel
+    /// space. `None` is the whole source, exactly as if it had no sheet
+    /// around it at all. `anchor_x`/`anchor_y` are in that cropped frame's
+    /// own local space either way, so a sheet of same-sized frames does not
+    /// need a different anchor for each one.
     #[allow(clippy::too_many_arguments)]
     pub fn blit_transformed(
         &mut self,
@@ -411,6 +419,7 @@ impl Surface {
         scale_y: f64,
         anchor_x: f64,
         anchor_y: f64,
+        region: Option<(i32, i32, u32, u32)>,
     ) {
         // A size of zero or less is the same "nothing to draw" this crate
         // already gives a negative width or radius, not an error: the
@@ -419,7 +428,10 @@ impl Surface {
         if scale_x <= 0.0 || scale_y <= 0.0 || !scale_x.is_finite() || !scale_y.is_finite() {
             return;
         }
-        let (w, h) = (source.width as f64, source.height as f64);
+        let (src_x, src_y, w, h) = match region {
+            Some((rx, ry, rw, rh)) => (rx, ry, rw as f64, rh as f64),
+            None => (0, 0, source.width as f64, source.height as f64),
+        };
         let (sin, cos) = angle.sin_cos();
 
         // Forward-map the four corners once, just to find how much of the
@@ -477,9 +489,18 @@ impl Surface {
                 // coordinate that should be exactly on an integer (again,
                 // typically from a right-angle rotation) doesn't get floored
                 // down to the pixel before it because it landed a hair under.
-                if let Some(color) =
-                    source.get((u + SLACK).floor() as i32, (v + SLACK).floor() as i32)
-                {
+                let local_x = (u + SLACK).floor() as i32;
+                let local_y = (v + SLACK).floor() as i32;
+                // Bounded against the *cropped region*, not just the whole
+                // surface: without this, the same slack that rescues a
+                // right-angle rotation at the sheet's own edges would let it
+                // bleed one pixel into whichever frame happens to sit next
+                // to this one, since both are still well inside the full
+                // surface's bounds.
+                if local_x < 0 || local_x >= w as i32 || local_y < 0 || local_y >= h as i32 {
+                    continue;
+                }
+                if let Some(color) = source.get(local_x + src_x, local_y + src_y) {
                     self.draw(px, py, color);
                 }
             }
@@ -725,7 +746,7 @@ mod tests {
         plain.blit(&sprite, 2, 3);
 
         let mut transformed = Surface::new(8, 8, BLACK);
-        transformed.blit_transformed(&sprite, 2, 3, 0.0, 1.0, 1.0, 0.0, 0.0);
+        transformed.blit_transformed(&sprite, 2, 3, 0.0, 1.0, 1.0, 0.0, 0.0, None);
 
         for y in 0..8 {
             for x in 0..8 {
@@ -755,6 +776,7 @@ mod tests {
             1.0,
             0.0,
             0.0,
+            None,
         );
 
         // The rotation sweeps the sprite's original width up over its own
@@ -771,7 +793,7 @@ mod tests {
     fn scaling_up_covers_the_gaps_a_forward_mapped_blit_would_leave() {
         let sprite = Surface::new(2, 2, RED);
         let mut screen = Surface::new(10, 10, BLACK);
-        screen.blit_transformed(&sprite, 1, 1, 0.0, 3.0, 3.0, 0.0, 0.0);
+        screen.blit_transformed(&sprite, 1, 1, 0.0, 3.0, 3.0, 0.0, 0.0, None);
 
         for y in 1..7 {
             for x in 1..7 {
@@ -796,6 +818,7 @@ mod tests {
             1.0,
             1.0,
             1.0,
+            None,
         );
         assert_eq!(screen.get(4, 4), Some(RED));
     }
@@ -804,12 +827,73 @@ mod tests {
     fn a_non_positive_scale_draws_nothing_rather_than_flipping_or_panicking() {
         let sprite = Surface::new(2, 2, RED);
         let mut screen = Surface::new(10, 10, BLACK);
-        screen.blit_transformed(&sprite, 5, 5, 0.0, 0.0, 1.0, 0.0, 0.0);
-        screen.blit_transformed(&sprite, 5, 5, 0.0, 1.0, -2.0, 0.0, 0.0);
+        screen.blit_transformed(&sprite, 5, 5, 0.0, 0.0, 1.0, 0.0, 0.0, None);
+        screen.blit_transformed(&sprite, 5, 5, 0.0, 1.0, -2.0, 0.0, 0.0, None);
         for y in 0..10 {
             for x in 0..10 {
                 assert_eq!(screen.get(x, y), Some(BLACK));
             }
+        }
+    }
+
+    #[test]
+    fn a_region_crops_the_source_to_one_frame_of_a_sheet() {
+        // A 2-frame-wide sheet: the left frame solid red, the right solid
+        // blue. Cropping to just the right frame should draw only blue.
+        let mut sheet = Surface::new(4, 2, RED);
+        for y in 0..2 {
+            for x in 2..4 {
+                sheet.set(x, y, BLUE);
+            }
+        }
+        let mut screen = Surface::new(10, 10, BLACK);
+        screen.blit_transformed(&sheet, 0, 0, 0.0, 1.0, 1.0, 0.0, 0.0, Some((2, 0, 2, 2)));
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(screen.get(x, y), Some(BLUE), "at ({x}, {y})");
+            }
+        }
+        for y in 0..10 {
+            for x in 2..10 {
+                assert_eq!(
+                    screen.get(x, y),
+                    Some(BLACK),
+                    "outside the frame at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_right_angle_rotation_does_not_bleed_into_the_next_frame_on_the_sheet() {
+        // The same slack that rescues an exact quarter-turn at a surface's
+        // own edge must not let it read one pixel past a *cropped* frame's
+        // edge into whatever sits next to it on the sheet -- here, a second
+        // frame that is entirely blue, right where a naive full-surface
+        // bounds check would happily allow the sample to land.
+        let mut sheet = Surface::new(4, 2, RED);
+        for y in 0..2 {
+            for x in 2..4 {
+                sheet.set(x, y, BLUE);
+            }
+        }
+        let mut screen = Surface::new(10, 10, BLACK);
+        screen.blit_transformed(
+            &sheet,
+            5,
+            5,
+            std::f64::consts::FRAC_PI_2,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            Some((0, 0, 2, 2)),
+        );
+        for py in screen.pixels.iter() {
+            assert_ne!(
+                *py, BLUE,
+                "the right-hand (blue) frame must never show through"
+            );
         }
     }
 

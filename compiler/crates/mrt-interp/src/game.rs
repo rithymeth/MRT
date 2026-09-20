@@ -887,6 +887,53 @@ mod tests {
     }
 
     #[test]
+    fn gamedraw_can_crop_to_one_frame_of_a_sprite_sheet() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(20, 20, "t");
+                   var red = gameColor(255, 0, 0);
+                   var blue = gameColor(0, 0, 255);
+                   // A 2-frame sheet: left frame red, right frame blue.
+                   var sheet = gameSurface(4, 2);
+                   gameTarget(sheet);
+                   gameRect(0, 0, 2, 2, red);
+                   gameRect(2, 0, 2, 2, blue);
+                   gameTarget(0);
+                   // Drawing just the right (blue) frame should not paint
+                   // any red at all.
+                   gameDraw(sheet, 0, 0, {srcX: 2, srcY: 0, srcWidth: 2, srcHeight: 2});
+                   print(gameColorAt(0, 0) == blue, gameColorAt(1, 1) == blue);
+                   print(gameColorAt(2, 0) == red, gameColorAt(2, 0) == blue);"#
+            ),
+            "true true\nfalse false"
+        );
+    }
+
+    #[test]
+    fn gamedraw_requires_all_four_source_rectangle_fields_together() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var s = gameSurface(4, 4);
+                   gameDraw(s, 0, 0, {srcX: 0, srcY: 0, srcWidth: 2});"#
+            ),
+            "Runtime Error: gameDraw(): srcX, srcY, srcWidth and srcHeight must be given together, or not at all. [line 3]"
+        );
+    }
+
+    #[test]
+    fn gamedraw_rejects_a_source_rectangle_that_does_not_fit_the_sprite() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var s = gameSurface(4, 4);
+                   gameDraw(s, 0, 0, {srcX: 2, srcY: 0, srcWidth: 4, srcHeight: 4});"#
+            ),
+            "Runtime Error: gameDraw(): the source rectangle (2, 0, 4, 4) does not fit inside surface 1 (4x4). [line 3]"
+        );
+    }
+
+    #[test]
     fn a_new_sprite_is_transparent_rather_than_black() {
         // A sprite is a shape with nothing around it. One that began opaque
         // would stamp a rectangle of background over whatever it landed on,
@@ -1462,6 +1509,12 @@ pub mod sprites {
         pub scale_y: f64,
         pub anchor_x: f64,
         pub anchor_y: f64,
+        /// One frame of a sprite sheet: `(x, y, width, height)` in the
+        /// sprite's own pixel space, or `None` for the whole sprite. Left
+        /// unchecked against the sprite's actual size here -- this is built
+        /// from the options object alone, before `draw_transformed` knows
+        /// which sprite it will be applied to.
+        pub region: Option<(i32, i32, u32, u32)>,
     }
 
     impl Default for Transform {
@@ -1472,15 +1525,16 @@ pub mod sprites {
                 scale_y: 1.0,
                 anchor_x: 0.0,
                 anchor_y: 0.0,
+                region: None,
             }
         }
     }
 
-    /// Read `{angle, scaleX, scaleY, anchorX, anchorY}`, filling in what it
-    /// leaves out -- the same shape `soundPlay`'s options take, for the same
-    /// reason: a game calls this every frame, and a positional
-    /// `gameDraw(id, x, y, 0, 1.5, 1.5, 8, 8)` says nothing at the call site
-    /// about which number is which.
+    /// Read `{angle, scaleX, scaleY, anchorX, anchorY, srcX, srcY, srcWidth,
+    /// srcHeight}`, filling in what it leaves out -- the same shape
+    /// `soundPlay`'s options take, for the same reason: a game calls this
+    /// every frame, and a positional `gameDraw(id, x, y, 0, 1.5, 1.5, 8, 8)`
+    /// says nothing at the call site about which number is which.
     pub fn transform_of(value: &Value, who: &str) -> Result<Transform, Signal> {
         let mut t = Transform::default();
         if matches!(value, Value::Null) {
@@ -1508,7 +1562,53 @@ pub mod sprites {
         t.scale_y = number("scaleY", t.scale_y)?;
         t.anchor_x = number("anchorX", t.anchor_x)?;
         t.anchor_y = number("anchorY", t.anchor_y)?;
+
+        // srcX/srcY/srcWidth/srcHeight crop the sprite to one frame of a
+        // sheet before the rest of the transform applies. They come as a
+        // set -- a caller who names one but not the other three almost
+        // certainly meant all four and mistyped one, and silently treating
+        // the missing ones as "whole sprite" would draw a frame nobody
+        // asked for instead of raising it.
+        let names = ["srcX", "srcY", "srcWidth", "srcHeight"];
+        let present: Vec<bool> = names.iter().map(|n| map.contains_key(&key(n))).collect();
+        if present.iter().any(|p| *p) {
+            if !present.iter().all(|p| *p) {
+                return Err(value_error(format!(
+                    "{who}(): srcX, srcY, srcWidth and srcHeight must be given together, or not at all."
+                )));
+            }
+            let src_x = coord(map.get(&key("srcX")).expect("checked present"), who, "srcX")?;
+            let src_y = coord(map.get(&key("srcY")).expect("checked present"), who, "srcY")?;
+            let src_w = dimension(
+                map.get(&key("srcWidth")).expect("checked present"),
+                who,
+                "srcWidth",
+            )?;
+            let src_h = dimension(
+                map.get(&key("srcHeight")).expect("checked present"),
+                who,
+                "srcHeight",
+            )?;
+            t.region = Some((src_x, src_y, src_w, src_h));
+        }
         Ok(t)
+    }
+
+    /// A sprite-sheet frame's width or height: a whole number of pixels,
+    /// at least 1. Not bounded above here -- whether it actually fits
+    /// inside the sprite it crops is checked once `draw_transformed` knows
+    /// which sprite that is.
+    fn dimension(value: &Value, who: &str, what: &str) -> Result<u32, Signal> {
+        match value {
+            Value::Number(n) if n.is_finite() && *n >= 1.0 => Ok(n.floor() as u32),
+            Value::Number(n) => Err(value_error(format!(
+                "{who}(): {what} must be at least 1, not {n}."
+            ))),
+            other => Err(type_error(format!(
+                "{who}() needs {what} to be a number, not {}.",
+                crate::value::type_name(other)
+            ))),
+        }
     }
 
     /// Stamp a sprite onto the current target, blending it.
@@ -1532,6 +1632,19 @@ pub mod sprites {
                 "gameDraw(): surface {id} cannot be drawn onto itself."
             )));
         }
+        let sprite = screen.sprites[index].as_ref().expect("checked live");
+        if let Some((rx, ry, rw, rh)) = transform.region {
+            let (fits_x, fits_y) = (
+                rx >= 0 && (rx as i64) + (rw as i64) <= sprite.width as i64,
+                ry >= 0 && (ry as i64) + (rh as i64) <= sprite.height as i64,
+            );
+            if !fits_x || !fits_y {
+                return Err(value_error(format!(
+                    "gameDraw(): the source rectangle ({rx}, {ry}, {rw}, {rh}) does not fit inside surface {id} ({}x{}).",
+                    sprite.width, sprite.height
+                )));
+            }
+        }
         let (x, y) = screen.from_world(x, y);
         // Lifted out and put back rather than cloned: the source and the
         // target are two entries of one Vec, and this is the cheap way to
@@ -1548,6 +1661,7 @@ pub mod sprites {
             transform.scale_y,
             transform.anchor_x,
             transform.anchor_y,
+            transform.region,
         );
         screen.sprites[index] = Some(sprite);
         Ok(Value::Null)

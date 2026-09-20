@@ -444,7 +444,7 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 &args,
                 3,
                 4,
-                "gameDraw() takes a surface, x, y, and optionally {angle, scaleX, scaleY, anchorX, anchorY}.",
+                "gameDraw() takes a surface, x, y, and optionally {angle, scaleX, scaleY, anchorX, anchorY, srcX, srcY, srcWidth, srcHeight}.",
             )?;
             let id = whole(&args[0], "gameDraw", "the surface")?;
             let x = coord(&args[1], "gameDraw", "x")?;
