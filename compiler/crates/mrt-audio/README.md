@@ -57,4 +57,11 @@ field does not sag as it passes the centre. Speed is a resample, so it changes
 the length as well as the pitch — which is what makes a handful of pitches on
 one sample sound like a scale instead of a machine.
 
-Next: a low-pass filter, which is what a sound needs to seem far away.
+A one-pole low-pass filter is available both ways: baked into a sound with
+`Sound::low_pass`, or applied live per voice. They share their arithmetic, so
+a sound muffled once and a sound muffled while playing are the same sound.
+Down 3dB at the cutoff, 6dB an octave after it — it dulls rather than removes,
+which is the shape a game wants.
+
+Next: a ring buffer so the audio thread owns its mixer outright, if anything
+is ever heard glitching under the current lock.

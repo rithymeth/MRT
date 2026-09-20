@@ -39,6 +39,13 @@ pub struct Play {
     /// shorter, exactly as a record does. For game effects that is the
     /// wanted behaviour and not an approximation of something better.
     pub speed: f32,
+    /// Cut everything above this many hertz, to make a sound distant or
+    /// muffled. Zero means no filtering.
+    ///
+    /// Live rather than baked, because the same footstep is near in one
+    /// moment and far in the next, and pre-filtering every distance would
+    /// mean a sound per distance.
+    pub cutoff: f64,
     pub looping: bool,
 }
 
@@ -48,6 +55,7 @@ impl Default for Play {
             volume: 1.0,
             pan: 0.0,
             speed: 1.0,
+            cutoff: 0.0,
             looping: false,
         }
     }
@@ -65,6 +73,11 @@ struct Voice {
     volume: f32,
     /// Per-channel gain, already worked out from the pan.
     gains: [f32; 2],
+    /// How far the filter moves towards its input each sample; 1.0 is off.
+    alpha: f32,
+    /// The filter's running value, per channel. Two of them, because one
+    /// shared value would fold the stereo sides into each other.
+    filtered: [f32; 2],
     looping: bool,
 }
 
@@ -123,6 +136,8 @@ impl Mixer {
             step,
             volume: how.volume,
             gains: pan_gains(how.pan),
+            alpha: crate::one_pole_alpha(how.cutoff, self.rate),
+            filtered: [0.0; 2],
             looping: how.looping,
         });
         id
@@ -188,6 +203,16 @@ impl Mixer {
                         // sample, which would leave a click at the end.
                         0.0
                     };
+                    let mut value = a + (b - a) * fraction;
+
+                    // Filter the source, then place it: muffling is a
+                    // property of the sound, panning of where it is.
+                    if voice.alpha < 1.0 {
+                        let slot = channel.min(1);
+                        voice.filtered[slot] += voice.alpha * (value - voice.filtered[slot]);
+                        value = voice.filtered[slot];
+                    }
+
                     // Panning only means anything with somewhere to pan to:
                     // on a mono device both gains would apply to the one
                     // channel and quieten everything by a third.
@@ -196,7 +221,7 @@ impl Mixer {
                     } else {
                         1.0
                     };
-                    *sample += (a + (b - a) * fraction) * voice.volume * gain;
+                    *sample += value * voice.volume * gain;
                 }
                 voice.position += voice.step;
             }
@@ -447,6 +472,51 @@ mod tests {
         mixer.fill(&mut out);
         assert_eq!(&out[..2], &[1.0, 1.0], "two frames of sound");
         assert_eq!(mixer.playing(), 0, "then finished, at twice the rate");
+    }
+
+    #[test]
+    fn a_cutoff_dulls_a_voice_as_it_plays() {
+        // The live filter and the offline one share their arithmetic, so a
+        // sound muffled once and a sound muffled while playing are the same
+        // sound. Checked here by playing a square wave, whose corners are
+        // entirely high frequency: filtered, it can no longer reach the
+        // extremes on the first sample.
+        let square = Arc::new(Sound {
+            rate: 1000,
+            channels: 1,
+            samples: vec![1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0],
+        });
+
+        let mut plain = Mixer::new(1000, 1);
+        plain.play(square.clone(), Play::default());
+        let mut sharp = vec![0.0; 8];
+        plain.fill(&mut sharp);
+
+        let mut muffled = Mixer::new(1000, 1);
+        muffled.play(
+            square,
+            Play {
+                cutoff: 60.0,
+                ..Play::default()
+            },
+        );
+        let mut soft = vec![0.0; 8];
+        muffled.fill(&mut soft);
+
+        assert_eq!(sharp[0], 1.0, "unfiltered, it starts at full scale");
+        assert!(soft[0] < 0.5, "filtered, it has to climb, got {}", soft[0]);
+        let sharp_energy: f32 = sharp.iter().map(|s| s * s).sum();
+        let soft_energy: f32 = soft.iter().map(|s| s * s).sum();
+        assert!(soft_energy < sharp_energy * 0.5, "and it lost its edge");
+    }
+
+    #[test]
+    fn a_cutoff_of_zero_leaves_a_voice_alone() {
+        let mut mixer = Mixer::new(1000, 1);
+        mixer.play(constant(1.0, 4, 1000), Play::default());
+        let mut out = vec![0.0; 4];
+        mixer.fill(&mut out);
+        assert_eq!(out, vec![1.0; 4], "no filter means no change at all");
     }
 
     #[test]

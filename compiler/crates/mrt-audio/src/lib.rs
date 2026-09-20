@@ -50,6 +50,20 @@ impl std::fmt::Debug for Sound {
 /// What a sound is at unless something says otherwise.
 pub const RATE: u32 = 44_100;
 
+/// How far a one-pole filter moves towards its input each sample.
+///
+/// Shared by the offline `Sound::low_pass` and the per-voice filter in the
+/// mixer, so a sound muffled once and a sound muffled while playing are the
+/// same sound. Returns 1.0 -- meaning "pass everything" -- for a cutoff that
+/// is not asking for anything.
+pub fn one_pole_alpha(cutoff: f64, rate: u32) -> f32 {
+    if cutoff <= 0.0 || rate == 0 || cutoff >= rate as f64 / 2.0 {
+        return 1.0;
+    }
+    let turns = std::f64::consts::TAU * cutoff / rate as f64;
+    (turns / (turns + 1.0)) as f32
+}
+
 impl Sound {
     pub fn silence(rate: u32, channels: u16, frames: usize) -> Sound {
         Sound {
@@ -158,6 +172,42 @@ impl Sound {
         let next = next.resample(self.rate).to_channels(self.channels);
         let mut samples = self.samples.clone();
         samples.extend_from_slice(&next.samples);
+        Sound {
+            rate: self.rate,
+            channels: self.channels,
+            samples,
+        }
+    }
+
+    /// Soften a sound by cutting its high frequencies.
+    ///
+    /// This is what "far away", "underwater" and "through a wall" are: a
+    /// distant sound loses its treble long before it loses its volume, so
+    /// turning something down without also dulling it just makes a small
+    /// bright noise rather than a distant one.
+    ///
+    /// A one-pole filter -- each sample moves a fraction of the way from the
+    /// last output towards the new input -- which is the simplest thing that
+    /// is honestly a filter. Its skirt is gentle: 6dB per octave, so it dulls
+    /// rather than removes, and it is the shape a game wants.
+    ///
+    /// A cutoff at or past half the sample rate does nothing, because there
+    /// is nothing up there to cut.
+    pub fn low_pass(&self, cutoff: f64) -> Sound {
+        let alpha = one_pole_alpha(cutoff, self.rate);
+        if alpha >= 1.0 {
+            return self.clone();
+        }
+        let channels = self.channels.max(1) as usize;
+        // State per channel: filtering a stereo sound with one running value
+        // would fold the two sides into each other.
+        let mut last = vec![0.0f32; channels];
+        let mut samples = Vec::with_capacity(self.samples.len());
+        for (index, sample) in self.samples.iter().enumerate() {
+            let channel = index % channels;
+            last[channel] += alpha * (sample - last[channel]);
+            samples.push(last[channel]);
+        }
         Sound {
             rate: self.rate,
             channels: self.channels,
@@ -363,6 +413,96 @@ mod tests {
         let a = ramp(10);
         let b = ramp(5);
         assert_eq!(a.then(&b).frames(), 15);
+    }
+
+    /// How loud a sound is on average, which is what a filter changes.
+    fn loudness(sound: &Sound) -> f32 {
+        let sum: f32 = sound.samples.iter().map(|s| s * s).sum();
+        (sum / sound.samples.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn a_low_pass_takes_the_treble_and_leaves_the_bass() {
+        // The claim a filter has to answer: a tone below the cutoff comes
+        // through, one well above it does not. A filter that attenuated both
+        // equally would just be a volume control.
+        let low = crate::synth::tone(
+            crate::synth::Wave::Sine,
+            200.0,
+            0.2,
+            crate::synth::Envelope {
+                attack: 0.0,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.0,
+            },
+            RATE,
+        );
+        let high = crate::synth::tone(
+            crate::synth::Wave::Sine,
+            8000.0,
+            0.2,
+            crate::synth::Envelope {
+                attack: 0.0,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.0,
+            },
+            RATE,
+        );
+
+        let kept = loudness(&low.low_pass(1000.0)) / loudness(&low);
+        let cut = loudness(&high.low_pass(1000.0)) / loudness(&high);
+        assert!(kept > 0.9, "200Hz should pass a 1kHz cutoff, kept {kept}");
+        assert!(cut < 0.2, "8kHz should not, kept {cut}");
+        assert!(kept > cut * 4.0, "and the difference is the whole point");
+    }
+
+    #[test]
+    fn the_cutoff_is_where_the_sound_is_halved_in_power() {
+        // A one-pole filter is down 3dB at its cutoff -- about 0.707 of the
+        // amplitude. Checking that pins the alpha arithmetic rather than
+        // merely "quieter than before", which almost any bug also satisfies.
+        let plain = crate::synth::Envelope {
+            attack: 0.0,
+            decay: 0.0,
+            sustain: 1.0,
+            release: 0.0,
+        };
+        let tone = crate::synth::tone(crate::synth::Wave::Sine, 1000.0, 0.3, plain, RATE);
+        let ratio = loudness(&tone.low_pass(1000.0)) / loudness(&tone);
+        assert!(
+            (ratio - 0.707).abs() < 0.05,
+            "at the cutoff it should keep about 0.707, kept {ratio}"
+        );
+    }
+
+    #[test]
+    fn a_cutoff_with_nothing_to_cut_changes_nothing() {
+        let sound = ramp(50);
+        assert_eq!(sound.low_pass(0.0).samples, sound.samples, "no cutoff");
+        assert_eq!(sound.low_pass(-5.0).samples, sound.samples, "a silly one");
+        // Half the sample rate is the highest frequency a sound can hold.
+        assert_eq!(sound.low_pass(600.0).samples, sound.samples, "past Nyquist");
+    }
+
+    #[test]
+    fn filtering_stereo_keeps_the_sides_apart() {
+        // One running value for both channels folds the two sides into each
+        // other -- which sounds like the stereo image collapsing, not like a
+        // filter.
+        let stereo = Sound {
+            rate: 1000,
+            channels: 2,
+            samples: vec![1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0],
+        };
+        let filtered = stereo.low_pass(100.0);
+        for frame in 0..filtered.frames() {
+            assert!(
+                filtered.at(frame, 0) > 0.0 && filtered.at(frame, 1) < 0.0,
+                "the sides met at frame {frame}"
+            );
+        }
     }
 
     #[test]

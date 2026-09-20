@@ -160,6 +160,7 @@ pub fn play_options(value: &Value, who: &str) -> Result<mrt_audio::mixer::Play, 
     // Pan is the one that may be negative: that is what left means.
     how.pan = number("pan", how.pan, -1.0)?;
     how.speed = number("speed", how.speed, 0.0)?;
+    how.cutoff = number("cutoff", how.cutoff as f32, 0.0)? as f64;
     how.looping = matches!(map.get(&key("loop")), Some(Value::Bool(true)));
     Ok(how)
 }
@@ -293,6 +294,12 @@ pub fn gain(bank: &mut Bank, id: usize, amount: f64, normalize: bool) -> Result<
         sound.gain(amount as f32)
     };
     Ok(bank.add(out))
+}
+
+/// A copy with its high frequencies cut: distant, muffled, underwater.
+pub fn low_pass(bank: &mut Bank, id: usize, cutoff: f64) -> Result<Value, Signal> {
+    let softened = bank.get(id, "soundLowPass")?.low_pass(cutoff);
+    Ok(bank.add(softened))
 }
 
 /// `{seconds, frames, channels, rate, peak}`.
@@ -561,6 +568,35 @@ mod tests {
         // A game stopping its music on a screen that never started any is
         // ordinary, and should not need a guard around it.
         assert_eq!(main_of("soundStopAll(); print(soundPlaying());"), "0");
+    }
+
+    #[test]
+    fn a_low_pass_makes_a_sound_duller_without_changing_its_length() {
+        // Muffling is not the same as quietening: the sound lasts as long as
+        // it did, and what it loses is its edge.
+        assert_eq!(
+            main_of(
+                r#"var bright = soundTone("square", 2000, 0.2, {attack: 0, decay: 0, sustain: 1, release: 0});
+                   var dull = soundLowPass(bright, 300);
+                   var a = soundInfo(bright);
+                   var b = soundInfo(dull);
+                   print(a.frames == b.frames, a.rate == b.rate);
+                   print(b.peak < a.peak * 0.6);"#
+            ),
+            "true true\ntrue"
+        );
+    }
+
+    #[test]
+    fn a_cutoff_with_nothing_above_it_leaves_the_sound_alone() {
+        assert_eq!(
+            main_of(
+                r#"var s = soundTone("square", 440, 0.1, null);
+                   print(soundInfo(soundLowPass(s, 0)).peak == soundInfo(s).peak);
+                   print(soundInfo(soundLowPass(s, 40000)).peak == soundInfo(s).peak);"#
+            ),
+            "true\ntrue"
+        );
     }
 
     #[test]

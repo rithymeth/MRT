@@ -66,9 +66,20 @@ func main() {
     var safe = soundNormalize(stacked, 0.9);
     print("after normalizing:", round(soundInfo(safe).peak * 100) / 100);
 
+    // Distance. A far-off sound loses its treble long before it loses its
+    // volume — so turning something down without also dulling it just makes
+    // a small bright noise rather than a distant one. Both together is what
+    // "over there" sounds like.
+    var near = hurt();
+    var far = soundGain(soundLowPass(near, 700), 0.35);
+    print("near peak:", round(soundInfo(near).peak * 100) / 100,
+          "| far peak:", round(soundInfo(far).peak * 100) / 100);
+    print("same length:", soundInfo(near).frames == soundInfo(far).frames);
+
     // A little arrangement, so the file is worth listening to.
     var gap = soundTone("sine", 0, 0.1, {attack: 0, decay: 0, sustain: 0, release: 0});
     var track = soundThen(soundThen(soundThen(jumpSound, gap), coinSound), soundThen(gap, hurtSound));
+    track = soundThen(track, soundThen(gap, far));
     describe("track", track);
 
     soundSave(track, "sound_effects.wav");
@@ -85,7 +96,7 @@ func main() {
     // terminal over ssh — and a game should carry on without audio rather
     // than stop. Same shape as gameOpen on a machine with no display.
     try {
-        var voice = soundPlay(track, {volume: 0.8, pan: -0.3});
+        var voice = soundPlay(track, {volume: 0.8, pan: -0.3, cutoff: 6000});
         print("playing on voice", voice, "|", soundPlaying(), "sounding");
         soundStopAll();
     } catch (e) {

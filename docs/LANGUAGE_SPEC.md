@@ -1467,6 +1467,7 @@ soundSave(coin, "coin.wav");
 | `soundMix(parts)` | `[{sound: id, volume: 1}, …]` laid on top of each other. |
 | `soundThen(a, b)` | One after the other. |
 | `soundGain(id, amount)` / `soundNormalize(id, level)` | Quieter or louder; the second scales so the loudest sample sits at `level`. |
+| `soundLowPass(id, hertz)` | A copy with its high frequencies cut — distant, muffled, underwater. |
 | `soundInfo(id)` | `{seconds, frames, channels, rate, peak}`. |
 | `soundFree(id)` | Gives a sound up. Its id is never reused. |
 
@@ -1508,6 +1509,13 @@ resampling rather than true pitch shifting, so faster is higher and briefer,
 exactly as a record is. For game effects that is the wanted behaviour — a
 handful of pitches on one sample is what stops twenty identical footsteps
 sounding like a machine.
+
+`cutoff` cuts everything above that many hertz. It is what distance sounds
+like: a far-off noise loses its treble long before it loses its volume, so
+turning something down *without* also dulling it just makes a small bright
+noise rather than a distant one. `soundLowPass` does the same thing once and
+for all, for a sound whose distance never changes; the option does it live,
+because the same footstep is near in one moment and far in the next.
 
 The speaker opens on the first `soundPlay` rather than at startup, the way the
 window opens on the first `gameOpen` — so a program that only makes sounds and

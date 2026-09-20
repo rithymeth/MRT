@@ -114,6 +114,7 @@ const NAMES: &[&str] = &[
     "soundThen",
     "soundGain",
     "soundNormalize",
+    "soundLowPass",
     "soundInfo",
     "soundFree",
     "soundPlay",
@@ -568,6 +569,18 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 whole(&args[0], name, "the sound")?,
                 number(&args[1], name)?,
                 name == "soundNormalize",
+            )
+        }
+        "soundLowPass" => {
+            exactly(
+                &args,
+                2,
+                "soundLowPass() takes a sound and a cutoff in hertz.",
+            )?;
+            crate::sound::low_pass(
+                &mut interp.sounds,
+                whole(&args[0], "soundLowPass", "the sound")?,
+                number(&args[1], "soundLowPass")?,
             )
         }
         "soundInfo" => {
