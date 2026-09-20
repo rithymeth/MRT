@@ -1,0 +1,17 @@
+[package]
+name = "mrt-speaker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The second crate here with dependencies, and the second for the same reason
+# as the first: talking to hardware needs platform FFI and there is no
+# zero-dependency path to it. mrt-audio -- which holds the mixing, the
+# synthesis and the file formats -- stays hermetic.
+[dependencies]
+cpal = "0.18"
+mrt-audio = { path = "../mrt-audio" }
+
+[lints]
+workspace = true

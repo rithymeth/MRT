@@ -32,7 +32,7 @@ mrt-lexer = { path = "../crates/mrt-lexer" }
 mrt-ast = { path = "../crates/mrt-ast" }
 mrt-parser = { path = "../crates/mrt-parser" }
 mrt-resolver = { path = "../crates/mrt-resolver" }
-mrt-interp = { path = "../crates/mrt-interp", features = ["window"] }
+mrt-interp = { path = "../crates/mrt-interp", features = ["window", "audio"] }
 
 [lints]
 workspace = true

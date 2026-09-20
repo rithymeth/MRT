@@ -21,6 +21,7 @@
 //! doing the arithmetic in a format that cannot overflow and converting once
 //! at the end is the difference between a loud mix and a distorted one.
 
+pub mod mixer;
 pub mod synth;
 pub mod wav;
 

@@ -1482,11 +1482,30 @@ distortion the caller never asked for. `soundInfo(id).peak` reports it and
 `soundNormalize` fixes it, which leaves the choice where it belongs. Writing a
 `.wav` does clamp, because a 16-bit integer has nowhere to put the overflow.
 
-**There is no playback yet.** These builtins make sounds and write files a
-person can play; driving a sound card is a separate piece, the way a window is
-separate from a framebuffer. That split is also what makes any of it testable:
-whether a mix is correct is a question about numbers, and a test can compare
-samples but cannot listen.
+#### Playing it
+
+| Call | Result |
+|------|--------|
+| `soundPlay(id, volume, loop)` | Starts a sound; returns the voice it plays on. Volume and loop may be left out. |
+| `soundStop(voice)` / `soundStopAll()` | Stops one voice, or everything. |
+| `soundPlaying()` | How many voices are sounding. |
+
+The speaker opens on the first `soundPlay` rather than at startup, the way the
+window opens on the first `gameOpen` — so a program that only makes sounds and
+writes a `.wav` runs on a machine with no sound card, including a build
+server. Asking for sound where there is none is an ordinary catchable error:
+
+```mrt
+try { soundPlay(coin); } catch (e) { /* no speaker; carry on */ }
+```
+
+Stopping when nothing is playing is *not* an error — a game stopping its music
+on a screen that never started any is ordinary, and should not need a guard.
+
+On Linux with no sound card, ALSA's own C library prints a few lines to stderr
+before the error comes back. That is libasound talking to the terminal
+directly, not MRT, and silencing it would need unsafe FFI the compiler's
+workspace forbids.
 
 #### Making a game
 

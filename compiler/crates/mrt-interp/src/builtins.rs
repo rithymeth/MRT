@@ -116,6 +116,10 @@ const NAMES: &[&str] = &[
     "soundNormalize",
     "soundInfo",
     "soundFree",
+    "soundPlay",
+    "soundStop",
+    "soundStopAll",
+    "soundPlaying",
     "gameOpen",
     "gamePresent",
     "gameDelta",
@@ -575,6 +579,37 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
             interp
                 .sounds
                 .free(whole(&args[0], "soundFree", "the sound")?)
+        }
+
+        "soundPlay" => {
+            // The volume and the loop flag both have obvious defaults, and a
+            // game firing an effect should not have to write them.
+            between(
+                &args,
+                1,
+                3,
+                "soundPlay() takes a sound, and optionally a volume and whether to loop.",
+            )?;
+            let id = whole(&args[0], "soundPlay", "the sound")?;
+            let volume = match args.get(1) {
+                None | Some(Value::Null) => 1.0,
+                Some(value) => number(value, "soundPlay")?,
+            };
+            let looping = matches!(args.get(2), Some(Value::Bool(true)));
+            crate::sound::live::play(&mut interp.sounds, id, volume, looping)
+        }
+        "soundStop" => {
+            one(&args, "soundStop")?;
+            let voice = whole(&args[0], "soundStop", "the voice")? as u64;
+            crate::sound::live::stop(&interp.sounds, Some(voice))
+        }
+        "soundStopAll" => {
+            exactly(&args, 0, "soundStopAll() takes no arguments.")?;
+            crate::sound::live::stop(&interp.sounds, None)
+        }
+        "soundPlaying" => {
+            exactly(&args, 0, "soundPlaying() takes no arguments.")?;
+            crate::sound::live::playing(&interp.sounds)
         }
 
         // -- the window half: a game's main loop lives in MRT source ---------

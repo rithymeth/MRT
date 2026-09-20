@@ -15,6 +15,7 @@
 //! cannot listen.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use mrt_audio::synth::{Envelope, Wave};
 use mrt_audio::Sound;
@@ -25,7 +26,18 @@ use crate::value::{ObjKey, ObjMap, Value};
 /// Every sound a program has made, by 1-based id.
 #[derive(Default)]
 pub struct Bank {
-    sounds: Vec<Option<Sound>>,
+    /// `Arc` because playing a sound shares it with the audio thread rather
+    /// than copying it: the same effect fired twenty times a second would
+    /// otherwise allocate a second of audio per shot, in a game loop.
+    sounds: Vec<Option<Arc<Sound>>>,
+    /// The speaker, once something has asked to play.
+    ///
+    /// Opened on the first `soundPlay` rather than at startup, the way the
+    /// window is: a program that only makes sounds and writes a `.wav` runs
+    /// on a machine with no sound card, which includes this repository's own
+    /// test suite.
+    #[cfg(feature = "audio")]
+    speaker: Option<mrt_speaker::Speaker>,
 }
 
 fn key(name: &str) -> ObjKey {
@@ -34,7 +46,7 @@ fn key(name: &str) -> ObjKey {
 
 impl Bank {
     fn add(&mut self, sound: Sound) -> Value {
-        self.sounds.push(Some(sound));
+        self.sounds.push(Some(Arc::new(sound)));
         Value::Number(self.sounds.len() as f64)
     }
 
@@ -44,7 +56,7 @@ impl Bank {
     /// surfaces do it: the first is a use-after-free in the program's own
     /// logic, and calling it "no such sound" sends its author looking for a
     /// typo instead.
-    fn get(&self, id: usize, who: &str) -> Result<&Sound, Signal> {
+    fn get(&self, id: usize, who: &str) -> Result<&Arc<Sound>, Signal> {
         if id == 0 {
             return Err(value_error(format!("{who}() needs a sound; 0 is not one.")));
         }
@@ -209,7 +221,7 @@ pub fn mix(bank: &mut Bank, parts: &Value) -> Result<Value, Signal> {
                 )))
             }
         };
-        collected.push((bank.get(*id as usize, "soundMix")?.clone(), volume));
+        collected.push((bank.get(*id as usize, "soundMix")?.as_ref().clone(), volume));
     }
     Ok(bank.add(mrt_audio::mix(&collected)))
 }
@@ -422,11 +434,126 @@ mod tests {
         assert!(missing.contains("could not read"), "got {missing:?}");
     }
 
+    /// Playback behaves differently depending on how the crate was built,
+    /// so the tests do too. Both arrangements ship: `cargo test -p
+    /// mrt-interp` runs without the feature, and a workspace build turns it
+    /// on through the CLI.
+    #[test]
+    #[cfg(not(feature = "audio"))]
+    fn a_build_without_audio_support_says_which_it_is() {
+        // Not a quiet nothing: a soundPlay that silently did nothing looks
+        // exactly like a sound that failed to load.
+        assert_eq!(
+            main_of(r#"var s = soundTone("sine", 440, 0.1, null); soundPlay(s);"#),
+            "Runtime Error: soundPlay() needs a build with audio support; this one was built without it. [line 1]"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    fn with_no_sound_card_playing_is_an_error_a_program_can_catch() {
+        // The property a game needs to run on a build server: asking for
+        // sound where there is none must be catchable, not fatal. This is
+        // the one part of playback testable without hardware -- and on a
+        // machine that *has* a sound card it opens one, which is also fine.
+        assert_eq!(
+            main_of(
+                r#"var s = soundTone("sine", 440, 0.05, null);
+                   var played = false;
+                   try { soundPlay(s); played = true; } catch (e) { print("caught", e.kind); }
+                   print("carried on");"#
+            )
+            .lines()
+            .last()
+            .unwrap(),
+            "carried on"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    fn stopping_when_nothing_plays_is_not_an_error() {
+        // A game stopping its music on a screen that never started any is
+        // ordinary, and should not need a guard around it.
+        assert_eq!(main_of("soundStopAll(); print(soundPlaying());"), "0");
+    }
+
     #[test]
     fn a_negative_length_is_refused_rather_than_rounded_away() {
         assert_eq!(
             main_of(r#"soundTone("sine", 440, -1, null);"#),
             "Runtime Error: soundTone() needs the length to be a number that is not negative, not -1. [line 1]"
         );
+    }
+}
+
+/// Playing sounds out loud.
+///
+/// Every function exists twice, once against a real speaker and once as a
+/// refusal for a build without the `audio` feature -- the same arrangement
+/// the window half uses, and for the same reason: a `soundPlay` that quietly
+/// did nothing would look like a sound that failed to load, and send its
+/// author looking in the wrong place.
+pub mod live {
+    use super::*;
+
+    #[cfg(not(feature = "audio"))]
+    fn unsupported(who: &str) -> Signal {
+        value_error(format!(
+            "{who}() needs a build with audio support; this one was built without it."
+        ))
+    }
+
+    /// Start a sound, opening the speaker if this is the first one.
+    #[cfg(feature = "audio")]
+    pub fn play(bank: &mut Bank, id: usize, volume: f64, looping: bool) -> Result<Value, Signal> {
+        let sound = bank.get(id, "soundPlay")?.clone();
+        if bank.speaker.is_none() {
+            let speaker = mrt_speaker::Speaker::open()
+                .map_err(|e| value_error(format!("soundPlay(): {e}")))?;
+            bank.speaker = Some(speaker);
+        }
+        let speaker = bank.speaker.as_ref().expect("just opened");
+        Ok(Value::Number(
+            speaker.play(sound, volume as f32, looping) as f64
+        ))
+    }
+
+    #[cfg(not(feature = "audio"))]
+    pub fn play(bank: &mut Bank, id: usize, _volume: f64, _looping: bool) -> Result<Value, Signal> {
+        bank.get(id, "soundPlay")?;
+        Err(unsupported("soundPlay"))
+    }
+
+    /// Stop one voice, or everything.
+    #[cfg(feature = "audio")]
+    pub fn stop(bank: &Bank, voice: Option<u64>) -> Result<Value, Signal> {
+        if let Some(speaker) = bank.speaker.as_ref() {
+            match voice {
+                Some(voice) => speaker.stop(voice),
+                None => speaker.stop_all(),
+            }
+        }
+        // Stopping when nothing is playing is not an error: a game stopping
+        // its music on a screen that never started any is ordinary.
+        Ok(Value::Null)
+    }
+
+    #[cfg(not(feature = "audio"))]
+    pub fn stop(_bank: &Bank, _voice: Option<u64>) -> Result<Value, Signal> {
+        Err(unsupported("soundStop"))
+    }
+
+    /// How many voices are sounding right now.
+    #[cfg(feature = "audio")]
+    pub fn playing(bank: &Bank) -> Result<Value, Signal> {
+        Ok(Value::Number(
+            bank.speaker.as_ref().map(|s| s.playing()).unwrap_or(0) as f64,
+        ))
+    }
+
+    #[cfg(not(feature = "audio"))]
+    pub fn playing(_bank: &Bank) -> Result<Value, Signal> {
+        Err(unsupported("soundPlaying"))
     }
 }

@@ -17,9 +17,11 @@ mrt-game = { path = "../mrt-game" }
 # most often -- so `cargo test -p mrt-interp` stays hermetic and instant, and
 # the binary that actually needs to show a window turns the feature on.
 mrt-window = { path = "../mrt-window", optional = true }
+mrt-speaker = { path = "../mrt-speaker", optional = true }
 
 [features]
 window = ["dep:mrt-window"]
+audio = ["dep:mrt-speaker"]
 
 [lints]
 workspace = true

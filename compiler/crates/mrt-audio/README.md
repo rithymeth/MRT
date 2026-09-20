@@ -39,9 +39,17 @@ a program that loads only its own output is not loading.
 - **Sweeps accumulate phase** rather than recomputing it from `time * hertz`,
   which jumps whenever the frequency moves — and a jump in phase is a click.
 
+`mixer.rs` answers the question a sound card asks: given these voices, fill
+this buffer. Which are still playing, where each has got to, what happens when
+one loops, how a sound recorded at one rate plays at another — all of it is
+arithmetic, so all of it is here and tested by filling a buffer and reading
+the numbers back. `mrt-speaker` only hands that buffer to the operating
+system.
+
 ## Roadmap
 
-Done: sounds, synthesis, mixing, resampling, and WAV both ways.
+Done: sounds, synthesis, mixing, resampling, voices, and WAV both ways.
+Playback lives in `mrt-speaker`.
 
-Next: playback. That needs a device, and therefore a dependency, confined to
-a leaf crate the way `mrt-window` confines the windowing one.
+Next: panning, and a way to vary a sound's pitch per shot so twenty identical
+footsteps do not sound like a machine.

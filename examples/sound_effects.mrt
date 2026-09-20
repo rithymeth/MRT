@@ -3,10 +3,10 @@
 // MRT-Game is an engine extension — only the Rust engines have these
 // builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
 //
-// There is no playback yet: these builtins make sounds, combine them, and
-// write a .wav you can play. That is deliberate rather than unfinished — a
-// mix is arithmetic on samples, and whether it is right is a question about
-// numbers, which a test can check and a speaker cannot.
+// Sounds are made here, combined, played, and written to a .wav. The file
+// matters as much as the playback: a mix is arithmetic on samples, and
+// whether it is right is a question about numbers — which a test can check
+// and a speaker cannot.
 
 // A jump: pitch sliding up fast, cut short.
 func jump() {
@@ -79,4 +79,16 @@ func main() {
     var reloaded = soundLoad("sound_effects.wav");
     var back = soundInfo(reloaded);
     print("reloaded:", back.frames == soundInfo(track).frames, "frames,", back.channels, "channel");
+
+    // Playing it out loud. Wrapped in a try because a machine with no sound
+    // card is an ordinary place to run a program — a build server, a
+    // terminal over ssh — and a game should carry on without audio rather
+    // than stop. Same shape as gameOpen on a machine with no display.
+    try {
+        var voice = soundPlay(track, 0.8, false);
+        print("playing on voice", voice, "|", soundPlaying(), "sounding");
+        soundStopAll();
+    } catch (e) {
+        print("no speaker here:", e.kind);
+    }
 }
