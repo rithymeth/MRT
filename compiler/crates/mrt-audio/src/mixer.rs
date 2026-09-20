@@ -21,6 +21,38 @@ use std::sync::Arc;
 
 use crate::Sound;
 
+/// How to play a sound.
+///
+/// A struct rather than four positional arguments, because `play(sound, 0.8,
+/// -0.3, 1.05, false)` at a call site says nothing about which number is
+/// which -- and because the next thing anyone wants to add goes in here
+/// without changing every caller.
+#[derive(Clone, Copy, Debug)]
+pub struct Play {
+    pub volume: f32,
+    /// Where it sits between the speakers: -1 left, 0 centre, 1 right.
+    pub pan: f32,
+    /// A pitch multiplier. 1.0 is as recorded; 1.06 is about a semitone up.
+    ///
+    /// It changes the length too, because this is resampling rather than
+    /// true pitch shifting: playing a sound faster makes it higher *and*
+    /// shorter, exactly as a record does. For game effects that is the
+    /// wanted behaviour and not an approximation of something better.
+    pub speed: f32,
+    pub looping: bool,
+}
+
+impl Default for Play {
+    fn default() -> Play {
+        Play {
+            volume: 1.0,
+            pan: 0.0,
+            speed: 1.0,
+            looping: false,
+        }
+    }
+}
+
 /// One playing sound.
 struct Voice {
     id: u64,
@@ -31,7 +63,22 @@ struct Voice {
     /// How far the position moves per output frame.
     step: f64,
     volume: f32,
+    /// Per-channel gain, already worked out from the pan.
+    gains: [f32; 2],
     looping: bool,
+}
+
+/// The gain for each speaker at a pan position, by the constant-power law.
+///
+/// `cos` and `sin` rather than a straight line between the speakers. Linear
+/// panning sums to half the power in the middle, so a sound swept across the
+/// stereo field audibly sags as it passes the centre -- the one artefact
+/// everyone notices and nobody can name.
+///
+/// At the centre both gains are about 0.707, whose squares add to one.
+fn pan_gains(pan: f32) -> [f32; 2] {
+    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * 0.5 * std::f32::consts::FRAC_PI_2;
+    [angle.cos(), angle.sin()]
 }
 
 /// Everything currently playing, and the format they are being played at.
@@ -58,24 +105,25 @@ impl Mixer {
     /// times in a second is twenty voices reading one buffer, and copying a
     /// second of audio per shot would allocate megabytes in the middle of a
     /// game loop.
-    pub fn play(&mut self, sound: Arc<Sound>, volume: f32, looping: bool) -> u64 {
+    pub fn play(&mut self, sound: Arc<Sound>, how: Play) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         // A sound recorded at 22050 playing on a 44100 device advances half a
         // frame per output frame, which is what makes it come out at the
-        // right pitch instead of an octave high.
+        // right pitch instead of an octave high. The speed multiplies that.
         let step = if self.rate == 0 {
             1.0
         } else {
-            sound.rate as f64 / self.rate as f64
+            sound.rate as f64 / self.rate as f64 * how.speed.max(0.0) as f64
         };
         self.voices.push(Voice {
             id,
             sound,
             position: 0.0,
             step,
-            volume,
-            looping,
+            volume: how.volume,
+            gains: pan_gains(how.pan),
+            looping: how.looping,
         });
         id
     }
@@ -109,7 +157,9 @@ impl Mixer {
 
         for voice in &mut self.voices {
             let frames = voice.sound.frames();
-            if frames == 0 {
+            // A sound with no samples, or one asked to play at no speed,
+            // would sit at the same position for ever and never finish.
+            if frames == 0 || voice.step <= 0.0 {
                 continue;
             }
             for (frame, slot) in out.chunks_exact_mut(channels).enumerate() {
@@ -138,7 +188,15 @@ impl Mixer {
                         // sample, which would leave a click at the end.
                         0.0
                     };
-                    *sample += (a + (b - a) * fraction) * voice.volume;
+                    // Panning only means anything with somewhere to pan to:
+                    // on a mono device both gains would apply to the one
+                    // channel and quieten everything by a third.
+                    let gain = if channels == 2 {
+                        voice.gains[channel]
+                    } else {
+                        1.0
+                    };
+                    *sample += (a + (b - a) * fraction) * voice.volume * gain;
                 }
                 voice.position += voice.step;
             }
@@ -182,7 +240,7 @@ mod tests {
         // Adding to it plays the previous block again underneath this one --
         // which sounds like an echo that gets worse.
         let mut mixer = Mixer::new(1000, 1);
-        mixer.play(constant(0.5, 4, 1000), 1.0, false);
+        mixer.play(constant(0.5, 4, 1000), Play::default());
         let mut out = vec![100.0; 4];
         mixer.fill(&mut out);
         assert_eq!(out, vec![0.5; 4]);
@@ -191,8 +249,8 @@ mod tests {
     #[test]
     fn two_voices_add_together() {
         let mut mixer = Mixer::new(1000, 1);
-        mixer.play(constant(0.25, 8, 1000), 1.0, false);
-        mixer.play(constant(0.25, 8, 1000), 1.0, false);
+        mixer.play(constant(0.25, 8, 1000), Play::default());
+        mixer.play(constant(0.25, 8, 1000), Play::default());
         let mut out = vec![0.0; 4];
         mixer.fill(&mut out);
         assert_eq!(out, vec![0.5; 4]);
@@ -209,7 +267,13 @@ mod tests {
     #[test]
     fn volume_scales_a_voice() {
         let mut mixer = Mixer::new(1000, 1);
-        mixer.play(constant(1.0, 4, 1000), 0.25, false);
+        mixer.play(
+            constant(1.0, 4, 1000),
+            Play {
+                volume: 0.25,
+                ..Play::default()
+            },
+        );
         let mut out = vec![0.0; 4];
         mixer.fill(&mut out);
         assert_eq!(out, vec![0.25; 4]);
@@ -221,7 +285,7 @@ mod tests {
         // out-of-range sample is worse than what clamping does.
         let mut mixer = Mixer::new(1000, 1);
         for _ in 0..4 {
-            mixer.play(constant(0.9, 4, 1000), 1.0, false);
+            mixer.play(constant(0.9, 4, 1000), Play::default());
         }
         let mut out = vec![0.0; 4];
         mixer.fill(&mut out);
@@ -231,7 +295,7 @@ mod tests {
     #[test]
     fn a_voice_that_runs_out_stops_and_is_forgotten() {
         let mut mixer = Mixer::new(1000, 1);
-        mixer.play(constant(1.0, 2, 1000), 1.0, false);
+        mixer.play(constant(1.0, 2, 1000), Play::default());
         let mut out = vec![0.0; 4];
         mixer.fill(&mut out);
         assert_eq!(&out[..2], &[1.0, 1.0], "it played");
@@ -247,7 +311,13 @@ mod tests {
             channels: 1,
             samples: vec![1.0, -1.0],
         });
-        mixer.play(sound, 1.0, true);
+        mixer.play(
+            sound,
+            Play {
+                looping: true,
+                ..Play::default()
+            },
+        );
         let mut out = vec![0.0; 6];
         mixer.fill(&mut out);
         assert_eq!(out, vec![1.0, -1.0, 1.0, -1.0, 1.0, -1.0]);
@@ -261,7 +331,13 @@ mod tests {
         // inaudible once and unmistakable over a minute of music.
         let mut mixer = Mixer::new(3000, 1);
         let sound = constant(1.0, 7, 1000); // step of 1/3 per output frame
-        mixer.play(sound, 1.0, true);
+        mixer.play(
+            sound,
+            Play {
+                looping: true,
+                ..Play::default()
+            },
+        );
         let mut out = vec![0.0; 21 * 5];
         mixer.fill(&mut out);
         // 105 output frames at a third of a source frame each is 35 source
@@ -275,7 +351,7 @@ mod tests {
         // so a 4-frame sound lasts 8 output frames. Ignoring this is how a
         // sound ends up an octave high and twice as fast.
         let mut mixer = Mixer::new(2000, 1);
-        mixer.play(constant(1.0, 4, 1000), 1.0, false);
+        mixer.play(constant(1.0, 4, 1000), Play::default());
         let mut out = vec![0.0; 10];
         mixer.fill(&mut out);
         assert_eq!(&out[..7], &[1.0; 7], "still playing at frame 7");
@@ -285,10 +361,109 @@ mod tests {
     #[test]
     fn a_mono_sound_reaches_both_speakers() {
         let mut mixer = Mixer::new(1000, 2);
-        mixer.play(constant(0.5, 4, 1000), 1.0, false);
+        mixer.play(constant(1.0, 4, 1000), Play::default());
         let mut out = vec![0.0; 8];
         mixer.fill(&mut out);
-        assert_eq!(out, vec![0.5; 8], "both channels, not just the left");
+        // Centred is 0.707 a side, not 1.0 a side: the two together carry
+        // the same power as one at full scale, which is what stops a sound
+        // jumping in volume the moment it is panned away from the middle.
+        for sample in &out {
+            assert!((sample - 0.707).abs() < 0.001, "got {sample}");
+        }
+    }
+
+    #[test]
+    fn panning_keeps_the_power_constant_across_the_field() {
+        // The point of the cos/sin law. A straight line between the speakers
+        // sums to half the power in the middle, so a sound swept across the
+        // stereo field sags as it passes centre -- the one panning artefact
+        // everyone notices and nobody can name.
+        for step in 0..=20 {
+            let pan = -1.0 + step as f32 / 10.0;
+            let [left, right] = pan_gains(pan);
+            let power = left * left + right * right;
+            assert!((power - 1.0).abs() < 1e-5, "pan {pan} carried {power}");
+        }
+        // And the ends really are hard left and hard right.
+        let [left, right] = pan_gains(-1.0);
+        assert!((left - 1.0).abs() < 1e-6 && right.abs() < 1e-6);
+        let [left, right] = pan_gains(1.0);
+        assert!(left.abs() < 1e-6 && (right - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_pan_past_the_speakers_stops_at_them() {
+        assert_eq!(pan_gains(-9.0), pan_gains(-1.0));
+        assert_eq!(pan_gains(9.0), pan_gains(1.0));
+    }
+
+    #[test]
+    fn panning_a_voice_moves_it() {
+        let mut mixer = Mixer::new(1000, 2);
+        mixer.play(
+            constant(1.0, 4, 1000),
+            Play {
+                pan: -1.0,
+                ..Play::default()
+            },
+        );
+        let mut out = vec![0.0; 8];
+        mixer.fill(&mut out);
+        assert!((out[0] - 1.0).abs() < 1e-5, "all of it on the left");
+        assert!(out[1].abs() < 1e-5, "and none on the right");
+    }
+
+    #[test]
+    fn panning_does_nothing_on_a_device_with_one_speaker() {
+        // Both gains would otherwise apply to the same channel and quieten
+        // everything by a third on mono hardware.
+        let mut mixer = Mixer::new(1000, 1);
+        mixer.play(
+            constant(1.0, 4, 1000),
+            Play {
+                pan: 0.5,
+                ..Play::default()
+            },
+        );
+        let mut out = vec![0.0; 4];
+        mixer.fill(&mut out);
+        assert_eq!(out, vec![1.0; 4]);
+    }
+
+    #[test]
+    fn speed_changes_the_pitch_and_the_length_together() {
+        // This is resampling, not true pitch shifting: faster is higher and
+        // shorter, exactly as a record is. A four-frame sound at double
+        // speed is gone in two.
+        let mut mixer = Mixer::new(1000, 1);
+        mixer.play(
+            constant(1.0, 4, 1000),
+            Play {
+                speed: 2.0,
+                ..Play::default()
+            },
+        );
+        let mut out = vec![0.0; 4];
+        mixer.fill(&mut out);
+        assert_eq!(&out[..2], &[1.0, 1.0], "two frames of sound");
+        assert_eq!(mixer.playing(), 0, "then finished, at twice the rate");
+    }
+
+    #[test]
+    fn a_speed_of_zero_is_dropped_rather_than_stuck() {
+        // A voice that never advances would sit at frame zero for ever,
+        // holding one sample down like a stuck key.
+        let mut mixer = Mixer::new(1000, 1);
+        mixer.play(
+            constant(1.0, 4, 1000),
+            Play {
+                speed: 0.0,
+                ..Play::default()
+            },
+        );
+        let mut out = vec![0.0; 4];
+        mixer.fill(&mut out);
+        assert_eq!(out, vec![0.0; 4], "silent rather than a held tone");
     }
 
     #[test]
@@ -300,19 +475,21 @@ mod tests {
                 channels: 2,
                 samples: vec![1.0, -1.0, 1.0, -1.0],
             }),
-            1.0,
-            false,
+            Play::default(),
         );
         let mut out = vec![0.0; 4];
         mixer.fill(&mut out);
-        assert_eq!(out, vec![1.0, -1.0, 1.0, -1.0]);
+        // Centred, so each side keeps its own signal at the centre gain
+        // rather than being folded into the other.
+        assert!((out[0] - 0.707).abs() < 0.001);
+        assert!((out[1] + 0.707).abs() < 0.001);
     }
 
     #[test]
     fn stopping_a_voice_silences_only_that_one() {
         let mut mixer = Mixer::new(1000, 1);
-        let first = mixer.play(constant(0.5, 8, 1000), 1.0, false);
-        mixer.play(constant(0.25, 8, 1000), 1.0, false);
+        let first = mixer.play(constant(0.5, 8, 1000), Play::default());
+        mixer.play(constant(0.25, 8, 1000), Play::default());
         mixer.stop(first);
         let mut out = vec![0.0; 4];
         mixer.fill(&mut out);
@@ -337,9 +514,9 @@ mod tests {
         // moved into the gap -- for one block, so it sounds like an
         // occasional dropout rather than a bug.
         let mut mixer = Mixer::new(1000, 1);
-        mixer.play(constant(1.0, 1, 1000), 1.0, false); // finishes at once
-        mixer.play(constant(0.5, 8, 1000), 1.0, false);
-        mixer.play(constant(0.25, 8, 1000), 1.0, false);
+        mixer.play(constant(1.0, 1, 1000), Play::default()); // finishes at once
+        mixer.play(constant(0.5, 8, 1000), Play::default());
+        mixer.play(constant(0.25, 8, 1000), Play::default());
         let mut out = vec![0.0; 4];
         mixer.fill(&mut out);
         assert_eq!(out[1], 0.75, "both survivors were heard");
@@ -355,8 +532,10 @@ mod tests {
                 channels: 1,
                 samples: vec![],
             }),
-            1.0,
-            true,
+            Play {
+                looping: true,
+                ..Play::default()
+            },
         );
         let mut out = vec![0.0; 4];
         mixer.fill(&mut out);

@@ -46,7 +46,7 @@
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use mrt_audio::mixer::Mixer;
+use mrt_audio::mixer::{Mixer, Play};
 use mrt_audio::Sound;
 
 /// A sound card, playing whatever the mixer holds.
@@ -99,9 +99,9 @@ impl Speaker {
     }
 
     /// Start a sound, and return the voice it is playing on.
-    pub fn play(&self, sound: Arc<Sound>, volume: f32, looping: bool) -> u64 {
+    pub fn play(&self, sound: Arc<Sound>, how: Play) -> u64 {
         match self.mixer.lock() {
-            Ok(mut mixer) => mixer.play(sound, volume, looping),
+            Ok(mut mixer) => mixer.play(sound, how),
             // A poisoned lock means the audio thread panicked mid-callback.
             // Reporting no voice is better than panicking in turn: a game
             // that loses its sound should keep running.

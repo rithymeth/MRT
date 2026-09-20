@@ -47,6 +47,36 @@ func boxOf(thing) {
     return {x: thing.x, y: thing.y, width: thing.width, height: thing.height};
 }
 
+// Sound effects, made in code rather than loaded from files — so this game
+// needs no assets at all.
+func makeSounds() {
+    return {
+        brick: soundTone("square", 660, 0.07, {attack: 0.001, release: 0.04}),
+        paddle: soundTone("square", 220, 0.09, {attack: 0.001, release: 0.06}),
+        wall: soundTone("triangle", 440, 0.04, {attack: 0.001, release: 0.03}),
+        miss: soundSweep("saw", 400, 90, 0.35, {attack: 0.002, release: 0.2})
+    };
+}
+
+// Play an effect, panned to where it happened and optionally pitched.
+//
+// The try is not defensive clutter: a machine with no sound card is an
+// ordinary place to run a game — a build server, a terminal over ssh — and
+// one that stopped rather than carrying on silently would be useless there.
+// The engine remembers a failed speaker, so this costs nothing after the
+// first attempt.
+func fx(sound, x, speed) {
+    try {
+        soundPlay(sound, {
+            volume: 0.5,
+            pan: (x / WIDTH) * 2 - 1,
+            speed: speed
+        });
+    } catch (e) {
+        // No speaker. The game plays on.
+    }
+}
+
 func main() {
     gameInit(WIDTH, HEIGHT, "MRT Breakout");
 
@@ -61,6 +91,7 @@ func main() {
     var ballDy = BALL_SPEED;
 
     var bricks = makeBricks();
+    var sounds = makeSounds();
     var score = 0;
     var lives = 3;
     var message = "";
@@ -95,10 +126,12 @@ func main() {
             if (ball.x + stepX < 0 || ball.x + ball.width + stepX > WIDTH) {
                 ballDx = -ballDx;
                 stepX = -stepX;
+                fx(sounds.wall, ball.x, 1);
             }
             if (ball.y + stepY < 0) {
                 ballDy = -ballDy;
                 stepY = -stepY;
+                fx(sounds.wall, ball.x, 1.2);
             }
 
             // Bricks and paddle, by swept test: the ball moves several
@@ -131,6 +164,13 @@ func main() {
                 if (struck != null) {
                     struck.alive = false;
                     score = score + 10;
+                    // Higher rows ring higher. Pitch is a resample, so the
+                    // sound gets shorter as it rises — which is exactly what
+                    // makes a row of bricks sound like a scale.
+                    var row = floor((struck.y - 50) / 22);
+                    fx(sounds.brick, struck.x, 1 + (3 - row) * 0.12);
+                } else {
+                    fx(sounds.paddle, ball.x, 1);
                 }
             }
 
@@ -140,6 +180,7 @@ func main() {
                 ball.x = WIDTH / 2 - 4;
                 ball.y = HEIGHT / 2;
                 ballDy = BALL_SPEED;
+                fx(sounds.miss, WIDTH / 2, 1);
                 if (lives == 0) { message = "GAME OVER"; }
             }
 

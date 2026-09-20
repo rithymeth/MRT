@@ -38,6 +38,14 @@ pub struct Bank {
     /// test suite.
     #[cfg(feature = "audio")]
     speaker: Option<mrt_speaker::Speaker>,
+    /// Why opening the speaker failed, if it did.
+    ///
+    /// Remembered so it is tried *once*. A game calls soundPlay on every
+    /// bounce, and on a machine with no sound card each call would otherwise
+    /// reopen the device -- which on Linux means ALSA writing several lines
+    /// to the terminal, sixty times a second.
+    #[cfg(feature = "audio")]
+    speaker_failed: Option<String>,
 }
 
 fn key(name: &str) -> ObjKey {
@@ -119,6 +127,41 @@ fn envelope_of(value: &Value, who: &str) -> Result<Envelope, Signal> {
         sustain: number("sustain", default.sustain as f64)? as f32,
         release: number("release", default.release)?,
     })
+}
+
+/// Read `{volume, pan, speed, loop}`, filling in what it leaves out.
+///
+/// An object rather than positional arguments: `soundPlay(s, 0.8, -0.3, 1.05,
+/// false)` says nothing at the call site about which number is which, and a
+/// game fires these constantly.
+pub fn play_options(value: &Value, who: &str) -> Result<mrt_audio::mixer::Play, Signal> {
+    let mut how = mrt_audio::mixer::Play::default();
+    if matches!(value, Value::Null) {
+        return Ok(how);
+    }
+    let Value::Object(map) = value else {
+        return Err(type_error(format!(
+            "{who}() needs the options to be an object or null, not {}.",
+            crate::value::type_name(value)
+        )));
+    };
+    let map = map.borrow();
+    let number = |name: &str, fallback: f32, lowest: f64| -> Result<f32, Signal> {
+        match map.get(&key(name)) {
+            None => Ok(fallback),
+            Some(Value::Number(n)) if n.is_finite() && *n >= lowest => Ok(*n as f32),
+            Some(other) => Err(value_error(format!(
+                "{who}(): {name} is {}.",
+                crate::value::stringify(other)
+            ))),
+        }
+    };
+    how.volume = number("volume", how.volume, 0.0)?;
+    // Pan is the one that may be negative: that is what left means.
+    how.pan = number("pan", how.pan, -1.0)?;
+    how.speed = number("speed", how.speed, 0.0)?;
+    how.looping = matches!(map.get(&key("loop")), Some(Value::Bool(true)));
+    Ok(how)
 }
 
 /// A number that makes sense as a duration or a frequency.
@@ -472,6 +515,48 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    fn a_speaker_that_will_not_open_is_only_tried_once() {
+        // A game calls soundPlay on every bounce. Retrying the device each
+        // time means, on Linux with no sound card, ALSA writing to the
+        // terminal sixty times a second -- so the failure is remembered.
+        //
+        // Both outcomes are fine; what is checked is that a hundred calls
+        // behave like the first and the program survives them.
+        assert_eq!(
+            main_of(
+                r#"var s = soundTone("sine", 440, 0.02, null);
+                   var failures = 0;
+                   for (var i = 0; i < 100; i = i + 1) {
+                       try { soundPlay(s); } catch (e) { failures = failures + 1; }
+                   }
+                   print(failures == 0 || failures == 100);"#
+            ),
+            "true",
+            "all of them worked or none did, never a mixture"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    fn play_options_are_read_and_checked() {
+        // The volume/pan/speed object, whether or not a device exists: a bad
+        // option is refused before anything is opened.
+        assert_eq!(
+            main_of(r#"var s = soundTone("sine", 440, 0.02, null); soundPlay(s, {volume: -1});"#),
+            "Runtime Error: soundPlay(): volume is -1. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"var s = soundTone("sine", 440, 0.02, null); soundPlay(s, {pan: -2});"#),
+            "Runtime Error: soundPlay(): pan is -2. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"var s = soundTone("sine", 440, 0.02, null); soundPlay(s, 5);"#),
+            "Runtime Error: soundPlay() needs the options to be an object or null, not number. [line 1]"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
     fn stopping_when_nothing_plays_is_not_an_error() {
         // A game stopping its music on a screen that never started any is
         // ordinary, and should not need a guard around it.
@@ -506,21 +591,26 @@ pub mod live {
 
     /// Start a sound, opening the speaker if this is the first one.
     #[cfg(feature = "audio")]
-    pub fn play(bank: &mut Bank, id: usize, volume: f64, looping: bool) -> Result<Value, Signal> {
+    pub fn play(bank: &mut Bank, id: usize, how: mrt_audio::mixer::Play) -> Result<Value, Signal> {
         let sound = bank.get(id, "soundPlay")?.clone();
+        if let Some(why) = &bank.speaker_failed {
+            return Err(value_error(format!("soundPlay(): {why}")));
+        }
         if bank.speaker.is_none() {
-            let speaker = mrt_speaker::Speaker::open()
-                .map_err(|e| value_error(format!("soundPlay(): {e}")))?;
-            bank.speaker = Some(speaker);
+            match mrt_speaker::Speaker::open() {
+                Ok(speaker) => bank.speaker = Some(speaker),
+                Err(why) => {
+                    bank.speaker_failed = Some(why.clone());
+                    return Err(value_error(format!("soundPlay(): {why}")));
+                }
+            }
         }
         let speaker = bank.speaker.as_ref().expect("just opened");
-        Ok(Value::Number(
-            speaker.play(sound, volume as f32, looping) as f64
-        ))
+        Ok(Value::Number(speaker.play(sound, how) as f64))
     }
 
     #[cfg(not(feature = "audio"))]
-    pub fn play(bank: &mut Bank, id: usize, _volume: f64, _looping: bool) -> Result<Value, Signal> {
+    pub fn play(bank: &mut Bank, id: usize, _how: mrt_audio::mixer::Play) -> Result<Value, Signal> {
         bank.get(id, "soundPlay")?;
         Err(unsupported("soundPlay"))
     }

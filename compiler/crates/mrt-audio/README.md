@@ -51,5 +51,10 @@ system.
 Done: sounds, synthesis, mixing, resampling, voices, and WAV both ways.
 Playback lives in `mrt-speaker`.
 
-Next: panning, and a way to vary a sound's pitch per shot so twenty identical
-footsteps do not sound like a machine.
+Voices carry a volume, a pan and a speed. Panning uses the constant-power law
+rather than a straight line between the speakers, so a sound swept across the
+field does not sag as it passes the centre. Speed is a resample, so it changes
+the length as well as the pitch — which is what makes a handful of pitches on
+one sample sound like a scale instead of a machine.
+
+Next: a low-pass filter, which is what a sound needs to seem far away.

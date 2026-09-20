@@ -85,7 +85,7 @@ func main() {
     // terminal over ssh — and a game should carry on without audio rather
     // than stop. Same shape as gameOpen on a machine with no display.
     try {
-        var voice = soundPlay(track, 0.8, false);
+        var voice = soundPlay(track, {volume: 0.8, pan: -0.3});
         print("playing on voice", voice, "|", soundPlaying(), "sounding");
         soundStopAll();
     } catch (e) {

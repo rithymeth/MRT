@@ -1486,14 +1486,35 @@ distortion the caller never asked for. `soundInfo(id).peak` reports it and
 
 | Call | Result |
 |------|--------|
-| `soundPlay(id, volume, loop)` | Starts a sound; returns the voice it plays on. Volume and loop may be left out. |
+| `soundPlay(id, options)` | Starts a sound; returns the voice it plays on. |
 | `soundStop(voice)` / `soundStopAll()` | Stops one voice, or everything. |
 | `soundPlaying()` | How many voices are sounding. |
+
+`options` is `{volume, pan, speed, loop}`, or `null`, and anything left out
+keeps its default:
+
+```mrt
+soundPlay(brick, {volume: 0.5, pan: (x / WIDTH) * 2 - 1, speed: 1.2});
+```
+
+`pan` runs from -1 (left) through 0 (centre) to 1 (right), by the
+constant-power law — a sound swept across the field keeps the same loudness
+rather than sagging as it passes the middle, which is the one panning artefact
+everyone notices and nobody can name. On a mono device panning does nothing at
+all, rather than quietening everything.
+
+`speed` multiplies the pitch, and **shortens the sound to match**: this is
+resampling rather than true pitch shifting, so faster is higher and briefer,
+exactly as a record is. For game effects that is the wanted behaviour — a
+handful of pitches on one sample is what stops twenty identical footsteps
+sounding like a machine.
 
 The speaker opens on the first `soundPlay` rather than at startup, the way the
 window opens on the first `gameOpen` — so a program that only makes sounds and
 writes a `.wav` runs on a machine with no sound card, including a build
-server. Asking for sound where there is none is an ordinary catchable error:
+server. A speaker that will not open is remembered, so a game calling
+`soundPlay` on every bounce tries the device once rather than sixty times a
+second. Asking for sound where there is none is an ordinary catchable error:
 
 ```mrt
 try { soundPlay(coin); } catch (e) { /* no speaker; carry on */ }

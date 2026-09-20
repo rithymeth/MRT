@@ -587,16 +587,12 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
             between(
                 &args,
                 1,
-                3,
-                "soundPlay() takes a sound, and optionally a volume and whether to loop.",
+                2,
+                "soundPlay() takes a sound, and optionally {volume, pan, speed, loop}.",
             )?;
             let id = whole(&args[0], "soundPlay", "the sound")?;
-            let volume = match args.get(1) {
-                None | Some(Value::Null) => 1.0,
-                Some(value) => number(value, "soundPlay")?,
-            };
-            let looping = matches!(args.get(2), Some(Value::Bool(true)));
-            crate::sound::live::play(&mut interp.sounds, id, volume, looping)
+            let how = crate::sound::play_options(args.get(1).unwrap_or(&Value::Null), "soundPlay")?;
+            crate::sound::live::play(&mut interp.sounds, id, how)
         }
         "soundStop" => {
             one(&args, "soundStop")?;

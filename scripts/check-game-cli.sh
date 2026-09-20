@@ -62,9 +62,14 @@ errors="$root/run.err"
 xvfb-run -a --server-args="-screen 0 800x600x24" \
     sh -c "timeout 4 '$bin' run '$root/demo' 2>'$errors'" >/dev/null || true
 
-if [ -s "$errors" ]; then
+# ALSA's C library writes to the terminal itself when there is no sound card,
+# before anything in Rust can return an error. Those lines are libasound's,
+# not the game's, so they are filtered out rather than counted as failure --
+# and everything else still is.
+real=$(grep -v '^ALSA lib' "$errors" || true)
+if [ -n "$real" ]; then
     echo "FAIL: the game wrote to stderr:"
-    cat "$errors"
+    echo "$real"
     exit 1
 fi
 
