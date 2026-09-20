@@ -124,6 +124,15 @@ impl Speaker {
         }
     }
 
+    /// Move a voice's stereo position live, without restarting it. A
+    /// poisoned lock or an unknown voice are both silently harmless, the
+    /// same as `fade`.
+    pub fn set_pan(&self, voice: u64, pan: f32) {
+        if let Ok(mut mixer) = self.mixer.lock() {
+            mixer.set_pan(voice, pan);
+        }
+    }
+
     pub fn stop_all(&self) {
         if let Ok(mut mixer) = self.mixer.lock() {
             mixer.stop_all();
