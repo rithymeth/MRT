@@ -47,6 +47,10 @@ pub struct Play {
     /// mean a sound per distance.
     pub cutoff: f64,
     pub looping: bool,
+    /// Start silent and ramp up to `volume` over this many seconds. Zero (the
+    /// default) starts at full volume immediately, exactly as before this
+    /// field existed.
+    pub fade_in: f64,
 }
 
 impl Default for Play {
@@ -57,8 +61,26 @@ impl Default for Play {
             speed: 1.0,
             cutoff: 0.0,
             looping: false,
+            fade_in: 0.0,
         }
     }
+}
+
+/// A linear ramp of a voice's volume toward a target, in progress.
+///
+/// Real time, in output frames, not source frames: a voice playing at double
+/// speed still fades over the same wall-clock duration it was asked for,
+/// because a fade is a fact about how long a player waits, not about how
+/// much of the recording goes by underneath it.
+struct Fade {
+    from: f32,
+    to: f32,
+    elapsed: f64,
+    duration: f64,
+    /// Remove the voice once this fade completes, for a fade to silence that
+    /// means "and then stop" rather than leaving an inaudible voice occupying
+    /// a slot -- and, if the sound loops, playing forever for no one to hear.
+    stop_at_end: bool,
 }
 
 /// One playing sound.
@@ -71,6 +93,7 @@ struct Voice {
     /// How far the position moves per output frame.
     step: f64,
     volume: f32,
+    fade: Option<Fade>,
     /// Per-channel gain, already worked out from the pan.
     gains: [f32; 2],
     /// How far the filter moves towards its input each sample; 1.0 is off.
@@ -129,18 +152,67 @@ impl Mixer {
         } else {
             sound.rate as f64 / self.rate as f64 * how.speed.max(0.0) as f64
         };
+        // Starting silent and fading up is starting at full volume with a
+        // fade already queued from 0 -- one mechanism instead of two, so a
+        // fade-in and a live volume change can never drift into behaving
+        // differently at the edges.
+        let (volume, fade) = if how.fade_in > 0.0 {
+            (
+                0.0,
+                Some(Fade {
+                    from: 0.0,
+                    to: how.volume,
+                    elapsed: 0.0,
+                    duration: how.fade_in,
+                    stop_at_end: false,
+                }),
+            )
+        } else {
+            (how.volume, None)
+        };
         self.voices.push(Voice {
             id,
             sound,
             position: 0.0,
             step,
-            volume: how.volume,
+            volume,
+            fade,
             gains: pan_gains(how.pan),
             alpha: crate::one_pole_alpha(how.cutoff, self.rate),
             filtered: [0.0; 2],
             looping: how.looping,
         });
         id
+    }
+
+    /// Ramp a voice's volume linearly to `to` over `seconds`, starting from
+    /// wherever it is right now. Replaces a fade already in progress rather
+    /// than queuing behind it -- what a program asked for most recently is
+    /// what it wants, the same rule a live volume knob follows.
+    ///
+    /// A voice that has already stopped is not an error to fade: the same
+    /// reasoning that makes `stop` on a finished voice ordinary applies here,
+    /// a game fading out music it is not certain is still playing should not
+    /// have to check first.
+    pub fn fade(&mut self, id: u64, to: f32, seconds: f64, stop_at_end: bool) {
+        let Some(voice) = self.voices.iter_mut().find(|voice| voice.id == id) else {
+            return;
+        };
+        if seconds <= 0.0 {
+            voice.volume = to;
+            voice.fade = None;
+            if stop_at_end {
+                self.voices.retain(|voice| voice.id != id);
+            }
+            return;
+        }
+        voice.fade = Some(Fade {
+            from: voice.volume,
+            to,
+            elapsed: 0.0,
+            duration: seconds,
+            stop_at_end,
+        });
     }
 
     pub fn stop(&mut self, id: u64) {
@@ -169,6 +241,10 @@ impl Mixer {
     pub fn fill(&mut self, out: &mut [f32]) {
         out.fill(0.0);
         let channels = self.channels as usize;
+        // Real time per output frame, for advancing a fade -- independent of
+        // any one voice's own `step`, because a fade is a fact about how
+        // long a player waits, not about how fast a sound is playing.
+        let dt = 1.0 / self.rate.max(1) as f64;
 
         for voice in &mut self.voices {
             let frames = voice.sound.frames();
@@ -190,6 +266,20 @@ impl Mixer {
                 }
                 let index = voice.position as usize;
                 let fraction = (voice.position - index as f64) as f32;
+
+                if let Some(fade) = &mut voice.fade {
+                    fade.elapsed += dt;
+                    let t = (fade.elapsed / fade.duration).min(1.0);
+                    // Settled to the exact target at t == 1.0 rather than
+                    // whatever the interpolation lands on, so a fade to
+                    // silence is actually silent and not a rounding error
+                    // above zero.
+                    voice.volume = if t >= 1.0 {
+                        fade.to
+                    } else {
+                        fade.from + (fade.to - fade.from) * t as f32
+                    };
+                }
 
                 for (channel, sample) in slot.iter_mut().enumerate() {
                     let source = (channel as u16).min(voice.sound.channels.saturating_sub(1));
@@ -229,9 +319,17 @@ impl Mixer {
 
         // Finished voices go after the pass, not during it: removing from the
         // list being iterated is how the voice after a finished one gets
-        // skipped for a block.
-        self.voices
-            .retain(|voice| voice.looping || voice.position < voice.sound.frames() as f64);
+        // skipped for a block. A voice whose fade-to-silence-and-stop just
+        // completed is finished for the same reason a non-looping sound
+        // reaching its own end is -- nothing is left for it to do -- so it
+        // is checked in the same pass rather than needing a flag of its own.
+        self.voices.retain(|voice| {
+            let fade_stopped = voice
+                .fade
+                .as_ref()
+                .is_some_and(|fade| fade.stop_at_end && fade.elapsed >= fade.duration);
+            !fade_stopped && (voice.looping || voice.position < voice.sound.frames() as f64)
+        });
 
         for sample in out.iter_mut() {
             *sample = sample.clamp(-1.0, 1.0);
@@ -326,6 +424,120 @@ mod tests {
         assert_eq!(&out[..2], &[1.0, 1.0], "it played");
         assert_eq!(&out[2..], &[0.0, 0.0], "then silence, not repetition");
         assert_eq!(mixer.playing(), 0, "and it was dropped");
+    }
+
+    #[test]
+    fn a_fade_in_starts_silent_and_ramps_to_the_requested_volume() {
+        // 1000Hz output, a 4ms fade: exactly one quarter of it elapses per
+        // output frame, so the ramp lands on round numbers to check exactly.
+        let mut mixer = Mixer::new(1000, 1);
+        mixer.play(
+            constant(1.0, 4, 1000),
+            Play {
+                volume: 1.0,
+                fade_in: 0.004,
+                ..Play::default()
+            },
+        );
+        let mut out = vec![0.0; 4];
+        mixer.fill(&mut out);
+        assert_eq!(
+            out,
+            vec![0.25, 0.5, 0.75, 1.0],
+            "a quarter closer each frame"
+        );
+    }
+
+    #[test]
+    fn fade_in_of_zero_is_full_volume_immediately() {
+        // The default -- most sounds want no fade at all, and a game firing
+        // an effect on every frame should not pay for one.
+        let mut mixer = Mixer::new(1000, 1);
+        mixer.play(constant(1.0, 2, 1000), Play::default());
+        let mut out = vec![0.0; 2];
+        mixer.fill(&mut out);
+        assert_eq!(out, vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn fade_ramps_an_already_playing_voices_volume() {
+        let mut mixer = Mixer::new(1000, 1);
+        let voice = mixer.play(constant(1.0, 8, 1000), Play::default());
+        mixer.fade(voice, 0.0, 0.004, false);
+        let mut out = vec![0.0; 4];
+        mixer.fill(&mut out);
+        assert_eq!(
+            out,
+            vec![0.75, 0.5, 0.25, 0.0],
+            "a quarter of the way to silence each frame"
+        );
+        assert_eq!(
+            mixer.playing(),
+            1,
+            "silent, but still a voice until told to stop"
+        );
+    }
+
+    #[test]
+    fn a_new_fade_replaces_one_already_in_progress() {
+        // What a program asked for most recently is what it wants -- the
+        // same rule a live volume knob follows -- not a fade queued behind
+        // whatever came before it.
+        let mut mixer = Mixer::new(1000, 1);
+        let voice = mixer.play(constant(1.0, 8, 1000), Play::default());
+        mixer.fade(voice, 0.0, 0.004, false);
+        let mut out = vec![0.0; 2];
+        mixer.fill(&mut out);
+        assert_eq!(out, vec![0.75, 0.5], "the first fade, half done");
+
+        // Redirected upward from wherever it now sits, over a fresh duration.
+        mixer.fade(voice, 1.0, 0.002, false);
+        mixer.fill(&mut out);
+        assert_eq!(out, vec![0.75, 1.0], "ramps from 0.5 back up, not from 0");
+    }
+
+    #[test]
+    fn a_zero_duration_fade_takes_effect_immediately() {
+        let mut mixer = Mixer::new(1000, 1);
+        let voice = mixer.play(constant(1.0, 4, 1000), Play::default());
+        mixer.fade(voice, 0.2, 0.0, false);
+        let mut out = vec![0.0; 2];
+        mixer.fill(&mut out);
+        assert_eq!(out, vec![0.2, 0.2]);
+    }
+
+    #[test]
+    fn fading_to_silence_with_stop_removes_the_voice_once_it_completes() {
+        // Otherwise a looping track faded out keeps looping forever at a
+        // volume nobody can hear -- a voice, and the CPU it costs, that
+        // never comes back.
+        let mut mixer = Mixer::new(1000, 1);
+        let voice = mixer.play(
+            constant(1.0, 2, 1000),
+            Play {
+                looping: true,
+                ..Play::default()
+            },
+        );
+        mixer.fade(voice, 0.0, 0.002, true);
+        let mut out = vec![0.0; 3];
+        mixer.fill(&mut out);
+        assert_eq!(out, vec![0.5, 0.0, 0.0], "reached silence and stayed there");
+        assert_eq!(
+            mixer.playing(),
+            0,
+            "gone once the fade finished, not still looping silently"
+        );
+    }
+
+    #[test]
+    fn fading_a_voice_that_does_not_exist_is_not_an_error() {
+        // The same reasoning that makes stopping a finished voice ordinary:
+        // a game fading out music it is not certain is still playing should
+        // not have to check first.
+        let mut mixer = Mixer::new(1000, 1);
+        mixer.fade(999, 0.0, 1.0, true);
+        assert_eq!(mixer.playing(), 0);
     }
 
     #[test]

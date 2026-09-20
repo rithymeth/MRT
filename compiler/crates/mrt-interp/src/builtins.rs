@@ -124,6 +124,8 @@ const NAMES: &[&str] = &[
     "soundPlay",
     "soundStop",
     "soundStopAll",
+    "soundFade",
+    "soundFadeOut",
     "soundPlaying",
     "gameOpen",
     "gamePresent",
@@ -660,6 +662,34 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
         "soundStopAll" => {
             exactly(&args, 0, "soundStopAll() takes no arguments.")?;
             crate::sound::live::stop(&interp.sounds, None)
+        }
+        "soundFade" => {
+            exactly(
+                &args,
+                3,
+                "soundFade() takes a voice, a volume, and seconds.",
+            )?;
+            let voice = whole(&args[0], "soundFade", "the voice")? as u64;
+            crate::sound::live::fade(
+                &interp.sounds,
+                voice,
+                &args[1],
+                &args[2],
+                false,
+                "soundFade",
+            )
+        }
+        "soundFadeOut" => {
+            exactly(&args, 2, "soundFadeOut() takes a voice and seconds.")?;
+            let voice = whole(&args[0], "soundFadeOut", "the voice")? as u64;
+            crate::sound::live::fade(
+                &interp.sounds,
+                voice,
+                &Value::Number(0.0),
+                &args[1],
+                true,
+                "soundFadeOut",
+            )
         }
         "soundPlaying" => {
             exactly(&args, 0, "soundPlaying() takes no arguments.")?;

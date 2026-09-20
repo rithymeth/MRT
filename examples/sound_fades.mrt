@@ -1,0 +1,58 @@
+// Fading a sound in and out, from MRT source.
+//
+// MRT-Game is an engine extension — only the Rust engines have these
+// builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+
+func theme() {
+    var a = soundTone("sine", 440, 0.3, {attack: 0, decay: 0, sustain: 1, release: 0});
+    var b = soundTone("sine", 554, 0.3, {attack: 0, decay: 0, sustain: 1, release: 0});
+    return soundThen(a, b);
+}
+
+func main() {
+    var music = theme();
+
+    // Fading and stopping a voice nothing is playing on is not an error —
+    // the same reasoning as soundStop: a game fading out music it is not
+    // certain is still playing should not have to check first. None of
+    // this needs a speaker, so it runs the same on a build server.
+    soundFade(999, 0.5, 1);
+    soundFadeOut(999, 1);
+    print("fading a voice that never existed did not raise");
+
+    // Arguments are checked before anything asks whether a speaker exists.
+    try {
+        soundFade(1, -1, 1);
+    } catch (e) {
+        print("negative volume refused:", e.kind);
+    }
+    try {
+        soundFadeOut(1, -1);
+    } catch (e) {
+        print("negative duration refused:", e.kind);
+    }
+
+    // Playing it out loud. Wrapped in a try because a machine with no sound
+    // card is an ordinary place to run a program, and a game should carry
+    // on without audio rather than stop.
+    try {
+        // Starts silent and ramps up over half a second, rather than
+        // stepping straight to full volume.
+        var voice = soundPlay(music, {loop: true, fadeIn: 0.5});
+        print("playing on voice", voice, "with a fade-in already queued");
+
+        // Ducking the music down for a moment, then bringing it back --
+        // soundFade never stops a voice on its own, since fading to a
+        // nonzero volume is not "finished" the way fading to silence is.
+        soundFade(voice, 0.2, 0.2);
+        print("ducked to 0.2 |", soundPlaying(), "voice(s) still sounding");
+        soundFade(voice, 1.0, 0.2);
+
+        // Fading out and stopping: once the fade completes, the voice is
+        // gone on its own, without a separate soundStop.
+        soundFadeOut(voice, 0.3);
+        print("fade-out queued on voice", voice);
+    } catch (e) {
+        print("no speaker here:", e.kind);
+    }
+}

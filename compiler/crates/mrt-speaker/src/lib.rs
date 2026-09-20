@@ -115,6 +115,15 @@ impl Speaker {
         }
     }
 
+    /// Ramp a voice's volume to `to` over `seconds`, optionally stopping it
+    /// once the fade completes. A poisoned lock or an unknown voice are both
+    /// silently harmless, the same as `stop`.
+    pub fn fade(&self, voice: u64, to: f32, seconds: f64, stop_at_end: bool) {
+        if let Ok(mut mixer) = self.mixer.lock() {
+            mixer.fade(voice, to, seconds, stop_at_end);
+        }
+    }
+
     pub fn stop_all(&self) {
         if let Ok(mut mixer) = self.mixer.lock() {
             mixer.stop_all();

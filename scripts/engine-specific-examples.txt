@@ -19,3 +19,4 @@ game_raycast.mrt
 game_camera.mrt
 net_fetch.mrt
 sound_effects.mrt
+sound_fades.mrt
