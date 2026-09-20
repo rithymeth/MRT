@@ -117,16 +117,19 @@ jobs:
           components: clippy, rustfmt
 
       # cli's binaries (mrt-check, mrt-run, mrt-game) build mrt-interp with
-      # the window and audio features on unconditionally (see
+      # the window, audio and gamepad features on unconditionally (see
       # compiler/cli/Cargo.toml), so even the plain `cargo build` below needs
-      # these: alsa-sys links against libasound2 at build time, and
-      # xvfb/libxkbcommon-x11-0 are what let scripts/check-window.sh and
-      # scripts/check-game-cli.sh open a real window and talk to a (silent,
-      # cardless) sound device further down.
-      - name: Install system dependencies for the window and audio backends
+      # these: alsa-sys links against libasound2 at build time, libudev-sys
+      # against libudev the same way for gilrs, and xvfb/libxkbcommon-x11-0
+      # are what let scripts/check-window.sh and scripts/check-game-cli.sh
+      # open a real window and talk to a (silent, cardless) sound device
+      # further down. Nothing here needs an actual controller plugged in --
+      # gilrs opens fine with zero gamepads connected, the same as cpal does
+      # with no sound card.
+      - name: Install system dependencies for the window, audio and gamepad backends
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libxkbcommon-x11-0 xvfb
+          sudo apt-get install -y libasound2-dev libudev-dev libxkbcommon-x11-0 xvfb
 
       - name: Cache cargo build
         uses: actions/cache@v4
@@ -159,6 +162,9 @@ jobs:
 
       - name: Test with the audio feature
         run: cargo test --manifest-path compiler/Cargo.toml -p mrt-interp --features audio
+
+      - name: Test with the gamepad feature
+        run: cargo test --manifest-path compiler/Cargo.toml -p mrt-interp --features gamepad
 
       # Frontend conformance: the same tokens and the same tree as the
       # reference implementation, rejecting exactly what it rejects, plus a
