@@ -1013,6 +1013,116 @@ mod tests {
     }
 
     #[test]
+    fn gamedrawtilemap_draws_a_grid_of_tiles_from_one_sheet() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(6, 6, "t");
+                   var red = gameColor(255, 0, 0);
+                   var green = gameColor(0, 255, 0);
+                   var blue = gameColor(0, 0, 255);
+                   var yellow = gameColor(255, 255, 0);
+                   // A 2x2 grid of 2x2 tiles: 0 top-left, 1 top-right,
+                   // 2 bottom-left, 3 bottom-right, row-major.
+                   var sheet = gameSurface(4, 4);
+                   gameTarget(sheet);
+                   gameRect(0, 0, 2, 2, red);
+                   gameRect(2, 0, 2, 2, green);
+                   gameRect(0, 2, 2, 2, blue);
+                   gameRect(2, 2, 2, 2, yellow);
+                   gameTarget(0);
+                   // A null cell leaves the background showing through.
+                   gameDrawTilemap(sheet, 0, 0, 2, 2, [[3, 1], [null, 0]]);
+                   print(gameColorAt(0, 0) == yellow, gameColorAt(2, 0) == green);
+                   print(gameColorAt(0, 2) == gameColor(0, 0, 0), gameColorAt(2, 2) == red);"#
+            ),
+            "true true\ntrue true"
+        );
+    }
+
+    #[test]
+    fn gamedrawtilemap_follows_the_camera_like_gamedraw_does() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(10, 10, "t");
+                   var red = gameColor(255, 0, 0);
+                   var sheet = gameSurface(2, 2);
+                   gameTarget(sheet);
+                   gameRect(0, 0, 2, 2, red);
+                   gameTarget(0);
+                   gameCamera(1, 1);
+                   gameDrawTilemap(sheet, 5, 5, 2, 2, [[0]]);
+                   print(gameColorAt(5, 5) == red);"#
+            ),
+            "true"
+        );
+    }
+
+    #[test]
+    fn gamedrawtilemap_requires_the_sheet_to_be_an_exact_grid_of_tiles() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var sheet = gameSurface(5, 4);
+                   gameDrawTilemap(sheet, 0, 0, 2, 2, [[0]]);"#
+            ),
+            "Runtime Error: gameDrawTilemap(): surface 1 (5x4) is not an exact grid of 2x2 tiles. [line 3]"
+        );
+    }
+
+    #[test]
+    fn gamedrawtilemap_rejects_an_out_of_range_tile_index() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var sheet = gameSurface(4, 4);
+                   gameDrawTilemap(sheet, 0, 0, 2, 2, [[4]]);"#
+            ),
+            "Runtime Error: gameDrawTilemap(): tile 4 at row 0, column 0 is out of range -- surface 1 only has 4 tiles. [line 3]"
+        );
+    }
+
+    #[test]
+    fn gamedrawtilemap_rejects_a_surface_drawn_onto_itself() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var sheet = gameSurface(4, 4);
+                   gameTarget(sheet);
+                   gameDrawTilemap(sheet, 0, 0, 2, 2, [[0]]);"#
+            ),
+            "Runtime Error: gameDrawTilemap(): surface 1 cannot be drawn onto itself. [line 4]"
+        );
+    }
+
+    #[test]
+    fn gamedrawtilemap_type_checks_its_tiles_argument() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var sheet = gameSurface(4, 4);
+                   gameDrawTilemap(sheet, 0, 0, 2, 2, 5);"#
+            ),
+            "Runtime Error: gameDrawTilemap() needs tiles to be an array of arrays, not number. [line 3]"
+        );
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var sheet = gameSurface(4, 4);
+                   gameDrawTilemap(sheet, 0, 0, 2, 2, [5]);"#
+            ),
+            "Runtime Error: gameDrawTilemap(): row 0 of tiles must be an array, not number. [line 3]"
+        );
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var sheet = gameSurface(4, 4);
+                   gameDrawTilemap(sheet, 0, 0, 2, 2, [["a"]]);"#
+            ),
+            "Runtime Error: gameDrawTilemap(): tile at row 0, column 0 must be null or a number, not string. [line 3]"
+        );
+    }
+
+    #[test]
     fn a_new_sprite_is_transparent_rather_than_black() {
         // A sprite is a shape with nothing around it. One that began opaque
         // would stamp a rectangle of background over whatever it landed on,
@@ -2014,6 +2124,130 @@ pub mod sprites {
             transform.anchor_y,
             transform.region,
         );
+        screen.sprites[index] = Some(sprite);
+        Ok(Value::Null)
+    }
+
+    /// Draw a whole grid of tiles from one sprite sheet in a single call.
+    ///
+    /// A level is data -- a 2D array of tile indices -- rather than the
+    /// hundreds or thousands of individual `gameDraw` calls it would take to
+    /// stamp each one from MRT itself, one call per tile, every single
+    /// frame. The sheet's own grid is inferred from its size and the tile
+    /// size alone: tile `n` is at column `n % columns`, row `n / columns`,
+    /// where `columns` is the sheet's width divided by `tileWidth` -- the
+    /// same row-major order a program would reach for on its own.
+    ///
+    /// `tiles` is an array of rows, each an array of tile indices; `null`
+    /// in place of an index leaves that cell empty rather than drawing
+    /// anything -- the shape a sparse level (a mostly-empty overlay of
+    /// decorations, say) actually needs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_tilemap(
+        s: &mut Option<Screen>,
+        id: usize,
+        x: i32,
+        y: i32,
+        tile_width: &Value,
+        tile_height: &Value,
+        tiles: &Value,
+    ) -> Result<Value, Signal> {
+        let screen = screen(s, "gameDrawTilemap")?;
+        let index = screen.sprite_index(id, "gameDrawTilemap")?;
+        if screen.target == id {
+            return Err(value_error(format!(
+                "gameDrawTilemap(): surface {id} cannot be drawn onto itself."
+            )));
+        }
+        let tile_width = dimension(tile_width, "gameDrawTilemap", "the tile width")?;
+        let tile_height = dimension(tile_height, "gameDrawTilemap", "the tile height")?;
+        let sprite = screen.sprites[index].as_ref().expect("checked live");
+        if sprite.width % tile_width != 0 || sprite.height % tile_height != 0 {
+            return Err(value_error(format!(
+                "gameDrawTilemap(): surface {id} ({}x{}) is not an exact grid of {tile_width}x{tile_height} tiles.",
+                sprite.width, sprite.height
+            )));
+        }
+        let sheet_columns = sprite.width / tile_width;
+        let sheet_rows = sprite.height / tile_height;
+        let tile_count = (sheet_columns * sheet_rows) as usize;
+
+        // Read the whole grid into a plain Rust shape and check every cell
+        // before drawing any of them -- a program authoring a level by hand
+        // is exactly the case a typo'd tile index is likely, and a level
+        // half-drawn before the error surfaced would be a worse thing to
+        // debug than one that never started.
+        let Value::Array(rows) = tiles else {
+            return Err(type_error(format!(
+                "gameDrawTilemap() needs tiles to be an array of arrays, not {}.",
+                crate::value::type_name(tiles)
+            )));
+        };
+        let rows = rows.borrow();
+        let mut grid: Vec<Vec<Option<usize>>> = Vec::with_capacity(rows.len());
+        for (row_index, row) in rows.iter().enumerate() {
+            let Value::Array(row) = row else {
+                return Err(type_error(format!(
+                    "gameDrawTilemap(): row {row_index} of tiles must be an array, not {}.",
+                    crate::value::type_name(row)
+                )));
+            };
+            let row = row.borrow();
+            let mut cells = Vec::with_capacity(row.len());
+            for (col_index, cell) in row.iter().enumerate() {
+                cells.push(match cell {
+                    Value::Null => None,
+                    Value::Number(n) if n.fract() == 0.0 && *n >= 0.0 => {
+                        let tile = *n as usize;
+                        if tile >= tile_count {
+                            return Err(value_error(format!(
+                                "gameDrawTilemap(): tile {tile} at row {row_index}, column {col_index} is out of range -- surface {id} only has {tile_count} tiles."
+                            )));
+                        }
+                        Some(tile)
+                    }
+                    Value::Number(n) => {
+                        return Err(value_error(format!(
+                            "gameDrawTilemap(): tile at row {row_index}, column {col_index} must be null or a non-negative whole number, not {n}."
+                        )));
+                    }
+                    other => {
+                        return Err(type_error(format!(
+                            "gameDrawTilemap(): tile at row {row_index}, column {col_index} must be null or a number, not {}.",
+                            crate::value::type_name(other)
+                        )));
+                    }
+                });
+            }
+            grid.push(cells);
+        }
+
+        // Taken out once for the whole grid rather than per tile, for the
+        // same reason `draw_transformed` takes it out at all: the source
+        // and the target are two entries of one Vec, and this is the cheap
+        // way to convince the compiler they are different ones.
+        let sprite = screen.sprites[index].take().expect("checked live");
+        for (row_index, row) in grid.iter().enumerate() {
+            for (col_index, cell) in row.iter().enumerate() {
+                let Some(tile) = cell else { continue };
+                let src_x = (tile % sheet_columns as usize) as i32 * tile_width as i32;
+                let src_y = (tile / sheet_columns as usize) as i32 * tile_height as i32;
+                let dest_x = x + col_index as i32 * tile_width as i32;
+                let dest_y = y + row_index as i32 * tile_height as i32;
+                let (dest_x, dest_y) = screen.from_world(dest_x, dest_y);
+                screen.target_mut().blit_transformed(
+                    &sprite,
+                    dest_x,
+                    dest_y,
+                    0.0,
+                    1.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    Some((src_x, src_y, tile_width, tile_height)),
+                );
+            }
+        }
         screen.sprites[index] = Some(sprite);
         Ok(Value::Null)
     }

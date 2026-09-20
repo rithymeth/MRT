@@ -18,6 +18,7 @@ game_particles.mrt
 game_images.mrt
 game_transform.mrt
 game_spritesheet.mrt
+game_tilemap.mrt
 game_raycast.mrt
 game_camera.mrt
 game_gamepad.mrt
