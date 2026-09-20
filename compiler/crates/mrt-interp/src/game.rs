@@ -55,6 +55,15 @@ pub struct Screen {
     pub sprites: Vec<Option<Surface>>,
     /// Which surface drawing lands on: 0 is the screen, otherwise a sprite id.
     pub target: usize,
+    /// How far the visible screen has scrolled through the world, in world
+    /// pixels. `(0, 0)` until `gameCamera` is called.
+    ///
+    /// Applied to the screen only, never to a sprite: a camera scrolls the
+    /// world a program is drawing, not the picture it is still drawing *with*
+    /// -- `gameTarget`ing a sprite to pre-render it works in that sprite's own
+    /// local space regardless of where the camera happens to be pointed.
+    pub camera_x: i32,
+    pub camera_y: i32,
     /// The window, once `gameOpen` has made one.
     ///
     /// Opened lazily rather than by `gameInit`, which is what lets a program
@@ -86,6 +95,21 @@ impl Screen {
             id => self.sprites[id - 1]
                 .as_mut()
                 .expect("a freed sprite is never left as the target"),
+        }
+    }
+
+    /// A world position, translated into a position on the current target.
+    ///
+    /// The subtraction is plain integer arithmetic, not floating point,
+    /// because both operands already went through `coord`'s floor: the
+    /// camera is a coordinate like any other and is floored the same way
+    /// when it is set, so there is no fractional part left for a second
+    /// rounding step to disagree with the first one about.
+    pub fn from_world(&self, x: i32, y: i32) -> (i32, i32) {
+        if self.target == 0 {
+            (x - self.camera_x, y - self.camera_y)
+        } else {
+            (x, y)
         }
     }
 
@@ -189,6 +213,8 @@ pub fn init(width: usize, height: usize, title: &str) -> Result<Screen, Signal> 
         title: title.to_string(),
         sprites: Vec::new(),
         target: 0,
+        camera_x: 0,
+        camera_y: 0,
         #[cfg(feature = "window")]
         window: None,
     })
@@ -238,14 +264,43 @@ pub fn split_color(c: Color) -> Value {
 /// surface is one line, and the surrounding noise lives at the call site.
 pub mod draw {
     use super::*;
+    use crate::value::{ObjKey, ObjMap};
+
+    fn key(name: &str) -> ObjKey {
+        ObjKey::Str(Rc::from(name))
+    }
 
     pub fn clear(s: &mut Option<Screen>, c: Color) -> Result<Value, Signal> {
         screen(s, "gameClear")?.target_mut().clear(c);
         Ok(Value::Null)
     }
 
+    /// Move the camera to a position in world pixels.
+    ///
+    /// Only ever affects the screen, per `Screen::from_world` -- setting it
+    /// while `gameTarget`ed to a sprite is allowed (a program might scroll
+    /// before switching targets and back) but has no visible effect until
+    /// the target is the screen again.
+    pub fn set_camera(s: &mut Option<Screen>, x: i32, y: i32) -> Result<Value, Signal> {
+        let screen = screen(s, "gameCamera")?;
+        screen.camera_x = x;
+        screen.camera_y = y;
+        Ok(Value::Null)
+    }
+
+    /// Where the camera currently is: `{0, 0}` until `gameCamera` moves it.
+    pub fn camera_position(s: &Option<Screen>) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameCameraPosition"))?;
+        let mut map = ObjMap::new();
+        map.insert(key("x"), Value::Number(screen.camera_x as f64));
+        map.insert(key("y"), Value::Number(screen.camera_y as f64));
+        Ok(Value::object(map))
+    }
+
     pub fn pixel(s: &mut Option<Screen>, x: i32, y: i32, c: Color) -> Result<Value, Signal> {
-        screen(s, "gamePixel")?.target_mut().draw(x, y, c);
+        let screen = screen(s, "gamePixel")?;
+        let (x, y) = screen.from_world(x, y);
+        screen.target_mut().draw(x, y, c);
         Ok(Value::Null)
     }
 
@@ -257,7 +312,9 @@ pub mod draw {
         h: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameRect")?.target_mut().fill_rect(x, y, w, h, c);
+        let screen = screen(s, "gameRect")?;
+        let (x, y) = screen.from_world(x, y);
+        screen.target_mut().fill_rect(x, y, w, h, c);
         Ok(Value::Null)
     }
 
@@ -271,9 +328,9 @@ pub mod draw {
         t: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameRectOutline")?
-            .target_mut()
-            .stroke_rect(x, y, w, h, t, c);
+        let screen = screen(s, "gameRectOutline")?;
+        let (x, y) = screen.from_world(x, y);
+        screen.target_mut().stroke_rect(x, y, w, h, t, c);
         Ok(Value::Null)
     }
 
@@ -285,7 +342,10 @@ pub mod draw {
         y1: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameLine")?.target_mut().line(x0, y0, x1, y1, c);
+        let screen = screen(s, "gameLine")?;
+        let (x0, y0) = screen.from_world(x0, y0);
+        let (x1, y1) = screen.from_world(x1, y1);
+        screen.target_mut().line(x0, y0, x1, y1, c);
         Ok(Value::Null)
     }
 
@@ -296,9 +356,9 @@ pub mod draw {
         r: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameCircle")?
-            .target_mut()
-            .fill_circle(x, y, r, c);
+        let screen = screen(s, "gameCircle")?;
+        let (x, y) = screen.from_world(x, y);
+        screen.target_mut().fill_circle(x, y, r, c);
         Ok(Value::Null)
     }
 
@@ -310,9 +370,9 @@ pub mod draw {
         scale: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameText")?
-            .target_mut()
-            .text(x, y, text, scale, c);
+        let screen = screen(s, "gameText")?;
+        let (x, y) = screen.from_world(x, y);
+        screen.target_mut().text(x, y, text, scale, c);
         Ok(Value::Null)
     }
 
@@ -323,9 +383,9 @@ pub mod draw {
         r: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameCircleOutline")?
-            .target_mut()
-            .stroke_circle(x, y, r, c);
+        let screen = screen(s, "gameCircleOutline")?;
+        let (x, y) = screen.from_world(x, y);
+        screen.target_mut().stroke_circle(x, y, r, c);
         Ok(Value::Null)
     }
 }
@@ -949,6 +1009,69 @@ mod tests {
     }
 
     #[test]
+    fn the_camera_shifts_where_drawing_and_reading_land() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(20, 20, "t");
+                   print(gameCameraPosition().x, gameCameraPosition().y);
+                   var red = gameColor(255, 0, 0);
+                   gameCamera(5, 5);
+                   print(gameCameraPosition().x, gameCameraPosition().y);
+                   // gameColorAt takes a world position too, for the same
+                   // reason a thermostat reads the same scale it is set on:
+                   // a pixel drawn at world (8, 8) is read back at (8, 8),
+                   // regardless of where the camera happens to be pointed.
+                   gamePixel(8, 8, red);
+                   print(gameColorAt(8, 8) == red, gameColorAt(3, 3) == red);"#
+            ),
+            "0 0\n5 5\ntrue false"
+        );
+    }
+
+    #[test]
+    fn the_camera_never_reaches_a_sprite_being_drawn_on() {
+        // Switching gameTarget to a sprite is switching *what* is being
+        // drawn, not scrolling *through* it -- a sprite pre-rendered while
+        // the camera happens to be elsewhere must come out identical to one
+        // pre-rendered with the camera at the origin.
+        assert_eq!(
+            main_of(
+                r#"gameInit(20, 20, "t");
+                   gameCamera(100, 100);
+                   var red = gameColor(255, 0, 0);
+                   var s = gameSurface(4, 4);
+                   gameTarget(s);
+                   gamePixel(1, 1, red);
+                   print(gameColorAt(1, 1) == red);
+                   gameTarget(0);
+                   // world (102, 102) lands at screen (2, 2) with this
+                   // camera, and the sprite's own (1, 1) pixel one further
+                   // in -- read back at the matching world position (103,
+                   // 103), the sprite's contents having scrolled with it
+                   // even though drawing *into* the sprite did not.
+                   gameDraw(s, 102, 102);
+                   print(gameColorAt(103, 103) == red);"#
+            ),
+            "true\ntrue"
+        );
+    }
+
+    #[test]
+    fn a_line_shifts_both_endpoints_together() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(20, 20, "t");
+                   gameCamera(2, 0);
+                   var white = gameColor(255, 255, 255);
+                   gameLine(0, 5, 10, 5, white);
+                   print(gameColorAt(0, 5) == white, gameColorAt(8, 5) == white);"#
+            ),
+            "false true",
+            "both endpoints moved by the same amount, so the line is unbroken"
+        );
+    }
+
+    #[test]
     fn collision_needs_no_screen_at_all() {
         // It is arithmetic on boxes. A program doing physics headlessly --
         // a server, a test -- should not have to open a framebuffer first.
@@ -1335,6 +1458,7 @@ pub mod sprites {
                 "gameDraw(): surface {id} cannot be drawn onto itself."
             )));
         }
+        let (x, y) = screen.from_world(x, y);
         // Lifted out and put back rather than cloned: the source and the
         // target are two entries of one Vec, and this is the cheap way to
         // convince the compiler they are different ones. The self-draw check

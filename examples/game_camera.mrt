@@ -1,0 +1,43 @@
+// A scrolling camera, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// Every x, y passed to a drawing call or to gameColorAt is a *world*
+// position. gameCamera(x, y) says which world pixel sits in the screen's
+// top-left corner. This is an immediate-mode framebuffer, not a scene the
+// engine remembers: moving the camera changes where the *next* draw call
+// lands, the same way it would in a real game's per-frame redraw. It does
+// not reach back and move pixels a previous call already painted -- what
+// changes is which world position now finds them.
+
+func main() {
+    gameInit(40, 20, "MRT Camera");
+    gameClear(gameColor(10, 12, 20));
+
+    print("camera starts at:", gameCameraPosition().x, gameCameraPosition().y);
+
+    var mark = gameColor(255, 210, 80);
+    // Drawn once, at world (10, 10), with the camera still at the origin.
+    gameRect(10, 10, 4, 4, mark);
+    print("found at the position it was drawn at:", gameColorAt(11, 11) == mark);
+
+    // Scroll five pixels in each direction. The physical screen pixel the
+    // rectangle occupies has not moved -- only the world position that now
+    // maps onto it has.
+    gameCamera(5, 5);
+    print("camera moved to:", gameCameraPosition().x, gameCameraPosition().y);
+    print("the old world position no longer finds it:", gameColorAt(11, 11) == mark);
+    print("the shifted world position finds the same paint:", gameColorAt(16, 16) == mark);
+
+    // A sprite pre-rendered while the camera is elsewhere is unaffected --
+    // the camera scrolls the world being drawn, not the picture drawing it.
+    var stamp = gameSurface(2, 2);
+    gameTarget(stamp);
+    gameRect(0, 0, 2, 2, mark);
+    print("sprite content unaffected by the camera:", gameColorAt(0, 0) == mark);
+    gameTarget(0);
+
+    gameSave("game_camera.png");
+    print("wrote game_camera.png");
+}

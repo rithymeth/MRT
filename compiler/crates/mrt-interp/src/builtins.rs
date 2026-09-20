@@ -91,6 +91,8 @@ const NAMES: &[&str] = &[
     "gameLine",
     "gameCircle",
     "gameCircleOutline",
+    "gameCamera",
+    "gameCameraPosition",
     "gameOverlap",
     "gameResolve",
     "gameSweep",
@@ -358,6 +360,18 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 color(&args[3], "gameCircleOutline")?,
             )
         }
+        "gameCamera" => {
+            exactly(&args, 2, "gameCamera() takes x and y.")?;
+            crate::game::draw::set_camera(
+                &mut interp.screen,
+                coord(&args[0], "gameCamera", "x")?,
+                coord(&args[1], "gameCamera", "y")?,
+            )
+        }
+        "gameCameraPosition" => {
+            exactly(&args, 0, "gameCameraPosition() takes no arguments.")?;
+            crate::game::draw::camera_position(&interp.screen)
+        }
         "gameOverlap" => {
             exactly(&args, 2, "gameOverlap() takes two boxes.")?;
             crate::game::collide::overlap(&args[0], &args[1])
@@ -453,7 +467,9 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
             exactly(&args, 2, "gameColorAt() takes x and y.")?;
             let x = coord(&args[0], "gameColorAt", "x")?;
             let y = coord(&args[1], "gameColorAt", "y")?;
-            Ok(match screen_of(interp, "gameColorAt")?.target().get(x, y) {
+            let screen = screen_of(interp, "gameColorAt")?;
+            let (x, y) = screen.from_world(x, y);
+            Ok(match screen.target().get(x, y) {
                 Some(c) => Value::Number(c.0 as f64),
                 None => Value::Null,
             })
