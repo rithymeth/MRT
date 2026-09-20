@@ -1,0 +1,46 @@
+// Fullscreen and cursor control, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// This runs the same with or without a display. On a desktop it opens a
+// real window and actually toggles fullscreen; anywhere else -- a build
+// server, a terminal over ssh -- gameOpen() fails in a way the program
+// catches, and every fullscreen/cursor call below is then a quiet no-op:
+// the same rule gameClose() already follows, since there is no window yet
+// to act on either way.
+
+func main() {
+    gameInit(320, 200, "MRT Window");
+
+    var live = false;
+    try {
+        live = gameOpen();
+        print("window: open");
+    } catch (e) {
+        print("window: none —", e.kind);
+    }
+
+    // Before toggling anything: never fullscreen, whether or not a window
+    // actually exists to ask.
+    print("starts windowed:", !gameIsFullscreen());
+
+    gameSetFullscreen(true);
+    if (live) { gameOpen(); } // pump: fullscreen is an async request
+    print("fullscreen matches whether a window exists:", gameIsFullscreen() == live);
+
+    gameSetFullscreen(false);
+    if (live) { gameOpen(); }
+    print("back to windowed:", !gameIsFullscreen());
+
+    // Hiding the pointer and locking it to the window: both silently do
+    // nothing without a window, and gameSetCursorLocked says so by
+    // returning false rather than pretending it took hold.
+    gameSetCursorVisible(false);
+    var locked = gameSetCursorLocked(true);
+    print("cursor lock without a window never succeeds:", live || !locked);
+    gameSetCursorLocked(false);
+    gameSetCursorVisible(true);
+
+    print("done");
+}

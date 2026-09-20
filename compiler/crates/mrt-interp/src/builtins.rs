@@ -138,6 +138,10 @@ const NAMES: &[&str] = &[
     "gameKeyPressed",
     "gamePointer",
     "gameClose",
+    "gameSetFullscreen",
+    "gameIsFullscreen",
+    "gameSetCursorVisible",
+    "gameSetCursorLocked",
     "gameGamepadCount",
     "gameGamepadButtonDown",
     "gameGamepadButtonPressed",
@@ -757,6 +761,40 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
         "gameClose" => {
             exactly(&args, 0, "gameClose() takes no arguments.")?;
             crate::game::live::close(&mut interp.screen)
+        }
+        "gameSetFullscreen" => {
+            exactly(&args, 1, "gameSetFullscreen() takes a boolean.")?;
+            let Value::Bool(fullscreen) = &args[0] else {
+                return Err(type_error(format!(
+                    "gameSetFullscreen() needs a boolean, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            crate::game::live::set_fullscreen(&mut interp.screen, *fullscreen)
+        }
+        "gameIsFullscreen" => {
+            exactly(&args, 0, "gameIsFullscreen() takes no arguments.")?;
+            crate::game::live::is_fullscreen(&interp.screen)
+        }
+        "gameSetCursorVisible" => {
+            exactly(&args, 1, "gameSetCursorVisible() takes a boolean.")?;
+            let Value::Bool(visible) = &args[0] else {
+                return Err(type_error(format!(
+                    "gameSetCursorVisible() needs a boolean, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            crate::game::live::set_cursor_visible(&mut interp.screen, *visible)
+        }
+        "gameSetCursorLocked" => {
+            exactly(&args, 1, "gameSetCursorLocked() takes a boolean.")?;
+            let Value::Bool(locked) = &args[0] else {
+                return Err(type_error(format!(
+                    "gameSetCursorLocked() needs a boolean, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            crate::game::live::set_cursor_locked(&mut interp.screen, *locked)
         }
         "gameGamepadCount" => {
             exactly(&args, 0, "gameGamepadCount() takes no arguments.")?;
