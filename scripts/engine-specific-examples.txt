@@ -13,6 +13,7 @@ game_shapes.mrt
 game_bounce.mrt
 game_sprites.mrt
 game_collide.mrt
+game_circles.mrt
 game_images.mrt
 game_transform.mrt
 game_spritesheet.mrt

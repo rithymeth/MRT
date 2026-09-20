@@ -1648,6 +1648,40 @@ Touching edges not counting as an overlap matters more than it sounds: tiles
 laid edge to edge are the common case, and the other answer reports a
 collision at every seam of a level.
 
+A circle is likewise an ordinary object, `{x, y, radius}` — a ball, a
+pickup, anything a box would round off too sharply:
+
+| Call | Result |
+|------|--------|
+| `gameCircleOverlap(a, b)` | Whether two circles share any area. Touching does **not** count, same as boxes. |
+| `gameCircleResolve(a, b)` | `{x, y}` — the move that separates circle `a` from circle `b`, or `null` if apart. |
+| `gameCircleBoxOverlap(c, b)` | Whether a circle and a box share any area. |
+| `gameCircleBoxResolve(c, b)` | `{x, y}` — the move that separates circle `c` from box `b`, or `null` if apart. |
+
+```mrt
+var ball = {x: 40, y: 40, radius: 8};
+var rock = {x: 50, y: 40, radius: 8};
+gameCircleOverlap(ball, rock);        // true -- 10 apart, radii sum to 16
+var push = gameCircleResolve(ball, rock);
+push.x;                               // -6 -- straight back along the line between them
+```
+
+`gameCircleResolve` pushes straight along the line between the two centres —
+the only direction that separates two circles without turning either one
+into an ellipse. Two circles that happen to share an exact centre have no
+such line to follow; `(1, 0)` is picked for them arbitrarily, but the
+*distance* pushed still fully separates them.
+
+`gameCircleBoxResolve` does the same outside a box — pushing along the line
+from the box's nearest point to the circle's centre — and falls back to
+pushing out through whichever face is nearest when the centre is already
+inside the box, the same shortest-way-out choice `gameResolve` makes between
+two boxes.
+
+There is no `gameCircleSweep`: a fast-moving circle passing through a thin
+wall on no single frame is the same bug `gameSweep` exists for, and a
+program that needs it can bound the circle in a box and sweep that.
+
 #### Sprites are offscreen surfaces, addressed by number
 
 A sprite is drawn once and stamped many times. `gameSurface` makes one and

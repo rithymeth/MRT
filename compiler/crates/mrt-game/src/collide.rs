@@ -150,6 +150,101 @@ fn axis_span(a_min: f64, a_max: f64, b_min: f64, b_max: f64, delta: f64) -> (f64
     }
 }
 
+/// A circle: a centre and a radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Circle {
+    pub x: f64,
+    pub y: f64,
+    pub radius: f64,
+}
+
+impl Circle {
+    pub fn new(x: f64, y: f64, radius: f64) -> Circle {
+        Circle { x, y, radius }
+    }
+}
+
+/// Whether two circles share any area.
+///
+/// Strict, the same rule `overlap` follows for boxes: circles that merely
+/// touch do not overlap.
+pub fn circle_overlap(a: &Circle, b: &Circle) -> bool {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let r = a.radius + b.radius;
+    dx * dx + dy * dy < r * r
+}
+
+/// How far to move `a` to separate it from `b`, or `None` if they are apart.
+///
+/// Pushed straight along the line between the two centres -- the only
+/// direction that separates two circles without turning either into an
+/// ellipse. Two circles that share an exact centre have no such line to
+/// follow; `(1, 0)` is picked for them arbitrarily; the whole point of the
+/// gap between them is unrepresentable, some direction has to be chosen and
+/// none is more correct than another.
+pub fn circle_resolve(a: &Circle, b: &Circle) -> Option<(f64, f64)> {
+    if !circle_overlap(a, b) {
+        return None;
+    }
+    let (dx, dy) = (a.x - b.x, a.y - b.y);
+    let distance = (dx * dx + dy * dy).sqrt();
+    let push = a.radius + b.radius - distance;
+    if distance > 0.0 {
+        Some((dx / distance * push, dy / distance * push))
+    } else {
+        Some((push, 0.0))
+    }
+}
+
+/// Whether a circle and a box share any area.
+///
+/// Clamping the circle's centre into the box's own bounds gives the closest
+/// point on the box to that centre; once the centre is already inside the
+/// box, that closest point *is* the centre, at distance zero, which counts
+/// as overlapping with no separate case needed for it.
+pub fn circle_box_overlap(c: &Circle, b: &Aabb) -> bool {
+    let (dx, dy) = (
+        c.x - c.x.clamp(b.x, b.right()),
+        c.y - c.y.clamp(b.y, b.bottom()),
+    );
+    dx * dx + dy * dy < c.radius * c.radius
+}
+
+/// How far to move the circle to separate it from the box, or `None`.
+///
+/// Outside the box, this pushes along the line from the box's nearest point
+/// to the circle's centre -- the same idea as two circles, with that
+/// nearest point standing in for the other circle's own centre. A centre
+/// already inside the box has no such point to push away from -- every
+/// point on the box is equally "at" it -- so that case instead pushes out
+/// through whichever face is nearest, the same shortest-way-out choice
+/// `resolve` makes between two boxes.
+pub fn circle_box_resolve(c: &Circle, b: &Aabb) -> Option<(f64, f64)> {
+    if !circle_box_overlap(c, b) {
+        return None;
+    }
+    let (closest_x, closest_y) = (c.x.clamp(b.x, b.right()), c.y.clamp(b.y, b.bottom()));
+    let (dx, dy) = (c.x - closest_x, c.y - closest_y);
+    let distance = (dx * dx + dy * dy).sqrt();
+    if distance > 0.0 {
+        let push = c.radius - distance;
+        return Some((dx / distance * push, dy / distance * push));
+    }
+    let left = c.x - b.x;
+    let right = b.right() - c.x;
+    let top = c.y - b.y;
+    let bottom = b.bottom() - c.y;
+    if left <= right && left <= top && left <= bottom {
+        Some((-(left + c.radius), 0.0))
+    } else if right <= top && right <= bottom {
+        Some((right + c.radius, 0.0))
+    } else if top <= bottom {
+        Some((0.0, -(top + c.radius)))
+    } else {
+        Some((0.0, bottom + c.radius))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +406,103 @@ mod tests {
         let wall = Aabb::new(20.0, 0.0, 10.0, 10.0);
         let hit = sweep(&mover, 10.0, 0.0, &wall).expect("touches at the end");
         assert_eq!(hit.time, 1.0);
+    }
+
+    #[test]
+    fn circles_overlap_when_closer_than_the_sum_of_their_radii() {
+        let a = Circle::new(0.0, 0.0, 5.0);
+        assert!(circle_overlap(&a, &Circle::new(9.0, 0.0, 5.0)), "a hair in");
+        assert!(
+            !circle_overlap(&a, &Circle::new(10.0, 0.0, 5.0)),
+            "touching edges do not overlap, same rule as boxes"
+        );
+        assert!(!circle_overlap(&a, &Circle::new(20.0, 0.0, 5.0)), "apart");
+    }
+
+    #[test]
+    fn resolving_circles_pushes_along_the_line_between_their_centres() {
+        // Centres 6 apart, radii summing to 10: 4 units of overlap, pushed
+        // straight back along the line joining them -- here the x axis, so
+        // all 4 units land on x.
+        let a = Circle::new(0.0, 0.0, 5.0);
+        let b = Circle::new(6.0, 0.0, 5.0);
+        let (x, y) = circle_resolve(&a, &b).expect("overlapping");
+        assert!((x - -4.0).abs() < 1e-9, "x = {x}");
+        assert!(y.abs() < 1e-9, "y = {y}");
+
+        // Moving `a` by that push should leave the two circles exactly
+        // touching rather than overlapping or gapped.
+        let moved = Circle::new(a.x + x, a.y + y, a.radius);
+        assert!(!circle_overlap(&moved, &b), "no longer overlapping");
+        let (dx, dy) = (moved.x - b.x, moved.y - b.y);
+        let distance = (dx * dx + dy * dy).sqrt();
+        assert!(
+            (distance - 10.0).abs() < 1e-9,
+            "exactly touching: {distance}"
+        );
+    }
+
+    #[test]
+    fn circles_sharing_a_centre_still_resolve_to_something() {
+        // No line between two identical centres to push along -- (1, 0) is
+        // picked arbitrarily, but the *distance* pushed must still fully
+        // separate the two circles.
+        let a = Circle::new(3.0, 3.0, 4.0);
+        let b = Circle::new(3.0, 3.0, 6.0);
+        let (x, y) = circle_resolve(&a, &b).expect("overlapping");
+        assert_eq!(y, 0.0);
+        assert_eq!(x, 10.0);
+    }
+
+    #[test]
+    fn circles_that_are_apart_need_no_resolving() {
+        let a = Circle::new(0.0, 0.0, 1.0);
+        let b = Circle::new(100.0, 100.0, 1.0);
+        assert_eq!(circle_resolve(&a, &b), None);
+    }
+
+    #[test]
+    fn a_circle_overlaps_a_box_it_is_not_touching_but_is_close_to() {
+        let box_ = Aabb::new(0.0, 0.0, 10.0, 10.0);
+        // Nearest point on the box to (15, 15) is its corner (10, 10),
+        // distance sqrt(50) =~ 7.07 -- inside a radius of 8, outside 7.
+        assert!(circle_box_overlap(&Circle::new(15.0, 15.0, 8.0), &box_));
+        assert!(!circle_box_overlap(&Circle::new(15.0, 15.0, 7.0), &box_));
+    }
+
+    #[test]
+    fn a_circle_centred_inside_a_box_overlaps_it_with_no_special_case() {
+        let box_ = Aabb::new(0.0, 0.0, 10.0, 10.0);
+        assert!(circle_box_overlap(&Circle::new(5.0, 5.0, 0.1), &box_));
+    }
+
+    #[test]
+    fn resolving_a_circle_outside_a_box_pushes_along_the_line_to_its_centre() {
+        let box_ = Aabb::new(0.0, 0.0, 10.0, 10.0);
+        // Straight out to the right of the box, overlapping by 2.
+        let c = Circle::new(15.0, 5.0, 7.0);
+        let (x, y) = circle_box_resolve(&c, &box_).expect("overlapping");
+        assert!((x - 2.0).abs() < 1e-9, "x = {x}");
+        assert!(y.abs() < 1e-9, "y = {y}");
+    }
+
+    #[test]
+    fn resolving_a_circle_centred_inside_a_box_pushes_out_the_nearest_face() {
+        let box_ = Aabb::new(0.0, 0.0, 10.0, 100.0);
+        // Nearer the left face (2 in) than any other, so it should come out
+        // to the left, clearing the box by exactly its own radius.
+        let c = Circle::new(2.0, 50.0, 3.0);
+        let (x, y) = circle_box_resolve(&c, &box_).expect("overlapping");
+        assert_eq!((x, y), (-5.0, 0.0));
+        assert_eq!(c.x + x, -3.0, "now clear of the box by exactly the radius");
+    }
+
+    #[test]
+    fn a_circle_and_box_that_are_apart_need_no_resolving() {
+        let box_ = Aabb::new(0.0, 0.0, 10.0, 10.0);
+        assert_eq!(
+            circle_box_resolve(&Circle::new(100.0, 100.0, 1.0), &box_),
+            None
+        );
     }
 }
