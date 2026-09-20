@@ -48,7 +48,7 @@ use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::platform::pump_events::EventLoopExtPumpEvents;
-use winit::window::WindowId;
+use winit::window::{CursorGrabMode, Fullscreen, WindowId};
 
 /// What the operating system has told us since the last frame.
 #[derive(Default)]
@@ -365,6 +365,56 @@ impl Window {
     /// Ask the window to close, as `gameClose()` does.
     pub fn close(&mut self) {
         self.app.open = false;
+    }
+
+    /// Switch to borderless fullscreen on the window's own monitor, or back
+    /// to windowed.
+    ///
+    /// Borderless rather than exclusive: exclusive fullscreen changes the
+    /// monitor's own video mode, which is a much bigger thing to ask of a
+    /// desktop than a game window filling the screen, and this crate has no
+    /// way to let a caller pick a resolution for it anyway.
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        if let Some(window) = &self.app.window {
+            window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
+        }
+    }
+
+    pub fn is_fullscreen(&self) -> bool {
+        self.app
+            .window
+            .as_ref()
+            .is_some_and(|w| w.fullscreen().is_some())
+    }
+
+    /// Show or hide the pointer while it is over the window.
+    pub fn set_cursor_visible(&mut self, visible: bool) {
+        if let Some(window) = &self.app.window {
+            window.set_cursor_visible(visible);
+        }
+    }
+
+    /// Confine the cursor to the window, or release it. Returns whether it
+    /// actually took hold -- some platforms refuse every grab mode, and a
+    /// caller relying on the cursor staying put deserves to know rather than
+    /// silently getting an ordinary, unconfined one.
+    ///
+    /// Confined is tried before Locked, not the other way around: X11 (which
+    /// is what a game running under a display at all, including this crate's
+    /// own CI, most often means on Linux) implements Confined but not
+    /// Locked, so asking for Locked first would fail here every time before
+    /// falling back.
+    pub fn set_cursor_locked(&mut self, locked: bool) -> bool {
+        let Some(window) = &self.app.window else {
+            return false;
+        };
+        if !locked {
+            return window.set_cursor_grab(CursorGrabMode::None).is_ok();
+        }
+        window
+            .set_cursor_grab(CursorGrabMode::Confined)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked))
+            .is_ok()
     }
 }
 

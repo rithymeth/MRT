@@ -660,6 +660,22 @@ mod tests {
             main_of(r#"gameInit(4, 4, "t"); gameKeyDown("W");"#),
             "Runtime Error: gameKeyDown() needs a build with window support; this one was built without it. [line 1]"
         );
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameSetFullscreen(true);"#),
+            "Runtime Error: gameSetFullscreen() needs a build with window support; this one was built without it. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameIsFullscreen();"#),
+            "Runtime Error: gameIsFullscreen() needs a build with window support; this one was built without it. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameSetCursorVisible(false);"#),
+            "Runtime Error: gameSetCursorVisible() needs a build with window support; this one was built without it. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameSetCursorLocked(true);"#),
+            "Runtime Error: gameSetCursorLocked() needs a build with window support; this one was built without it. [line 1]"
+        );
     }
 
     #[test]
@@ -679,6 +695,37 @@ mod tests {
                try { gameOpen(); } catch (e) { print("caught", e.kind); }"#,
         );
         assert_eq!(output, "caught ValueError");
+    }
+
+    #[test]
+    #[cfg(feature = "window")]
+    fn fullscreen_and_cursor_calls_before_opening_a_window_are_quiet_no_ops() {
+        // The same rule gameClose follows: there is no window yet to act on,
+        // and that is not a mistake worth raising over -- a program can call
+        // these in whatever order suits it without checking gameOpen() first.
+        assert_eq!(
+            main_of(
+                r#"gameInit(4, 4, "t");
+                   gameSetFullscreen(true);
+                   print(gameIsFullscreen());
+                   gameSetCursorVisible(false);
+                   print(gameSetCursorLocked(true));"#
+            ),
+            "false\nfalse"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "window")]
+    fn fullscreen_and_cursor_calls_are_type_checked() {
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameSetFullscreen(1);"#),
+            "Runtime Error: gameSetFullscreen() needs a boolean, not number. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameSetCursorLocked("yes");"#),
+            "Runtime Error: gameSetCursorLocked() needs a boolean, not string. [line 1]"
+        );
     }
 
     #[test]
@@ -2016,6 +2063,76 @@ pub mod live {
     pub fn close(s: &mut Option<Screen>) -> Result<Value, Signal> {
         screen(s, "gameClose")?;
         Err(unsupported("gameClose"))
+    }
+
+    /// Switch the window between borderless fullscreen and windowed. A no-op
+    /// before the window has been opened -- the same rule `gameClose`
+    /// follows, since there is nothing yet to switch.
+    #[cfg(feature = "window")]
+    pub fn set_fullscreen(s: &mut Option<Screen>, fullscreen: bool) -> Result<Value, Signal> {
+        let screen = screen(s, "gameSetFullscreen")?;
+        if let Some(window) = screen.window.as_mut() {
+            window.set_fullscreen(fullscreen);
+        }
+        Ok(Value::Null)
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn set_fullscreen(s: &mut Option<Screen>, _fullscreen: bool) -> Result<Value, Signal> {
+        screen(s, "gameSetFullscreen")?;
+        Err(unsupported("gameSetFullscreen"))
+    }
+
+    /// Whether the window is fullscreen right now.
+    #[cfg(feature = "window")]
+    pub fn is_fullscreen(s: &Option<Screen>) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameIsFullscreen"))?;
+        Ok(Value::Bool(
+            screen.window.as_ref().is_some_and(|w| w.is_fullscreen()),
+        ))
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn is_fullscreen(s: &Option<Screen>) -> Result<Value, Signal> {
+        s.as_ref().ok_or_else(|| no_screen("gameIsFullscreen"))?;
+        Err(unsupported("gameIsFullscreen"))
+    }
+
+    /// Show or hide the pointer while it is over the window.
+    #[cfg(feature = "window")]
+    pub fn set_cursor_visible(s: &mut Option<Screen>, visible: bool) -> Result<Value, Signal> {
+        let screen = screen(s, "gameSetCursorVisible")?;
+        if let Some(window) = screen.window.as_mut() {
+            window.set_cursor_visible(visible);
+        }
+        Ok(Value::Null)
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn set_cursor_visible(s: &mut Option<Screen>, _visible: bool) -> Result<Value, Signal> {
+        screen(s, "gameSetCursorVisible")?;
+        Err(unsupported("gameSetCursorVisible"))
+    }
+
+    /// Confine the cursor to the window, or release it. Reports whether it
+    /// actually took hold -- `false` before the window is open or on a
+    /// platform that refuses every grab mode, either of which leaves the
+    /// cursor free to wander despite being asked not to.
+    #[cfg(feature = "window")]
+    pub fn set_cursor_locked(s: &mut Option<Screen>, locked: bool) -> Result<Value, Signal> {
+        let screen = screen(s, "gameSetCursorLocked")?;
+        Ok(Value::Bool(
+            screen
+                .window
+                .as_mut()
+                .is_some_and(|w| w.set_cursor_locked(locked)),
+        ))
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn set_cursor_locked(s: &mut Option<Screen>, _locked: bool) -> Result<Value, Signal> {
+        screen(s, "gameSetCursorLocked")?;
+        Err(unsupported("gameSetCursorLocked"))
     }
 
     /// The message a build without gamepad support gives.

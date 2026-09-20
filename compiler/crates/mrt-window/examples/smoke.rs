@@ -28,6 +28,34 @@ fn main() {
     println!("presented 5 frames");
     println!("delta is a real duration: {}", window.delta() >= 0.0);
     println!("no key is down: {}", !window.key_down("W"));
+
+    if window.is_fullscreen() {
+        println!("FAIL starts fullscreen");
+        std::process::exit(1);
+    }
+    window.set_fullscreen(true);
+    window.is_open(); // pump: fullscreen is an async request to the desktop
+    if !window.is_fullscreen() {
+        println!("FAIL did not become fullscreen");
+        std::process::exit(1);
+    }
+    window.set_fullscreen(false);
+    window.is_open();
+    if window.is_fullscreen() {
+        println!("FAIL did not return to windowed");
+        std::process::exit(1);
+    }
+    println!("fullscreen toggles both ways");
+
+    window.set_cursor_visible(false);
+    window.set_cursor_visible(true);
+    println!("cursor visibility calls did not panic");
+
+    let locked = window.set_cursor_locked(true);
+    println!("cursor lock reports its own success: {locked}");
+    window.set_cursor_locked(false);
+    println!("cursor unlock did not panic");
+
     window.close();
     println!("closes on request: {}", !window.is_open());
     println!("ok");

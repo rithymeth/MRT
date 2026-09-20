@@ -1810,6 +1810,10 @@ pump, so a loop that decides to draw nothing on some frame still stays alive.
 | `gameKeyPressed(name)` | Whether it went down since the last frame, held or not. |
 | `gamePointer()` | `{x, y, down}`. |
 | `gameClose()` | Ends the loop, as the close button would. |
+| `gameSetFullscreen(fullscreen)` | Switches between borderless fullscreen and windowed. |
+| `gameIsFullscreen()` | Whether the window is fullscreen right now. |
+| `gameSetCursorVisible(visible)` | Shows or hides the pointer while it is over the window. |
+| `gameSetCursorLocked(locked)` | Confines the pointer to the window, or releases it. Returns whether it took hold. |
 
 The window opens on the first `gameOpen` rather than at `gameInit`, so a
 program that only draws and saves a PNG runs on a machine with no display at
@@ -1829,6 +1833,30 @@ reproduced on purpose.
 `gameDelta` is for a game a person plays, so that it runs at the same speed on
 fast and slow machines. A simulation that has to be **reproducible** should
 use a fixed step and ignore it: real elapsed time is never the same twice.
+
+`gameSetFullscreen`, `gameSetCursorVisible` and `gameSetCursorLocked` are
+quiet no-ops before the window has opened, the same rule `gameClose` already
+follows — there being nothing yet to act on is not a mistake worth raising
+over. `gameSetCursorLocked` still returns `false` in that case, since the
+cursor was not actually confined either way:
+
+```mrt
+gameOpen();
+gameSetCursorVisible(false);
+if (!gameSetCursorLocked(true)) {
+    print("this platform would not confine the cursor");
+}
+
+if (gameKeyPressed("F")) { gameSetFullscreen(!gameIsFullscreen()); }
+```
+
+`gameSetFullscreen` asks for **borderless** fullscreen — the window filling
+its own monitor at its existing resolution — never exclusive fullscreen,
+which would change the monitor's own video mode and is a much bigger thing
+to ask of a desktop than a game window filling the screen. `gameSetCursorLocked`
+tries confining the cursor to the window before trying to lock it to one
+point inside it; not every platform implements either, which is the whole
+reason it reports back rather than assuming.
 
 #### Gamepads
 
