@@ -1437,6 +1437,7 @@ func main() {
 | `gameTextWidth(text, scale)` / `gameTextHeight(...)` | How big that text will be — needs no screen, so a layout can be computed before one exists. |
 | `gameColorAt(x, y)` | The colour at a point, or `null` off the screen. |
 | `gameSave(path)` | Writes the frame as a PNG. |
+| `gameSaveData(path, value)` / `gameLoadData(path)` | Saves a plain value to a file, or reads one back. Needs no screen. |
 | `gameCamera(x, y)` | Moves the camera to a position in world pixels. `{0, 0}` until called. |
 | `gameCameraPosition()` | Where the camera currently is: `{x, y}`. |
 
@@ -1852,6 +1853,45 @@ so `gameCamera` scrolls them the same as it scrolls sprites and shapes.
 `gameParticleDraw` follows the current target exactly like `gameDraw` does —
 target a sprite first to bake an explosion's debris into it, or leave the
 target at the screen for the ordinary case.
+
+#### Saving and loading game state
+
+| Call | Result |
+|------|--------|
+| `gameSaveData(path, value)` | Writes `value` to `path`. |
+| `gameLoadData(path)` | Reads `path` back into the value it was saved from. |
+
+MRT has no general file I/O, on purpose — letting an interpreted program
+read and write arbitrary paths is a much bigger door to open than a game
+asking to keep its own save file. These two open exactly that one door, in
+exactly the shape a save file needs: a value in, a value back out, the file
+format itself not a program's concern. Neither needs a screen — persisting
+progress is arithmetic on a value and a file, the same reasoning collision
+and particles follow for needing none either.
+
+```mrt
+var progress = {level: 4, gold: 250, unlocked: ["sword", "shield", "map"]};
+gameSaveData("save.json", progress);
+
+var loaded = null;
+try {
+    loaded = gameLoadData("save.json");
+} catch (e) {
+    loaded = {level: 1, gold: 0, unlocked: []}; // no save yet
+}
+```
+
+"Plain" means null, booleans, numbers, strings, arrays and objects — the
+same line MRT's own JSON writer (`examples/lib/json.mrt`) draws for a
+function ("a function has no JSON form"), extended to everything else this
+extension does not consider data: a struct type, an instance, a generator.
+All of them are refused by name rather than silently dropped.
+
+A missing file or malformed contents are refused rather than answered with
+some default: a program checking its own save file for the first time
+decides what "no save yet" means for itself, in a `catch`, the way the
+example above does — this is exactly the case `gameLoadData` is written to
+support, not an edge case bolted on afterward.
 
 #### The loop belongs to the program
 
