@@ -1,0 +1,304 @@
+// A first-person 3D maze, written in MRT.
+//
+// MRT-Game is an engine extension: only the Rust engines have these
+// builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// The 3D is raycasting, the technique Wolfenstein 3D used: for every column
+// of the screen, march one ray across the map grid until it meets a wall,
+// and draw that column as a vertical slice whose height is the reciprocal of
+// the distance. Near walls are tall and bright, far ones short and dim.
+//
+// The language has no trigonometry, so sin() below is a Taylor series and
+// cos() is sin() a quarter-turn along.
+//
+// On a desktop it opens a window: arrow keys walk and turn, escape quits.
+// Anywhere else -- a build server, a terminal over ssh -- it runs the same
+// frames from a scripted walk and writes the last one to a PNG, so the
+// printed numbers are the same on every machine.
+
+var PI = 3.14159265358979;
+
+var WIDTH = 480;
+var HEIGHT = 320;
+var HORIZON = 160;          // the eye line: where floor meets wall
+var COLUMN = 2;             // pixels per ray; 2 halves the work, unnoticeably
+var FOV = 1.05;             // about 60 degrees
+var FRAMES = 240;
+var STEP = 1.0 / 60.0;      // a fixed step, so a replay is reproducible
+var WALK = 4.0;             // cells per second
+var TURN = 2.0;             // radians per second
+
+var MAP = [
+    "################",
+    "#..............#",
+    "#..............#",
+    "#...####...#...#",
+    "#...#..#...#...#",
+    "#...#..#...#...#",
+    "#...####...#...#",
+    "#..........#...#",
+    "#..====....#...#",
+    "#..=..=........#",
+    "#..=..=........#",
+    "#..====...####.#",
+    "#.........#..#.#",
+    "#.........#..#.#",
+    "#.....====.....#",
+    "################"
+];
+// Range-reduced Taylor series, accurate to about 1e-7 over a full turn.
+func sin(x) {
+    var t = x - floor(x / (2 * PI)) * 2 * PI;
+    if (t > PI) { t = t - 2 * PI; }
+    var t2 = t * t;
+    var term = t;
+    var total = t;
+    term = -term * t2 / 6;      total += term;
+    term = -term * t2 / 20;     total += term;
+    term = -term * t2 / 42;     total += term;
+    term = -term * t2 / 72;     total += term;
+    return total;
+}
+
+func cos(x) { return sin(x + PI / 2); }
+
+func tileAt(x, y) {
+    if (y < 0 || y >= len(MAP)) { return "#"; }
+    var row = MAP[y];
+    if (x < 0 || x >= len(row)) { return "#"; }
+    return row[x];
+}
+
+struct Hit { dist, side, tile; }
+
+// One ray, stepped from grid line to grid line rather than in small
+// increments: a cell is either entered or it is not, so this is both exact
+// and bounded -- at most one step per cell crossed.
+func castRay(px, py, dirX, dirY) {
+    var mapX = floor(px);
+    var mapY = floor(py);
+
+    // The distance a ray covers crossing one whole cell, per axis. A ray with
+    // no component along an axis never crosses one of its lines, and a
+    // division by zero would throw, so it gets a distance nothing beats.
+    var deltaX = 1000000;
+    var deltaY = 1000000;
+    if (dirX != 0) { deltaX = abs(1 / dirX); }
+    if (dirY != 0) { deltaY = abs(1 / dirY); }
+
+    var stepX = 1;
+    var nextX = (mapX + 1 - px) * deltaX;
+    if (dirX < 0) {
+        stepX = -1;
+        nextX = (px - mapX) * deltaX;
+    }
+
+    var stepY = 1;
+    var nextY = (mapY + 1 - py) * deltaY;
+    if (dirY < 0) {
+        stepY = -1;
+        nextY = (py - mapY) * deltaY;
+    }
+
+    var side = 0;
+    var steps = 0;
+    while (steps < 64) {
+        // Always advance whichever axis has the nearer grid line.
+        if (nextX < nextY) {
+            nextX += deltaX;
+            mapX += stepX;
+            side = 0;
+        } else {
+            nextY += deltaY;
+            mapY += stepY;
+            side = 1;
+        }
+
+        var tile = tileAt(mapX, mapY);
+        if (tile != ".") {
+            // Back off the step just taken: the wall is where the ray
+            // entered the cell, not where it would leave.
+            if (side == 0) { return Hit(nextX - deltaX, side, tile); }
+            return Hit(nextY - deltaY, side, tile);
+        }
+        steps += 1;
+    }
+    return Hit(64, 0, "#");
+}
+
+var STONE = {r: 172, g: 178, b: 196};
+var BRICK = {r: 204, g: 108, b: 72};
+
+// Distance dims a wall, and the two faces of a corner differ, which is what
+// stops a cube from reading as a flat blob.
+func shadeOf(hit) {
+    var base = STONE;
+    if (hit.tile == "=") { base = BRICK; }
+
+    var light = 1 / (1 + hit.dist * 0.075);
+    if (hit.side == 1) { light = light * 0.72; }
+
+    return gameColor(floor(base.r * light), floor(base.g * light), floor(base.b * light));
+}
+
+// Floor and ceiling as bands that fade towards the horizon: cheap, and it
+// gives the eye the depth cue a flat fill does not.
+func drawBackdrop() {
+    var bands = 8;
+    var thickness = floor(HORIZON / bands);
+    for (var i = 0; i < bands; i += 1) {
+        var far = (bands - i) / bands;
+        var sky = gameColor(floor(18 + 26 * far), floor(22 + 30 * far), floor(38 + 46 * far));
+        var ground = gameColor(floor(46 - 22 * far), floor(42 - 20 * far), floor(38 - 18 * far));
+        gameRect(0, i * thickness, WIDTH, thickness, sky);
+        gameRect(0, HEIGHT - (i + 1) * thickness, WIDTH, thickness, ground);
+    }
+}
+
+func drawWalls(px, py, heading) {
+    for (var x = 0; x < WIDTH; x += COLUMN) {
+        // The angle of this column away from straight ahead.
+        var offset = FOV * (x / WIDTH - 0.5);
+        var angle = heading + offset;
+        var hit = castRay(px, py, cos(angle), sin(angle));
+
+        // Project onto the view plane rather than using the ray's own
+        // length, or the walls bow outwards at the edges -- the fisheye.
+        var depth = hit.dist * cos(offset);
+        if (depth < 0.05) { depth = 0.05; }
+
+        var half = floor(HEIGHT / depth / 2);
+        var top = HORIZON - half;
+        var height = half * 2;
+        if (top < 0) {
+            height = height + top;
+            top = 0;
+        }
+        if (top + height > HEIGHT) { height = HEIGHT - top; }
+
+        gameRect(x, top, COLUMN, height, shadeOf(hit));
+    }
+}
+
+func drawMinimap(px, py, heading) {
+    var cell = 5;
+    var originX = WIDTH - len(MAP[0]) * cell - 10;
+    var originY = 10;
+
+    gameRect(originX - 2, originY - 2, len(MAP[0]) * cell + 4, len(MAP) * cell + 4,
+             gameColorAlpha(8, 10, 18, 190));
+
+    for (var y = 0; y < len(MAP); y += 1) {
+        for (var x = 0; x < len(MAP[y]); x += 1) {
+            var tile = tileAt(x, y);
+            if (tile == ".") { continue; }
+            var ink = gameColor(90, 96, 112);
+            if (tile == "=") { ink = gameColor(150, 78, 54); }
+            gameRect(originX + x * cell, originY + y * cell, cell, cell, ink);
+        }
+    }
+
+    var dotX = originX + px * cell;
+    var dotY = originY + py * cell;
+    gameLine(dotX, dotY, dotX + cos(heading) * 9, dotY + sin(heading) * 9,
+             gameColor(255, 226, 120));
+    gameCircle(dotX, dotY, 2, gameColor(255, 226, 120));
+}
+
+func drawHud(frame, px, py) {
+    var ink = gameColor(235, 238, 245);
+    gameText(10, 10, "MRT RAYCAST", 2, ink);
+    gameText(10, 32, "raycasting, written in MRT", 1, gameColor(150, 158, 175));
+
+    var where = "x ${round(px * 10) / 10}  y ${round(py * 10) / 10}";
+    gameText(10, HEIGHT - 30, where, 1, ink);
+    gameText(10, HEIGHT - 18, "arrows walk and turn, escape quits", 1,
+             gameColor(150, 158, 175));
+
+    var counter = "frame ${frame}";
+    gameText(WIDTH - gameTextWidth(counter, 1) - 10, HEIGHT - 18, counter, 1, ink);
+}
+
+struct Move { forward, turn; }
+
+// Without a window there is no keyboard, so the walk is scripted -- and it
+// drives exactly the same movement code the arrow keys do.
+func scriptedMove(frame) {
+    if (frame < 90)  { return Move(1, 0); }    // east along the north corridor
+    if (frame < 137) { return Move(0, 1); }    // a right turn, near enough 90 degrees
+    return Move(1, 0);                         // south down the long gallery
+}
+
+func liveMove() {
+    var forward = 0;
+    var turn = 0;
+    if (gameKeyDown("Up"))    { forward = 1; }
+    if (gameKeyDown("Down"))  { forward = -1; }
+    if (gameKeyDown("Left"))  { turn = -1; }
+    if (gameKeyDown("Right")) { turn = 1; }
+    if (gameKeyPressed("Escape")) { gameClose(); }
+    return Move(forward, turn);
+}
+
+// Each axis is tested on its own, so a wall taken at an angle slides the
+// player along it instead of stopping them dead.
+func walk(px, py, heading, move) {
+    var nx = px + cos(heading) * move.forward * WALK * STEP;
+    var ny = py + sin(heading) * move.forward * WALK * STEP;
+
+    if (tileAt(floor(nx), floor(py)) == ".") { px = nx; }
+    if (tileAt(floor(px), floor(ny)) == ".") { py = ny; }
+    return [px, py];
+}
+
+func main() {
+    gameInit(WIDTH, HEIGHT, "MRT Raycast");
+
+    var live = false;
+    try {
+        live = gameOpen();
+        print("window: open");
+    } catch (e) {
+        print("window: none —", e.kind);
+    }
+
+    var px = 2.5;
+    var py = 2.5;
+    var heading = 0.0;
+    var frame = 0;
+
+    while (frame < FRAMES) {
+        // Hands off, the scripted tour plays -- in a window as well as
+        // without one, which is what keeps the numbers printed at the end the
+        // same either way. Touch an arrow key and you take over.
+        var move = scriptedMove(frame);
+        if (live) {
+            try {
+                var pressed = liveMove();
+                if (pressed.forward != 0 || pressed.turn != 0) { move = pressed; }
+            } catch (e) { }
+        }
+
+        heading += move.turn * TURN * STEP;
+        [px, py] = walk(px, py, heading, move);
+
+        drawBackdrop();
+        drawWalls(px, py, heading);
+        drawMinimap(px, py, heading);
+        drawHud(frame, px, py);
+
+        if (live) {
+            gamePresent();
+            live = gameOpen();
+        }
+        frame += 1;
+    }
+
+    print("frames:", frame);
+    print("player at:", round(px * 10) / 10, round(py * 10) / 10);
+    print("facing:", round(heading * 180 / PI), "deg");
+    print("rays per frame:", floor(WIDTH / COLUMN));
+    print("wall ahead:", castRay(px, py, cos(heading), sin(heading)).tile);
+    gameSave("game_raycast.png");
+    print("wrote game_raycast.png");
+}
