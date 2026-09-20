@@ -1445,6 +1445,44 @@ place. `scale` is whole-number pixel doubling rather than interpolation — a
 bitmap font resampled to a fractional size turns to mush, so the honest
 options are the sizes it has.
 
+#### Sprites are offscreen surfaces, addressed by number
+
+A sprite is drawn once and stamped many times. `gameSurface` makes one and
+returns an **id** — a plain number, so sprites cost the language no new type
+either, the same rule the screen follows applied to there being more than one
+of them.
+
+```mrt
+var ship = gameSurface(16, 16);
+gameTarget(ship);          // drawing now lands on the sprite
+gameCircle(8, 9, 6, body);
+gameTarget(0);             // back to the screen
+gameDraw(ship, 20, 60);
+```
+
+| Call | Result |
+|------|--------|
+| `gameSurface(width, height)` | A new offscreen surface, **transparent**; returns its id. |
+| `gameTarget(id)` | Points drawing at that surface. `0` is the screen. |
+| `gameTargetId()` | Which surface drawing is landing on. |
+| `gameDraw(id, x, y)` | Stamps a sprite onto the current target, blending it. |
+| `gameSurfaceFree(id)` | Gives a surface up. Its id is never reused. |
+
+A new surface is transparent rather than black, because a sprite is a shape
+with nothing around it: one that began opaque would stamp a rectangle of
+background over whatever it landed on.
+
+The target is what *everything* follows — `gameWidth`, `gameHeight`,
+`gameColorAt` and `gameSave` all report and act on the current target, not on
+the screen. Anything else would let a program draw into a sprite while reading
+from the screen. `gamePresent` is the exception, and always shows the screen.
+
+Two mistakes are named rather than tolerated: drawing a surface onto itself,
+and using an id after freeing it. A freed id reports that it *was freed*,
+told apart from one that never existed — the first is a use-after-free in the
+program's own logic, and calling it "no such surface" would send its author
+looking for a typo.
+
 #### The loop belongs to the program
 
 A windowing library usually wants the loop: you hand it a callback and it

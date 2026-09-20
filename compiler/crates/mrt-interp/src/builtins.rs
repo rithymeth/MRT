@@ -91,6 +91,11 @@ const NAMES: &[&str] = &[
     "gameLine",
     "gameCircle",
     "gameCircleOutline",
+    "gameSurface",
+    "gameTarget",
+    "gameTargetId",
+    "gameDraw",
+    "gameSurfaceFree",
     "gameColorAt",
     "gameText",
     "gameTextWidth",
@@ -243,13 +248,13 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
         "gameWidth" => {
             exactly(&args, 0, "gameWidth() takes no arguments.")?;
             Ok(Value::Number(
-                screen_of(interp, "gameWidth")?.surface.width as f64,
+                screen_of(interp, "gameWidth")?.target().width as f64,
             ))
         }
         "gameHeight" => {
             exactly(&args, 0, "gameHeight() takes no arguments.")?;
             Ok(Value::Number(
-                screen_of(interp, "gameHeight")?.surface.height as f64,
+                screen_of(interp, "gameHeight")?.target().height as f64,
             ))
         }
         "gameClear" => {
@@ -331,6 +336,41 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 color(&args[3], "gameCircleOutline")?,
             )
         }
+        "gameSurface" => {
+            exactly(&args, 2, "gameSurface() takes a width and a height.")?;
+            crate::game::sprites::create(
+                &mut interp.screen,
+                whole(&args[0], "gameSurface", "the width")?,
+                whole(&args[1], "gameSurface", "the height")?,
+            )
+        }
+        "gameTarget" => {
+            one(&args, "gameTarget")?;
+            crate::game::sprites::target(
+                &mut interp.screen,
+                whole(&args[0], "gameTarget", "the surface")?,
+            )
+        }
+        "gameTargetId" => {
+            exactly(&args, 0, "gameTargetId() takes no arguments.")?;
+            crate::game::sprites::current_target(&interp.screen)
+        }
+        "gameDraw" => {
+            exactly(&args, 3, "gameDraw() takes a surface, x, and y.")?;
+            crate::game::sprites::draw(
+                &mut interp.screen,
+                whole(&args[0], "gameDraw", "the surface")?,
+                coord(&args[1], "gameDraw", "x")?,
+                coord(&args[2], "gameDraw", "y")?,
+            )
+        }
+        "gameSurfaceFree" => {
+            one(&args, "gameSurfaceFree")?;
+            crate::game::sprites::free(
+                &mut interp.screen,
+                whole(&args[0], "gameSurfaceFree", "the surface")?,
+            )
+        }
         "gameColorAt" => {
             // Reading the surface back is what lets a program check its own
             // drawing, which is otherwise only visible to a person looking at
@@ -338,7 +378,7 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
             exactly(&args, 2, "gameColorAt() takes x and y.")?;
             let x = coord(&args[0], "gameColorAt", "x")?;
             let y = coord(&args[1], "gameColorAt", "y")?;
-            Ok(match screen_of(interp, "gameColorAt")?.surface.get(x, y) {
+            Ok(match screen_of(interp, "gameColorAt")?.target().get(x, y) {
                 Some(c) => Value::Number(c.0 as f64),
                 None => Value::Null,
             })

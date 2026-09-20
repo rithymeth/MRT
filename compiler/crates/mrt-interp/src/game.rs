@@ -45,6 +45,16 @@ use crate::value::Value;
 pub struct Screen {
     pub surface: Surface,
     pub title: String,
+    /// Offscreen surfaces a program has asked for, addressed by a 1-based id.
+    ///
+    /// An **id**, not a handle: a plain number is already an MRT value, so
+    /// sprites cost the language no new type either -- the same rule the
+    /// screen follows, applied to there being more than one of them. A freed
+    /// slot becomes `None` and is not reused, so a stale id reports that it
+    /// was freed instead of silently drawing some later sprite.
+    pub sprites: Vec<Option<Surface>>,
+    /// Which surface drawing lands on: 0 is the screen, otherwise a sprite id.
+    pub target: usize,
     /// The window, once `gameOpen` has made one.
     ///
     /// Opened lazily rather than by `gameInit`, which is what lets a program
@@ -53,6 +63,48 @@ pub struct Screen {
     /// asks for a window by asking whether one is open.
     #[cfg(feature = "window")]
     pub window: Option<mrt_window::Window>,
+}
+
+impl Screen {
+    /// The surface drawing currently lands on.
+    ///
+    /// Every drawing built-in goes through here rather than touching
+    /// `surface` directly, which is what makes `gameTarget` a one-line
+    /// feature instead of an extra argument on fifteen calls.
+    pub fn target(&self) -> &Surface {
+        match self.target {
+            0 => &self.surface,
+            id => self.sprites[id - 1]
+                .as_ref()
+                .expect("a freed sprite is never left as the target"),
+        }
+    }
+
+    pub fn target_mut(&mut self) -> &mut Surface {
+        match self.target {
+            0 => &mut self.surface,
+            id => self.sprites[id - 1]
+                .as_mut()
+                .expect("a freed sprite is never left as the target"),
+        }
+    }
+
+    /// Check an id names a live sprite, and say why not if it does not.
+    fn sprite_index(&self, id: usize, who: &str) -> Result<usize, Signal> {
+        if id == 0 {
+            return Err(value_error(format!(
+                "{who}() needs a surface from gameSurface(); 0 is the screen."
+            )));
+        }
+        match self.sprites.get(id - 1) {
+            Some(Some(_)) => Ok(id - 1),
+            // Told apart on purpose: a freed id is a use-after-free in the
+            // program's own logic, and reporting it as "no such surface"
+            // would send its author looking for a typo instead.
+            Some(None) => Err(value_error(format!("{who}(): surface {id} was freed."))),
+            None => Err(value_error(format!("{who}(): there is no surface {id}."))),
+        }
+    }
 }
 
 /// The error every drawing call gets before `gameInit` has run.
@@ -135,6 +187,8 @@ pub fn init(width: usize, height: usize, title: &str) -> Result<Screen, Signal> 
     Ok(Screen {
         surface: Surface::new(width as u32, height as u32, mrt_game::BLACK),
         title: title.to_string(),
+        sprites: Vec::new(),
+        target: 0,
         #[cfg(feature = "window")]
         window: None,
     })
@@ -148,7 +202,7 @@ pub fn init(width: usize, height: usize, title: &str) -> Result<Screen, Signal> 
 pub fn save(screen: &Option<Screen>, path: &str) -> Result<Value, Signal> {
     let screen = screen.as_ref().ok_or_else(|| no_screen("gameSave"))?;
     screen
-        .surface
+        .target()
         .save_png(path)
         .map_err(|e| value_error(format!("gameSave() could not write {path}: {e}")))?;
     Ok(Value::Null)
@@ -186,12 +240,12 @@ pub mod draw {
     use super::*;
 
     pub fn clear(s: &mut Option<Screen>, c: Color) -> Result<Value, Signal> {
-        screen(s, "gameClear")?.surface.clear(c);
+        screen(s, "gameClear")?.target_mut().clear(c);
         Ok(Value::Null)
     }
 
     pub fn pixel(s: &mut Option<Screen>, x: i32, y: i32, c: Color) -> Result<Value, Signal> {
-        screen(s, "gamePixel")?.surface.draw(x, y, c);
+        screen(s, "gamePixel")?.target_mut().draw(x, y, c);
         Ok(Value::Null)
     }
 
@@ -203,7 +257,7 @@ pub mod draw {
         h: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameRect")?.surface.fill_rect(x, y, w, h, c);
+        screen(s, "gameRect")?.target_mut().fill_rect(x, y, w, h, c);
         Ok(Value::Null)
     }
 
@@ -218,7 +272,7 @@ pub mod draw {
         c: Color,
     ) -> Result<Value, Signal> {
         screen(s, "gameRectOutline")?
-            .surface
+            .target_mut()
             .stroke_rect(x, y, w, h, t, c);
         Ok(Value::Null)
     }
@@ -231,7 +285,7 @@ pub mod draw {
         y1: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameLine")?.surface.line(x0, y0, x1, y1, c);
+        screen(s, "gameLine")?.target_mut().line(x0, y0, x1, y1, c);
         Ok(Value::Null)
     }
 
@@ -242,7 +296,9 @@ pub mod draw {
         r: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameCircle")?.surface.fill_circle(x, y, r, c);
+        screen(s, "gameCircle")?
+            .target_mut()
+            .fill_circle(x, y, r, c);
         Ok(Value::Null)
     }
 
@@ -254,7 +310,9 @@ pub mod draw {
         scale: i32,
         c: Color,
     ) -> Result<Value, Signal> {
-        screen(s, "gameText")?.surface.text(x, y, text, scale, c);
+        screen(s, "gameText")?
+            .target_mut()
+            .text(x, y, text, scale, c);
         Ok(Value::Null)
     }
 
@@ -266,7 +324,7 @@ pub mod draw {
         c: Color,
     ) -> Result<Value, Signal> {
         screen(s, "gameCircleOutline")?
-            .surface
+            .target_mut()
             .stroke_circle(x, y, r, c);
         Ok(Value::Null)
     }
@@ -611,6 +669,138 @@ mod tests {
     }
 
     #[test]
+    fn a_sprite_is_drawn_once_and_stamped_many_times() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(20, 10, "t");
+                   gameClear(gameColor(0, 0, 0));
+                   var red = gameColor(255, 0, 0);
+                   var dot = gameSurface(2, 2);
+                   gameTarget(dot);
+                   gameRect(0, 0, 2, 2, red);
+                   gameTarget(0);
+                   gameDraw(dot, 1, 1);
+                   gameDraw(dot, 10, 4);
+                   print(gameColorAt(1, 1) == red, gameColorAt(11, 5) == red);
+                   print(gameColorAt(5, 5) == red);"#
+            ),
+            "true true\nfalse"
+        );
+    }
+
+    #[test]
+    fn a_new_sprite_is_transparent_rather_than_black() {
+        // A sprite is a shape with nothing around it. One that began opaque
+        // would stamp a rectangle of background over whatever it landed on,
+        // and clearing it first is a step that is only ever forgotten once --
+        // but is always forgotten once.
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var blue = gameColor(0, 0, 255);
+                   gameClear(blue);
+                   var s = gameSurface(4, 4);
+                   gameTarget(s);
+                   gameRect(0, 0, 1, 1, gameColor(255, 0, 0));
+                   gameTarget(0);
+                   gameDraw(s, 2, 2);
+                   print(gameColorAt(3, 3) == blue);"#
+            ),
+            "true",
+            "the untouched part of the sprite let the background through"
+        );
+    }
+
+    #[test]
+    fn the_target_is_what_gets_drawn_measured_and_read() {
+        // Everything follows the target together, or a program that sets one
+        // would draw into a sprite while reading from the screen.
+        assert_eq!(
+            main_of(
+                r#"gameInit(40, 30, "t");
+                   var s = gameSurface(4, 6);
+                   print(gameWidth(), gameHeight(), gameTargetId());
+                   gameTarget(s);
+                   print(gameWidth(), gameHeight(), gameTargetId());
+                   var red = gameColor(255, 0, 0);
+                   gamePixel(0, 0, red);
+                   print(gameColorAt(0, 0) == red);
+                   gameTarget(0);
+                   print(gameColorAt(0, 0) == red, gameWidth());"#
+            ),
+            "40 30 0\n4 6 1\ntrue\nfalse 40"
+        );
+    }
+
+    #[test]
+    fn a_surface_cannot_be_drawn_onto_itself() {
+        // Not a pedantic check: the implementation lifts the source out of
+        // its slot to blit it, so drawing onto itself would blit from an
+        // empty one.
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var s = gameSurface(4, 4);
+                   gameTarget(s);
+                   gameDraw(s, 0, 0);"#
+            ),
+            "Runtime Error: gameDraw(): surface 1 cannot be drawn onto itself. [line 4]"
+        );
+    }
+
+    #[test]
+    fn a_freed_surface_is_told_apart_from_one_that_never_existed() {
+        // A freed id is a use-after-free in the program's own logic; calling
+        // it "no such surface" would send its author looking for a typo.
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var s = gameSurface(2, 2);
+                   gameSurfaceFree(s);
+                   gameDraw(s, 0, 0);"#
+            ),
+            "Runtime Error: gameDraw(): surface 1 was freed. [line 4]"
+        );
+        assert_eq!(
+            main_of(r#"gameInit(8, 8, "t"); gameDraw(7, 0, 0);"#),
+            "Runtime Error: gameDraw(): there is no surface 7. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gameInit(8, 8, "t"); gameDraw(0, 0, 0);"#),
+            "Runtime Error: gameDraw() needs a surface from gameSurface(); 0 is the screen. [line 1]"
+        );
+    }
+
+    #[test]
+    fn freeing_the_surface_being_drawn_into_is_refused() {
+        // Otherwise the next draw reaches for a slot that is now empty.
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var s = gameSurface(2, 2);
+                   gameTarget(s);
+                   gameSurfaceFree(s);"#
+            ),
+            "Runtime Error: gameSurfaceFree(): surface 1 is the current target; call gameTarget(0) first. [line 4]"
+        );
+    }
+
+    #[test]
+    fn ids_are_not_reused_after_a_free() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var a = gameSurface(2, 2);
+                   gameSurfaceFree(a);
+                   var b = gameSurface(2, 2);
+                   print(a, b);"#
+            ),
+            "1 2",
+            "a stale id never starts naming some later sprite"
+        );
+    }
+
+    #[test]
     fn the_loop_builtins_still_need_a_screen_first() {
         // Whichever way the crate was built, asking about a window before
         // there is anything to show reports the missing gameInit rather than
@@ -636,6 +826,85 @@ mod tests {
             "Runtime Error: gameWidth() needs a screen; call gameInit(width, height, title) first. [line 1]",
             "the previous program's screen did not leak into this one"
         );
+    }
+}
+
+/// Offscreen surfaces: the sprites a program draws once and stamps many times.
+pub mod sprites {
+    use super::*;
+
+    /// Make an offscreen surface and hand back its id.
+    ///
+    /// It starts **transparent**, not black. A sprite is a shape with nothing
+    /// around it; one that began opaque would stamp a rectangle of background
+    /// over whatever it landed on, and the author would have to know to clear
+    /// it to transparent first -- a step that is only ever forgotten once,
+    /// but is always forgotten once.
+    pub fn create(s: &mut Option<Screen>, width: usize, height: usize) -> Result<Value, Signal> {
+        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+            return Err(value_error(format!(
+                "gameSurface() needs a width and height from 1 to 16384, not {width}x{height}."
+            )));
+        }
+        let screen = screen(s, "gameSurface")?;
+        screen.sprites.push(Some(Surface::new(
+            width as u32,
+            height as u32,
+            mrt_game::TRANSPARENT,
+        )));
+        Ok(Value::Number(screen.sprites.len() as f64))
+    }
+
+    /// Point subsequent drawing at a surface. 0 is the screen.
+    pub fn target(s: &mut Option<Screen>, id: usize) -> Result<Value, Signal> {
+        let screen = screen(s, "gameTarget")?;
+        if id != 0 {
+            screen.sprite_index(id, "gameTarget")?;
+        }
+        screen.target = id;
+        Ok(Value::Null)
+    }
+
+    /// Which surface drawing is landing on.
+    pub fn current_target(s: &Option<Screen>) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameTargetId"))?;
+        Ok(Value::Number(screen.target as f64))
+    }
+
+    /// Stamp a sprite onto the current target, blending it.
+    pub fn draw(s: &mut Option<Screen>, id: usize, x: i32, y: i32) -> Result<Value, Signal> {
+        let screen = screen(s, "gameDraw")?;
+        let index = screen.sprite_index(id, "gameDraw")?;
+        if screen.target == id {
+            return Err(value_error(format!(
+                "gameDraw(): surface {id} cannot be drawn onto itself."
+            )));
+        }
+        // Lifted out and put back rather than cloned: the source and the
+        // target are two entries of one Vec, and this is the cheap way to
+        // convince the compiler they are different ones. The self-draw check
+        // above is what makes it sound -- taking the target would leave the
+        // slot empty underneath the blit.
+        let sprite = screen.sprites[index].take().expect("checked live");
+        screen.target_mut().blit(&sprite, x, y);
+        screen.sprites[index] = Some(sprite);
+        Ok(Value::Null)
+    }
+
+    /// Give a surface up.
+    ///
+    /// Its id is never reused, so a program still holding one is told the
+    /// surface was freed rather than quietly drawing whatever was made next.
+    pub fn free(s: &mut Option<Screen>, id: usize) -> Result<Value, Signal> {
+        let screen = screen(s, "gameSurfaceFree")?;
+        let index = screen.sprite_index(id, "gameSurfaceFree")?;
+        if screen.target == id {
+            return Err(value_error(format!(
+                "gameSurfaceFree(): surface {id} is the current target; call gameTarget(0) first."
+            )));
+        }
+        screen.sprites[index] = None;
+        Ok(Value::Null)
     }
 }
 

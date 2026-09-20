@@ -94,8 +94,10 @@ can add a glyph by drawing one.
 ## Roadmap
 
 Done: the surface, the drawing primitives, PNG output, the `game*` built-ins,
-a window, input, a frame loop, and text.
+a window, input, a frame loop, text and sprites.
 
-Next: sprites — `blit` exists here, but nothing in MRT can yet make an
-offscreen surface to blit *from*. Then collision, then the CLI that packages
-a game.
+Sprites too: `gameSurface` makes an offscreen surface, `gameTarget` points
+drawing at it, and `gameDraw` stamps it. Ids are plain numbers, so the
+language still learns no new type.
+
+Next: collision, then the CLI that packages a game.

@@ -1,0 +1,115 @@
+// Sprites: draw a thing once, stamp it many times.
+//
+// MRT-Game is an engine extension — only the Rust engines have these
+// builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// A sprite is an offscreen surface addressed by a number, and gameTarget
+// points drawing at it. The language learns no new type for this: an id is
+// an ordinary number, the same way a colour is.
+
+struct Star {
+    x;
+    y;
+    size;
+}
+
+// Build a sprite once, outside the loop. That is the whole point: the shape
+// is rasterised a single time, and stamping it afterwards is a copy.
+func makeShip(body, glass) {
+    var ship = gameSurface(16, 16);
+    gameTarget(ship);
+
+    // Inside gameTarget, everything addresses the sprite — including
+    // gameWidth() and gameHeight(), so this hull is centred on the sprite
+    // rather than on the screen.
+    var mid = gameWidth() / 2;
+    gameCircle(mid, 9, 6, body);
+    gameRect(mid - 1, 1, 2, 6, body);
+    gameCircle(mid, 8, 2, glass);
+
+    gameTarget(0);
+    return ship;
+}
+
+func makeStar(ink) {
+    var star = gameSurface(3, 3);
+    gameTarget(star);
+    gamePixel(1, 0, ink);
+    gamePixel(0, 1, ink);
+    gamePixel(1, 1, ink);
+    gamePixel(2, 1, ink);
+    gamePixel(1, 2, ink);
+    gameTarget(0);
+    return star;
+}
+
+// A deterministic sprinkle of stars. Seeded rather than random, so the
+// picture is the same every run and the example can be tested at all.
+//
+// The multiplier matters more than it looks. MRT numbers are 64-bit floats,
+// exact only up to 2^53, and the textbook constants (seed * 1103515245) push
+// the product past 2^61 -- so the arithmetic silently loses its low bits and
+// the "random" numbers come out in a short cycle. This is MINSTD, whose
+// product stays under 2^45 and so is computed exactly.
+//
+// The second trap is taking `seed % width`: the low bits of a linear
+// generator are the worst ones, and modulo reads exactly those. Scaling the
+// whole value uses the high bits instead.
+func starfield(count, width, height) {
+    var out = [];
+    var seed = 20240919;
+    var next = func() {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+    };
+    for (var i = 0; i < count; i = i + 1) {
+        var x = floor(next() * width);
+        var y = floor(next() * height);
+        push(out, Star(x, y, 1));
+    }
+    return out;
+}
+
+func main() {
+    var width = 320;
+    var height = 200;
+    gameInit(width, height, "MRT Sprites");
+
+    var night = gameColor(10, 12, 24);
+    var ink = gameColor(230, 234, 245);
+    var body = gameColor(90, 180, 235);
+    var glass = gameColor(250, 220, 120);
+
+    var ship = makeShip(body, glass);
+    var star = makeStar(ink);
+    print("ship id:", ship, "star id:", star);
+    print("drawing on the screen again:", gameTargetId() == 0);
+
+    gameClear(night);
+    for (s in starfield(60, width, height)) {
+        gameDraw(star, s.x, s.y);
+    }
+
+    // One sprite, twelve ships. Each stamp is a copy of pixels already
+    // rasterised, not twelve circles and twelve rectangles.
+    for (var i = 0; i < 12; i = i + 1) {
+        var x = 20 + (i % 6) * 48;
+        var y = 60 + floor(i / 6) * 60;
+        gameDraw(ship, x, y);
+    }
+
+    gameText(10, 10, "SPRITES", 2, ink);
+    gameText(10, height - 14, "one surface, stamped 12 times", 1, ink);
+
+    // A sprite that is finished with can be given up; its id is never reused,
+    // so a stale one reports the mistake rather than drawing the wrong thing.
+    gameSurfaceFree(star);
+    try {
+        gameDraw(star, 0, 0);
+    } catch (e) {
+        print("after free:", e.message);
+    }
+
+    gameSave("game_sprites.png");
+    print("wrote game_sprites.png");
+}
