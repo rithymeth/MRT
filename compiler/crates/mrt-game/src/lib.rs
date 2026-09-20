@@ -25,6 +25,7 @@
 //! walk out of shot -- so an off-screen rectangle is ordinary, not an error,
 //! and must no more panic than it should wrap around to the other side.
 
+pub mod collide;
 pub mod font;
 pub mod png;
 

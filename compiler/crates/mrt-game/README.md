@@ -94,10 +94,15 @@ can add a glyph by drawing one.
 ## Roadmap
 
 Done: the surface, the drawing primitives, PNG output, the `game*` built-ins,
-a window, input, a frame loop, text and sprites.
+a window, input, a frame loop, text, sprites and collision.
 
 Sprites too: `gameSurface` makes an offscreen surface, `gameTarget` points
 drawing at it, and `gameDraw` stamps it. Ids are plain numbers, so the
 language still learns no new type.
 
-Next: collision, then the CLI that packages a game.
+`collide.rs` holds the box maths: overlap, resolution, and a swept test.
+Only the last of those earns its place in an engine — overlap is four lines a
+program can write, but a fast mover crossing a thin wall between two frames
+overlaps it on no frame at all, and no better overlap test fixes that.
+
+Next: the CLI that packages a game.

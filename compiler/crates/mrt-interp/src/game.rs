@@ -801,6 +801,109 @@ mod tests {
     }
 
     #[test]
+    fn collision_needs_no_screen_at_all() {
+        // It is arithmetic on boxes. A program doing physics headlessly --
+        // a server, a test -- should not have to open a framebuffer first.
+        assert_eq!(
+            main_of(
+                r#"var a = {x: 0, y: 0, width: 10, height: 10};
+                   var b = {x: 5, y: 5, width: 10, height: 10};
+                   var c = {x: 50, y: 50, width: 10, height: 10};
+                   print(gameOverlap(a, b), gameOverlap(a, c));"#
+            ),
+            "true false"
+        );
+    }
+
+    #[test]
+    fn touching_boxes_do_not_count_as_overlapping() {
+        // Tiles laid edge to edge are the common case; the other answer
+        // reports a collision at every seam of a level.
+        assert_eq!(
+            main_of(
+                r#"var a = {x: 0, y: 0, width: 10, height: 10};
+                   print(gameOverlap(a, {x: 10, y: 0, width: 10, height: 10}));
+                   print(gameOverlap(a, {x: 9.99, y: 0, width: 10, height: 10}));"#
+            ),
+            "false\ntrue"
+        );
+    }
+
+    #[test]
+    fn resolving_gives_the_shortest_push_on_one_axis() {
+        assert_eq!(
+            main_of(
+                r#"var a = {x: 8, y: 5, width: 10, height: 10};
+                   var wall = {x: 16, y: 0, width: 20, height: 20};
+                   var push = gameResolve(a, wall);
+                   print(push.x, push.y);
+                   print(gameResolve(a, {x: 90, y: 90, width: 2, height: 2}));"#
+            ),
+            "-2 0\nnull"
+        );
+    }
+
+    #[test]
+    fn a_sweep_catches_the_wall_a_frame_check_would_miss() {
+        // The reason gameSweep exists. Clear of the wall before the step and
+        // clear of it after, so gameOverlap on either position sees nothing.
+        assert_eq!(
+            main_of(
+                r#"var mover = {x: 0, y: 0, width: 4, height: 4};
+                   var after = {x: 200, y: 0, width: 4, height: 4};
+                   var wall = {x: 100, y: 0, width: 2, height: 10};
+                   print(gameOverlap(mover, wall), gameOverlap(after, wall));
+                   var hit = gameSweep(mover, 200, 0, wall);
+                   print(hit.time, hit.normalX, hit.normalY, hit.x);"#
+            ),
+            "false false\n0.48 -1 0 96"
+        );
+    }
+
+    #[test]
+    fn a_sweep_that_hits_nothing_is_null() {
+        assert_eq!(
+            main_of(
+                r#"var mover = {x: 0, y: 0, width: 4, height: 4};
+                   var wall = {x: 100, y: 0, width: 2, height: 10};
+                   print(gameSweep(mover, 50, 0, wall));
+                   print(gameSweep(mover, -50, 0, wall));"#
+            ),
+            "null\nnull"
+        );
+    }
+
+    #[test]
+    fn a_box_that_is_not_one_says_which_field_is_missing() {
+        assert_eq!(
+            main_of(r#"gameOverlap({x: 0, y: 0, width: 1}, {x: 0, y: 0, width: 1, height: 1});"#),
+            "Runtime Error: gameOverlap(): the first box has no 'height'. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gameOverlap(5, {x: 0, y: 0, width: 1, height: 1});"#),
+            "Runtime Error: gameOverlap() needs the first box to be a box object with x, y, width and height, not number. [line 1]"
+        );
+        assert_eq!(
+            main_of(
+                r#"gameOverlap({x: 0, y: 0, width: "a", height: 1}, {x: 0, y: 0, width: 1, height: 1});"#
+            ),
+            "Runtime Error: gameOverlap(): the first box.width is string, not a number. [line 1]"
+        );
+    }
+
+    #[test]
+    fn a_backwards_box_is_refused_rather_than_answered() {
+        // Every test would answer something for a box whose right edge is
+        // left of its left one, and every answer would be wrong.
+        assert_eq!(
+            main_of(
+                r#"gameOverlap({x: 0, y: 0, width: -5, height: 1}, {x: 0, y: 0, width: 1, height: 1});"#
+            ),
+            "Runtime Error: gameOverlap(): the first box has a negative size, -5x1. [line 1]"
+        );
+    }
+
+    #[test]
     fn the_loop_builtins_still_need_a_screen_first() {
         // Whichever way the crate was built, asking about a window before
         // there is anything to show reports the missing gameInit rather than
@@ -826,6 +929,102 @@ mod tests {
             "Runtime Error: gameWidth() needs a screen; call gameInit(width, height, title) first. [line 1]",
             "the previous program's screen did not leak into this one"
         );
+    }
+}
+
+/// Collision: boxes, and what happens when they meet.
+///
+/// A box crosses as an ordinary MRT object, `{x, y, width, height}`. Eight
+/// loose numbers per call would read as noise at the call site and invite
+/// transposing two of them, which is a bug no error message can catch. An
+/// object is data the language already has, so this costs it no new type --
+/// the same rule the rest of the extension follows.
+pub mod collide {
+    use super::*;
+    use crate::value::{ObjKey, ObjMap};
+    use mrt_game::collide::Aabb;
+
+    /// An object key, spelled once.
+    fn key(name: &str) -> ObjKey {
+        ObjKey::Str(Rc::from(name))
+    }
+
+    /// Read `{x, y, width, height}` out of an MRT object.
+    fn box_of(value: &Value, who: &str, which: &str) -> Result<Aabb, Signal> {
+        let Value::Object(map) = value else {
+            return Err(type_error(format!(
+                "{who}() needs {which} to be a box object with x, y, width and height, not {}.",
+                crate::value::type_name(value)
+            )));
+        };
+        let map = map.borrow();
+        let field = |name: &str| -> Result<f64, Signal> {
+            match map.get(&key(name)) {
+                Some(Value::Number(n)) if n.is_finite() => Ok(*n),
+                Some(Value::Number(n)) => {
+                    Err(value_error(format!("{who}(): {which}.{name} is {n}.")))
+                }
+                Some(other) => Err(type_error(format!(
+                    "{who}(): {which}.{name} is {}, not a number.",
+                    crate::value::type_name(other)
+                ))),
+                None => Err(value_error(format!("{who}(): {which} has no '{name}'."))),
+            }
+        };
+        let width = field("width")?;
+        let height = field("height")?;
+        // A negative size describes a box whose right edge is left of its
+        // left one. Every test below would answer something for it, and all
+        // of the answers would be wrong.
+        if width < 0.0 || height < 0.0 {
+            return Err(value_error(format!(
+                "{who}(): {which} has a negative size, {width}x{height}."
+            )));
+        }
+        Ok(Aabb::new(field("x")?, field("y")?, width, height))
+    }
+
+    pub fn overlap(a: &Value, b: &Value) -> Result<Value, Signal> {
+        Ok(Value::Bool(mrt_game::collide::overlap(
+            &box_of(a, "gameOverlap", "the first box")?,
+            &box_of(b, "gameOverlap", "the second box")?,
+        )))
+    }
+
+    /// How far to move the first box to separate it, or `null` if apart.
+    pub fn resolve(a: &Value, b: &Value) -> Result<Value, Signal> {
+        let a = box_of(a, "gameResolve", "the first box")?;
+        let b = box_of(b, "gameResolve", "the second box")?;
+        Ok(match mrt_game::collide::resolve(&a, &b) {
+            Some((x, y)) => {
+                let mut map = ObjMap::new();
+                map.insert(key("x"), Value::Number(x));
+                map.insert(key("y"), Value::Number(y));
+                Value::object(map)
+            }
+            None => Value::Null,
+        })
+    }
+
+    /// Where a moving box first touches a stationary one, or `null`.
+    pub fn sweep(a: &Value, dx: f64, dy: f64, b: &Value) -> Result<Value, Signal> {
+        let a = box_of(a, "gameSweep", "the moving box")?;
+        let b = box_of(b, "gameSweep", "the box it might hit")?;
+        Ok(match mrt_game::collide::sweep(&a, dx, dy, &b) {
+            Some(hit) => {
+                let mut map = ObjMap::new();
+                map.insert(key("time"), Value::Number(hit.time));
+                map.insert(key("normalX"), Value::Number(hit.normal_x));
+                map.insert(key("normalY"), Value::Number(hit.normal_y));
+                // Where it ends up at the moment of contact: touching, not
+                // inside. Computed here because every caller wants it and
+                // getting it slightly wrong leaves things embedded in walls.
+                map.insert(key("x"), Value::Number(a.x + dx * hit.time));
+                map.insert(key("y"), Value::Number(a.y + dy * hit.time));
+                Value::object(map)
+            }
+            None => Value::Null,
+        })
     }
 }
 

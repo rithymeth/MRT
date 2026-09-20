@@ -1445,6 +1445,49 @@ place. `scale` is whole-number pixel doubling rather than interpolation — a
 bitmap font resampled to a fractional size turns to mush, so the honest
 options are the sizes it has.
 
+#### Collision, and the bug swept tests exist to prevent
+
+A box is an ordinary object, `{x, y, width, height}`, and none of these need a
+screen — collision is arithmetic, so a program doing physics headlessly never
+opens a framebuffer.
+
+| Call | Result |
+|------|--------|
+| `gameOverlap(a, b)` | Whether two boxes share any area. Touching edges do **not** count. |
+| `gameResolve(a, b)` | `{x, y}` — the shortest move that separates `a` from `b`, or `null` if apart. |
+| `gameSweep(a, dx, dy, b)` | Where `a` first touches `b` along that movement, or `null`. |
+
+Testing whether two rectangles overlap is four lines of MRT, and a program
+should just write it. What it cannot easily write is the **swept** case. Move
+something fast enough and it is on one side of a wall in one frame and the
+other side in the next, having overlapped the wall on no frame at all — so a
+per-frame check sees nothing and the thing sails through:
+
+```mrt
+var pellet = {x: 20, y: 60, width: 6, height: 6};
+var after  = {x: 280, y: 60, width: 6, height: 6};
+var wall   = {x: 170, y: 40, width: 6, height: 140};
+
+gameOverlap(pellet, wall);   // false
+gameOverlap(after, wall);    // false — and yet it crossed the wall
+
+var hit = gameSweep(pellet, 260, 0, wall);
+hit.time;                    // 0.55
+hit.x;                       // 164 — touching the wall, not inside it
+```
+
+A hit carries `time` (0 at the start of the movement, 1 at its end), `normalX`
+and `normalY` (which face was struck, pointing back at the mover), and `x` and
+`y` (where it ends up at the moment of contact — touching, not embedded).
+
+Boxes that already overlap give `null` from `gameSweep`: there is no moment
+along the movement when they *first* touch, because they already do. That is
+`gameResolve`'s question, and the two are deliberately separate.
+
+Touching edges not counting as an overlap matters more than it sounds: tiles
+laid edge to edge are the common case, and the other answer reports a
+collision at every seam of a level.
+
 #### Sprites are offscreen surfaces, addressed by number
 
 A sprite is drawn once and stamped many times. `gameSurface` makes one and

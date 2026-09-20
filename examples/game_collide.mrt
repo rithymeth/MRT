@@ -1,0 +1,130 @@
+// Collision: boxes, and the bug that swept tests exist to prevent.
+//
+// MRT-Game is an engine extension — only the Rust engines have these
+// builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// A box is an ordinary object, {x, y, width, height}. Nothing here needs a
+// screen: collision is arithmetic, and this program would run the same with
+// the drawing taken out.
+
+struct Body {
+    x;
+    y;
+    width;
+    height;
+    dx;
+    dy;
+}
+
+func boxOf(b) {
+    return {x: b.x, y: b.y, width: b.width, height: b.height};
+}
+
+// Move a body one step, stopping it at the first wall it would cross.
+//
+// The loop is what makes a corner work: stopping at one wall leaves movement
+// left over, and spending it without re-checking walks straight through the
+// next one. Three passes is enough for any corner and cannot spin forever.
+func step(body, walls) {
+    var remainingX = body.dx;
+    var remainingY = body.dy;
+
+    for (var pass = 0; pass < 3; pass = pass + 1) {
+        if (remainingX == 0 && remainingY == 0) { return; }
+
+        var soonest = null;
+        for (wall in walls) {
+            var hit = gameSweep(boxOf(body), remainingX, remainingY, wall);
+            if (hit != null) {
+                if (soonest == null || hit.time < soonest.time) {
+                    soonest = hit;
+                }
+            }
+        }
+
+        if (soonest == null) {
+            body.x = body.x + remainingX;
+            body.y = body.y + remainingY;
+            return;
+        }
+
+        // Land exactly on the contact, then cancel the blocked axis and keep
+        // whatever movement the other axis still had — which is what sliding
+        // along a wall is.
+        body.x = soonest.x;
+        body.y = soonest.y;
+        var left = 1 - soonest.time;
+        if (soonest.normalX != 0) {
+            remainingX = 0;
+            remainingY = remainingY * left;
+            body.dx = 0;
+        } else {
+            remainingY = 0;
+            remainingX = remainingX * left;
+            body.dy = 0;
+        }
+    }
+}
+
+func main() {
+    var width = 360;
+    var height = 200;
+    gameInit(width, height, "MRT Collide");
+
+    var walls = [
+        {x: 0, y: 180, width: 360, height: 20},
+        {x: 170, y: 40, width: 6, height: 140},
+        {x: 300, y: 120, width: 60, height: 20}
+    ];
+
+    // -- the bug swept tests prevent --------------------------------------
+    // A pellet crossing 260 pixels in one frame, against a 6-pixel wall. It
+    // is clear of the wall before the step and clear of it after, so a
+    // program testing each frame's position sees nothing at all.
+    var pellet = Body(20, 60, 6, 6, 260, 0);
+    var before = boxOf(pellet);
+    var after = {x: pellet.x + pellet.dx, y: pellet.y, width: 6, height: 6};
+
+    print("frame check before:", gameOverlap(before, walls[1]));
+    print("frame check after: ", gameOverlap(after, walls[1]));
+    var hit = gameSweep(before, pellet.dx, pellet.dy, walls[1]);
+    print("swept check found it:", hit != null, "at time", round(hit.time * 100) / 100);
+
+    step(pellet, walls);
+    print("pellet stopped at x:", pellet.x, "(wall starts at 170)");
+
+    // -- sliding, and a corner -------------------------------------------
+    // A falling box that also moves right: it should land on the floor and
+    // keep its sideways movement rather than stopping dead.
+    var faller = Body(40, 120, 16, 16, 90, 200);
+    step(faller, walls);
+    print("faller rests at y:", faller.y, "(floor at 180)");
+
+    // -- resolve, for something already inside ---------------------------
+    var stuck = {x: 168, y: 100, width: 10, height: 10};
+    var push = gameResolve(stuck, walls[1]);
+    print("push out by:", push.x, push.y);
+
+    // -- draw it -----------------------------------------------------------
+    var sky = gameColor(14, 18, 30);
+    var stone = gameColor(70, 82, 110);
+    var ink = gameColor(232, 236, 245);
+    var hot = gameColor(240, 110, 80);
+    var cool = gameColor(90, 190, 230);
+
+    gameClear(sky);
+    for (wall in walls) {
+        gameRect(wall.x, wall.y, wall.width, wall.height, stone);
+    }
+    // The path the pellet would have taken, and where it actually stopped.
+    gameLine(20, 63, 170, 63, gameColorAlpha(240, 110, 80, 90));
+    gameRect(pellet.x, pellet.y, pellet.width, pellet.height, hot);
+    gameRect(faller.x, faller.y, faller.width, faller.height, cool);
+
+    gameText(8, 8, "SWEPT COLLISION", 2, ink);
+    gameText(8, 26, "pellet crosses 260px, wall is 6px wide", 1, ink);
+    gameText(8, height - 12, "it stops; a per-frame check would not", 1, ink);
+
+    gameSave("game_collide.png");
+    print("wrote game_collide.png");
+}

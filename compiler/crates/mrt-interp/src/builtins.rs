@@ -91,6 +91,9 @@ const NAMES: &[&str] = &[
     "gameLine",
     "gameCircle",
     "gameCircleOutline",
+    "gameOverlap",
+    "gameResolve",
+    "gameSweep",
     "gameSurface",
     "gameTarget",
     "gameTargetId",
@@ -334,6 +337,27 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 coord(&args[1], "gameCircleOutline", "y")?,
                 coord(&args[2], "gameCircleOutline", "the radius")?,
                 color(&args[3], "gameCircleOutline")?,
+            )
+        }
+        "gameOverlap" => {
+            exactly(&args, 2, "gameOverlap() takes two boxes.")?;
+            crate::game::collide::overlap(&args[0], &args[1])
+        }
+        "gameResolve" => {
+            exactly(&args, 2, "gameResolve() takes two boxes.")?;
+            crate::game::collide::resolve(&args[0], &args[1])
+        }
+        "gameSweep" => {
+            exactly(
+                &args,
+                4,
+                "gameSweep() takes a moving box, dx, dy, and a box it might hit.",
+            )?;
+            crate::game::collide::sweep(
+                &args[0],
+                number(&args[1], "gameSweep")?,
+                number(&args[2], "gameSweep")?,
+                &args[3],
             )
         }
         "gameSurface" => {
