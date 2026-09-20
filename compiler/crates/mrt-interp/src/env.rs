@@ -41,25 +41,47 @@ impl Env {
         self.0.values.borrow_mut().insert(name.to_string(), value);
     }
 
+    /// Look a name up, innermost scope first.
+    ///
+    /// The walk borrows rather than cloning. An `Rc::clone` per level is a
+    /// refcount increment and a matching decrement for every scope between
+    /// the use and the binding -- paid on every read that is not a frame
+    /// slot, which measurement put at a quarter to a third of all variable
+    /// operations in recursive and string-heavy code. References cost
+    /// nothing and the lifetimes work out, because nothing here outlives the
+    /// borrow.
     pub fn get(&self, name: &str, line: Option<u32>) -> Result<Value, Signal> {
-        let mut scope = Some(self.clone());
-        while let Some(env) = scope {
-            if let Some(value) = env.0.values.borrow().get(name) {
+        let mut scope = &self.0;
+        loop {
+            if let Some(value) = scope.values.borrow().get(name) {
                 return Ok(value.clone());
             }
-            scope = env.0.enclosing.clone();
+            match &scope.enclosing {
+                Some(enclosing) => scope = &enclosing.0,
+                None => break,
+            }
         }
         Err(Signal::error(Kind::NameError, format!("Undefined variable '{name}'.")).at(line))
     }
 
+    /// Assign to an existing binding, innermost scope first.
+    ///
+    /// One hash lookup and no allocation. This used to ask `contains_key` and
+    /// then `insert(name.to_string(), ..)`, which hashed the name twice and
+    /// **allocated a fresh String for a key that was already in the map** --
+    /// on every assignment to anything not in a frame slot. `get_mut` does
+    /// the whole job.
     pub fn assign(&self, name: &str, value: Value, line: Option<u32>) -> Result<(), Signal> {
-        let mut scope = Some(self.clone());
-        while let Some(env) = scope {
-            if env.0.values.borrow().contains_key(name) {
-                env.0.values.borrow_mut().insert(name.to_string(), value);
+        let mut scope = &self.0;
+        loop {
+            if let Some(slot) = scope.values.borrow_mut().get_mut(name) {
+                *slot = value;
                 return Ok(());
             }
-            scope = env.0.enclosing.clone();
+            match &scope.enclosing {
+                Some(enclosing) => scope = &enclosing.0,
+                None => break,
+            }
         }
         Err(Signal::error(Kind::NameError, format!("Undefined variable '{name}'.")).at(line))
     }

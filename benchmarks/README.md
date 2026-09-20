@@ -235,3 +235,57 @@ more strongly than the timings do: in Rust the natural way to suspend
 execution *is* an explicit instruction pointer over a flat program. The
 feature that is hardest to port is the one that most wants the new
 architecture.
+
+## Where variable accesses actually go
+
+Before changing how names are looked up, it is worth knowing how often each
+path runs. Counting executed opcodes in the VM:
+
+| benchmark | environment | frame slots | env share |
+|---|---:|---:|---:|
+| loops | 0 | 720,002 | 0.0% |
+| scopes_deep | 0 | 1,200,002 | 0.0% |
+| scopes_shallow | 0 | 1,200,002 | 0.0% |
+| generators | 364 | 207,471 | 0.2% |
+| structs | 20,000 | 180,002 | 10.0% |
+| closures | 52,000 | 410,002 | 11.3% |
+| arrays | 90,002 | 630,014 | 12.5% |
+| strings | 100,003 | 300,006 | 25.0% |
+| fib | 67,645 | 169,137 | 28.6% |
+| matching | 144,002 | 354,002 | 28.9% |
+
+This **redirects the obvious optimisation**. The VM does not implement
+upvalues: a name any nested function mentions is not slotted, and is read
+through the environment instead. Adopting real upvalues is therefore the
+change that suggests itself — and the table says it would not buy much.
+
+Read what the environment traffic *is*, program by program. In `fib` the env
+reads are the recursive `fib` lookups, and `fib` is a top-level function: a
+**global**. In `strings` they are built-in calls; also globals. In `matching`
+they are match-pattern bindings, which the VM deliberately puts in the
+environment so that pattern binding means the same thing on both engines.
+Upvalues would not touch any of that.
+
+Only `closures` has the case upvalues exist for — a captured `n` read 50,000
+times — and that is 11% of its variable operations in the benchmark written
+specifically to stress closures. Everywhere else it is near zero.
+
+**Caching global and built-in lookups is worth more than upvalues**, is
+simpler, and is lower risk. That is not where anyone would have started.
+
+## A control that invalidated a measurement
+
+The environment walk was then made cheaper — one hash lookup instead of two
+per assignment, no `String` allocated for a key already present, and no
+reference-count traffic per scope level. All five affected benchmarks got
+1–3% faster, every one in the same direction.
+
+That looked like a result until `loops` was used as a control. It performs
+**zero** environment operations, so the change cannot reach it — and it moved
+3.0%, more than any benchmark that the change could actually affect.
+
+So the timings measure binary layout and machine drift, not the change. The
+within-run spread here is 12–24%, which is an order of magnitude larger than
+the effect being looked for; this machine cannot see it. The change stands on
+what is deterministic — an allocation and a hash that no longer happen — and
+no speedup is claimed for it.
