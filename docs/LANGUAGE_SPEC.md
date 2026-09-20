@@ -1437,6 +1437,28 @@ func main() {
 | `gameTextWidth(text, scale)` / `gameTextHeight(...)` | How big that text will be — needs no screen, so a layout can be computed before one exists. |
 | `gameColorAt(x, y)` | The colour at a point, or `null` off the screen. |
 | `gameSave(path)` | Writes the frame as a PNG. |
+| `gameCamera(x, y)` | Moves the camera to a position in world pixels. `{0, 0}` until called. |
+| `gameCameraPosition()` | Where the camera currently is: `{x, y}`. |
+
+Every position above is a **world** position, not a screen position, and the
+camera is the difference between the two: `gameCamera(x, y)` says which world
+pixel now sits in the screen's top-left corner, and every `x, y` passed to a
+drawing call or to `gameColorAt` is shifted by that same amount before it
+touches a pixel. A still camera (the default) makes world and screen the same
+place, which is why every example before this one could ignore the
+distinction entirely.
+
+```mrt
+gameCamera(player.x - gameWidth() / 2, player.y - gameHeight() / 2);
+gameRect(player.x, player.y, 16, 16, ink); // still just "draw the player here"
+```
+
+The camera only ever reaches the **screen**. Switching `gameTarget` to a
+sprite to pre-render it works in that sprite's own local space regardless of
+where the camera is pointed — scrolling the world and drawing the picture you
+are scrolling it *with* are different operations, and conflating them would
+mean a sprite's own art shifts depending on where the player happens to be
+standing when it gets drawn.
 
 The font is 5x7, covering printable ASCII, and a character it has no glyph for
 draws as `?` rather than as nothing: text that silently loses characters reads
