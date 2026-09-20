@@ -13,12 +13,14 @@ mrt-ai = { path = "../mrt-ai" }
 mrt-audio = { path = "../mrt-audio" }
 mrt-game = { path = "../mrt-game" }
 mrt-net = { path = "../mrt-net" }
-# Optional, and off by default. The window and the speaker are the only
-# things in this workspace with dependency trees, and mrt-interp's is the
-# test suite run most often -- so `cargo test -p mrt-interp` stays hermetic
-# and instant, and the binary that needs hardware turns the features on.
+# Optional, and off by default. The window, the speaker and the gamepad are
+# the only things in this workspace with dependency trees, and mrt-interp's
+# is the test suite run most often -- so `cargo test -p mrt-interp` stays
+# hermetic and instant, and the binary that needs hardware turns the
+# features on.
 mrt-window = { path = "../mrt-window", optional = true }
 mrt-speaker = { path = "../mrt-speaker", optional = true }
+mrt-gamepad = { path = "../mrt-gamepad", optional = true }
 
 [dev-dependencies]
 # The audit test alone. The compiler never consults the resolver at run
@@ -28,6 +30,7 @@ mrt-resolver = { path = "../mrt-resolver" }
 [features]
 window = ["dep:mrt-window"]
 audio = ["dep:mrt-speaker"]
+gamepad = ["dep:mrt-gamepad"]
 
 [lints]
 workspace = true

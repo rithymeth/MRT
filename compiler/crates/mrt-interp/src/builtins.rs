@@ -134,6 +134,10 @@ const NAMES: &[&str] = &[
     "gameKeyPressed",
     "gamePointer",
     "gameClose",
+    "gameGamepadCount",
+    "gameGamepadButtonDown",
+    "gameGamepadButtonPressed",
+    "gameGamepadAxis",
 ];
 
 pub fn install(globals: &Env) {
@@ -732,6 +736,44 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
         "gameClose" => {
             exactly(&args, 0, "gameClose() takes no arguments.")?;
             crate::game::live::close(&mut interp.screen)
+        }
+        "gameGamepadCount" => {
+            exactly(&args, 0, "gameGamepadCount() takes no arguments.")?;
+            crate::game::live::gamepad_count(&mut interp.screen)
+        }
+        "gameGamepadButtonDown" | "gameGamepadButtonPressed" => {
+            exactly(
+                &args,
+                2,
+                format!("{name}() takes a pad index and a button name."),
+            )?;
+            let index = whole(&args[0], name, "the pad index")?;
+            let Value::Str(button) = &args[1] else {
+                return Err(type_error(format!(
+                    "{name}() needs a button name, not {}.",
+                    type_name(&args[1])
+                )));
+            };
+            if name == "gameGamepadButtonDown" {
+                crate::game::live::gamepad_button_down(&mut interp.screen, index, button)
+            } else {
+                crate::game::live::gamepad_button_pressed(&mut interp.screen, index, button)
+            }
+        }
+        "gameGamepadAxis" => {
+            exactly(
+                &args,
+                2,
+                "gameGamepadAxis() takes a pad index and an axis name.",
+            )?;
+            let index = whole(&args[0], "gameGamepadAxis", "the pad index")?;
+            let Value::Str(axis) = &args[1] else {
+                return Err(type_error(format!(
+                    "gameGamepadAxis() needs an axis name, not {}.",
+                    type_name(&args[1])
+                )));
+            };
+            crate::game::live::gamepad_axis(&mut interp.screen, index, axis)
         }
 
         "aiTrainLinear" => {

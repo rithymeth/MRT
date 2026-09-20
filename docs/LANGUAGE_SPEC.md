@@ -1773,6 +1773,47 @@ reproduced on purpose.
 fast and slow machines. A simulation that has to be **reproducible** should
 use a fixed step and ignore it: real elapsed time is never the same twice.
 
+#### Gamepads
+
+| Call | Result |
+|------|--------|
+| `gameGamepadCount()` | How many controllers are connected right now. |
+| `gameGamepadButtonDown(index, name)` | Whether a button is held now — `"A"`, `"LeftBumper"`, `"DPadUp"`. |
+| `gameGamepadButtonPressed(index, name)` | Whether it went down since the last frame, held or not. |
+| `gameGamepadAxis(index, name)` | A stick's position, -1 to 1 — `"LeftX"`, `"LeftY"`, `"RightX"`, `"RightY"`. |
+
+Button and axis names are Xbox-style, because that is what most controllers
+and most players already think in, regardless of which pad is actually
+plugged in. The buttons: `"A"`, `"B"`, `"X"`, `"Y"`, `"LeftBumper"`,
+`"RightBumper"`, `"LeftTrigger"`, `"RightTrigger"`, `"LeftStick"`,
+`"RightStick"` (clicking the stick in, not tilting it), `"Back"`, `"Start"`,
+`"Guide"`, and the four `"DPadUp"`/`"DPadDown"`/`"DPadLeft"`/`"DPadRight"`.
+
+`index` counts from 0 in the order each pad first connected, and keeps
+naming the same physical pad for as long as it stays connected — unplugging
+one does not shift the rest down and hand its number to whichever pad was
+next. A `gameGamepadButtonPressed` reaching a pad that has since
+disconnected, an index nothing has ever connected on, or a button or axis
+name it does not recognise, all just answer "not held" / "at rest" rather
+than raising, the same rule `gameKeyDown` follows for a key name it does not
+recognise: a typo is a bug to notice by the game never responding, not a
+crash to notice by a stack trace.
+
+```mrt
+player.x = player.x + gameGamepadAxis(0, "LeftX") * speed * gameDelta();
+if (gameGamepadButtonPressed(0, "A")) { jump(); }
+```
+
+The gamepad subsystem opens on the first gamepad call rather than at
+`gameInit`, the same reasoning as the window and the speaker: a program that
+never asks about a controller should run the same on a machine with none.
+Unlike the window, it needs no display at all — `gameGamepadCount()` answers
+`0` on a build server precisely because opening it with zero pads connected
+is success, not the fallback case a `try` is written to catch. Reading it
+does not require a window to be open either, though `gameGamepadButtonPressed`
+only means "since the last frame" once something is actually calling
+`gamePresent()` to mark where one frame ends and the next begins.
+
 Conventions, fixed once: Y points **down** from a top-left origin; a colour
 channel outside 0–255 is an error rather than a clamp; coordinates may be
 fractional and are floored, since a moving thing is rarely on a whole pixel;

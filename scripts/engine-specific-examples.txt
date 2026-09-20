@@ -17,6 +17,7 @@ game_images.mrt
 game_transform.mrt
 game_raycast.mrt
 game_camera.mrt
+game_gamepad.mrt
 net_fetch.mrt
 sound_effects.mrt
 sound_fades.mrt

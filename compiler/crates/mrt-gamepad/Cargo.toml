@@ -1,0 +1,16 @@
+[package]
+name = "mrt-gamepad"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The third crate here with dependencies, and the third for the same reason
+# as the window and the speaker: a controller needs platform FFI and there is
+# no zero-dependency path to it. Confining that to a leaf keeps the crates
+# that hold actual game logic hermetic and instant to test.
+[dependencies]
+gilrs = "0.11"
+
+[lints]
+workspace = true

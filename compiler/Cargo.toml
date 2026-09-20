@@ -17,6 +17,7 @@ members = [
     "crates/mrt-game",
     "crates/mrt-speaker",
     "crates/mrt-window",
+    "crates/mrt-gamepad",
     "cli",
 ]
 

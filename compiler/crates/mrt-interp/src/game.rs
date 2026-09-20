@@ -72,6 +72,17 @@ pub struct Screen {
     /// asks for a window by asking whether one is open.
     #[cfg(feature = "window")]
     pub window: Option<mrt_window::Window>,
+    /// Every connected gamepad, once a query has opened the subsystem.
+    ///
+    /// Opened lazily on the first gamepad call, the same reasoning as the
+    /// window and the speaker: a program that never asks about a controller
+    /// should run the same on a machine with none.
+    #[cfg(feature = "gamepad")]
+    pub gamepads: Option<mrt_gamepad::Gamepads>,
+    /// Why opening the gamepad subsystem failed, if it did. Remembered so
+    /// it is tried once, the same reason `Bank` remembers `speaker_failed`.
+    #[cfg(feature = "gamepad")]
+    pub gamepads_failed: Option<String>,
 }
 
 impl Screen {
@@ -217,6 +228,10 @@ pub fn init(width: usize, height: usize, title: &str) -> Result<Screen, Signal> 
         camera_y: 0,
         #[cfg(feature = "window")]
         window: None,
+        #[cfg(feature = "gamepad")]
+        gamepads: None,
+        #[cfg(feature = "gamepad")]
+        gamepads_failed: None,
     })
 }
 
@@ -672,6 +687,65 @@ mod tests {
         assert_eq!(
             main_of(r#"gameInit(4, 4, "t"); gamePresent();"#),
             "Runtime Error: gamePresent() needs a window; call gameOpen() first. [line 1]"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "gamepad"))]
+    fn a_build_without_gamepad_support_says_which_it_is() {
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameGamepadCount();"#),
+            "Runtime Error: gameGamepadCount() needs a build with gamepad support; this one was built without it. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameGamepadButtonDown(0, "A");"#),
+            "Runtime Error: gameGamepadButtonDown() needs a build with gamepad support; this one was built without it. [line 1]"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "gamepad")]
+    fn with_no_controllers_connected_every_query_answers_rather_than_erroring() {
+        // gilrs opens fine with zero gamepads plugged in -- the same promise
+        // opening the speaker or the window makes about a machine with none
+        // of those either -- so this is the ordinary case, not a fallback
+        // path only a build server takes.
+        assert_eq!(
+            main_of(
+                r#"gameInit(4, 4, "t");
+                   print(gameGamepadCount());
+                   print(gameGamepadButtonDown(0, "A"));
+                   print(gameGamepadButtonPressed(0, "A"));
+                   print(gameGamepadAxis(0, "LeftX"));"#
+            ),
+            "0\nfalse\nfalse\n0"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "gamepad")]
+    fn an_unrecognised_button_or_axis_name_is_never_down_rather_than_an_error() {
+        // The same rule gameKeyDown follows for a key name it does not
+        // recognise: a typo reads as "not held", not a crash.
+        assert_eq!(
+            main_of(
+                r#"gameInit(4, 4, "t");
+                   print(gameGamepadButtonDown(0, "Nonsense"));
+                   print(gameGamepadAxis(0, "Nonsense"));"#
+            ),
+            "false\n0"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "gamepad")]
+    fn gamepad_queries_need_no_window_at_all() {
+        // Polled from the interpreter's screen, not from mrt-window: a
+        // program checking for a controller headlessly -- a server, a test
+        // -- should not have to open a display first.
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); print(gameGamepadCount());"#),
+            "0"
         );
     }
 
@@ -1550,6 +1624,14 @@ pub mod live {
         window
             .present(&screen.surface)
             .map_err(|e| value_error(format!("gamePresent(): {e}")))?;
+        // Ends a frame for the gamepad's "pressed since" the same moment it
+        // ends one for the keyboard's -- only if a query has actually opened
+        // the subsystem; a game that never asks about a controller should
+        // not pay to keep one polled.
+        #[cfg(feature = "gamepad")]
+        if let Some(gamepads) = screen.gamepads.as_mut() {
+            gamepads.end_frame();
+        }
         Ok(Value::Null)
     }
 
@@ -1652,5 +1734,121 @@ pub mod live {
     pub fn close(s: &mut Option<Screen>) -> Result<Value, Signal> {
         screen(s, "gameClose")?;
         Err(unsupported("gameClose"))
+    }
+
+    /// The message a build without gamepad support gives.
+    #[cfg(not(feature = "gamepad"))]
+    fn gamepad_unsupported(who: &str) -> Signal {
+        value_error(format!(
+            "{who}() needs a build with gamepad support; this one was built without it."
+        ))
+    }
+
+    /// Open the gamepad subsystem if it has not been already, remembering
+    /// failure so it is tried once -- the same reasoning `Bank` remembers
+    /// `speaker_failed` -- and bring it up to date with whatever has
+    /// happened since the last query.
+    #[cfg(feature = "gamepad")]
+    fn ready_gamepads<'a>(
+        screen: &'a mut Screen,
+        who: &str,
+    ) -> Result<&'a mut mrt_gamepad::Gamepads, Signal> {
+        if screen.gamepads.is_none() {
+            if let Some(why) = &screen.gamepads_failed {
+                return Err(value_error(format!("{who}(): {why}")));
+            }
+            match mrt_gamepad::Gamepads::new() {
+                Ok(gamepads) => screen.gamepads = Some(gamepads),
+                Err(why) => {
+                    screen.gamepads_failed = Some(why.clone());
+                    return Err(value_error(format!("{who}(): {why}")));
+                }
+            }
+        }
+        let gamepads = screen.gamepads.as_mut().expect("just opened");
+        gamepads.poll();
+        Ok(gamepads)
+    }
+
+    /// How many gamepads are connected right now.
+    #[cfg(feature = "gamepad")]
+    pub fn gamepad_count(s: &mut Option<Screen>) -> Result<Value, Signal> {
+        let screen = screen(s, "gameGamepadCount")?;
+        let gamepads = ready_gamepads(screen, "gameGamepadCount")?;
+        Ok(Value::Number(gamepads.count() as f64))
+    }
+
+    #[cfg(not(feature = "gamepad"))]
+    pub fn gamepad_count(s: &mut Option<Screen>) -> Result<Value, Signal> {
+        screen(s, "gameGamepadCount")?;
+        Err(gamepad_unsupported("gameGamepadCount"))
+    }
+
+    /// Whether `name` is held on pad `index` right now. An unknown button
+    /// name or a disconnected or never-connected pad both just read as not
+    /// held, the same as `gameKeyDown` on a key name it does not recognise
+    /// -- a typo is a bug to notice by the game never responding, not a
+    /// crash to notice by a stack trace.
+    #[cfg(feature = "gamepad")]
+    pub fn gamepad_button_down(
+        s: &mut Option<Screen>,
+        index: usize,
+        name: &str,
+    ) -> Result<Value, Signal> {
+        let screen = screen(s, "gameGamepadButtonDown")?;
+        let gamepads = ready_gamepads(screen, "gameGamepadButtonDown")?;
+        Ok(Value::Bool(gamepads.button_down(index, name)))
+    }
+
+    #[cfg(not(feature = "gamepad"))]
+    pub fn gamepad_button_down(
+        s: &mut Option<Screen>,
+        _index: usize,
+        _name: &str,
+    ) -> Result<Value, Signal> {
+        screen(s, "gameGamepadButtonDown")?;
+        Err(gamepad_unsupported("gameGamepadButtonDown"))
+    }
+
+    /// Whether `name` went down on pad `index` since the last frame, held or
+    /// not -- the gamepad's `gameKeyPressed`, for the same reason: a button
+    /// tapped and released inside one frame would otherwise vanish.
+    #[cfg(feature = "gamepad")]
+    pub fn gamepad_button_pressed(
+        s: &mut Option<Screen>,
+        index: usize,
+        name: &str,
+    ) -> Result<Value, Signal> {
+        let screen = screen(s, "gameGamepadButtonPressed")?;
+        let gamepads = ready_gamepads(screen, "gameGamepadButtonPressed")?;
+        Ok(Value::Bool(gamepads.button_pressed(index, name)))
+    }
+
+    #[cfg(not(feature = "gamepad"))]
+    pub fn gamepad_button_pressed(
+        s: &mut Option<Screen>,
+        _index: usize,
+        _name: &str,
+    ) -> Result<Value, Signal> {
+        screen(s, "gameGamepadButtonPressed")?;
+        Err(gamepad_unsupported("gameGamepadButtonPressed"))
+    }
+
+    /// `name`'s current value on pad `index`, from -1 to 1.
+    #[cfg(feature = "gamepad")]
+    pub fn gamepad_axis(s: &mut Option<Screen>, index: usize, name: &str) -> Result<Value, Signal> {
+        let screen = screen(s, "gameGamepadAxis")?;
+        let gamepads = ready_gamepads(screen, "gameGamepadAxis")?;
+        Ok(Value::Number(gamepads.axis(index, name)))
+    }
+
+    #[cfg(not(feature = "gamepad"))]
+    pub fn gamepad_axis(
+        s: &mut Option<Screen>,
+        _index: usize,
+        _name: &str,
+    ) -> Result<Value, Signal> {
+        screen(s, "gameGamepadAxis")?;
+        Err(gamepad_unsupported("gameGamepadAxis"))
     }
 }

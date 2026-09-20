@@ -1,0 +1,36 @@
+// Reading a controller, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// A machine with no controller plugged in -- a build server, this example
+// run in CI -- is the ordinary case, not a failure: opening the gamepad
+// subsystem succeeds with zero pads connected, the same promise gameOpen
+// and soundPlay already make about a machine with no display or no sound
+// card.
+
+func main() {
+    gameInit(20, 20, "MRT Gamepad");
+
+    print("connected:", gameGamepadCount());
+
+    // Pad 0 has never connected on a machine with no controller, so every
+    // query about it answers rather than raising -- the same rule
+    // gameKeyDown follows for a key name it does not recognise.
+    print("A held:", gameGamepadButtonDown(0, "A"));
+    print("A pressed this frame:", gameGamepadButtonPressed(0, "A"));
+    print("left stick x:", gameGamepadAxis(0, "LeftX"));
+
+    // A typo in a button or axis name is a mistake to notice by the game
+    // never responding to it, not a crash -- the same answer an unknown
+    // key name gives.
+    print("unknown button:", gameGamepadButtonDown(0, "Nonsense"));
+    print("unknown axis:", gameGamepadAxis(0, "Nonsense"));
+
+    // The shape a real game loop takes: move something by however far the
+    // stick is pushed, scaled by how long the frame took.
+    var x = 10.0;
+    var dt = 0.016;
+    x = x + gameGamepadAxis(0, "LeftX") * 100 * dt;
+    print("x after one frame with the stick centred:", x);
+}
