@@ -116,9 +116,14 @@ input, swept collision and text — rather than a stub that prints "hello". The
 first edit anyone makes is then to a program that already works.
 
 There is no `build`: MRT is interpreted, so it would be a lie or a synonym for
-`check`. There is no `package` either, and that absence is deliberate rather
-than pending — packaging means flattening a game's imports into one file that
-runs anywhere MRT does, and a `package` that only zipped a directory would
-look like it had solved that.
+`check`.
 
-Next: `package`, done properly.
+`mrt-game package` flattens a game and its imports into one file. Each module
+becomes a function returning its exports, so two modules may both define
+`helper` and nothing needs renaming. The delicate part is hoisting — MRT
+hoists declarations at the top level and nowhere else, so a module moved into
+a function body would lose every forward reference in it, and the packager
+emits declarations first to reproduce that by construction.
+
+Next: audio, and loading art from image files — right now every sprite has to
+be drawn in code.

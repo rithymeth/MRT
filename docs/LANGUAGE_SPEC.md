@@ -1457,9 +1457,15 @@ command that exists but fails at the thing it is named for is worse than one
 that is not there.
 
 `new` scaffolds a complete, playable game rather than a stub. There is no
-`build` (MRT is interpreted, so it would be a synonym for `check`) and no
-`package` yet: packaging means flattening a game's imports into one file, and
-a command that only zipped a directory would look like it had done that.
+`build`: MRT is interpreted, so it would be a synonym for `check`.
+
+`mrt-game package` flattens a game and everything it imports into one `.mrt`
+file that runs anywhere MRT does. Each module becomes a function returning its
+exports, so two modules may both define `helper` without colliding and nothing
+is renamed. One thing is not preserved: **line numbers**. A module's line 3
+becomes some other line of the flattened file, so an error raised inside a
+module reports its new position — the packaged file is for shipping, the
+original tree for debugging.
 
 #### Collision, and the bug swept tests exist to prevent
 

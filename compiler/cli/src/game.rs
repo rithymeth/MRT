@@ -16,11 +16,15 @@
 //! called `check`, which is what it does: parse and resolve the whole program
 //! and report what is wrong, without running it.
 //!
-//! `package` is not here either, and that absence is deliberate rather than
-//! pending. Packaging a game means flattening its imports into one file that
-//! runs anywhere MRT does, which is a real piece of work -- module resolution,
-//! name collisions, cycles -- and shipping a `package` that only zipped a
-//! directory would be a command that looks like it solved that.
+//! `package` is real rather than a zip: it flattens a game's imports into one
+//! file that runs anywhere MRT does. See `game/package.rs` for how, and for
+//! the hoisting rule that makes it delicate.
+
+// `game.rs` is a binary root, so a plain `mod package;` would look in src/.
+// The path keeps this binary's two extra files -- the packager and the
+// starter game -- together in one directory.
+#[path = "game/package.rs"]
+mod package;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -33,6 +37,7 @@ usage: mrt-game <command> [path]
   new <name>     start a game in a new directory of that name
   run [dir]      run the game in dir (default: the current directory)
   check [dir]    parse and resolve it without running it
+  package [dir]  flatten it and its imports into one file
 
 A game is a directory with a main.mrt in it.";
 
@@ -73,6 +78,7 @@ fn main() -> ExitCode {
         },
         Some("run") => run(rest.next().unwrap_or(".")),
         Some("check") => check(rest.next().unwrap_or(".")),
+        Some("package") => pack(rest.next().unwrap_or(".")),
         Some("-h") | Some("--help") => {
             println!("{USAGE}");
             ExitCode::SUCCESS
@@ -223,5 +229,36 @@ fn check(path: &str) -> ExitCode {
     }
 
     println!("{}: no problems found.", file.display());
+    ExitCode::SUCCESS
+}
+
+/// Flatten a game and its imports into one file.
+fn pack(path: &str) -> ExitCode {
+    let file = match entry_file(path) {
+        Ok(file) => file,
+        Err(why) => {
+            eprintln!("mrt-game: {why}");
+            return ExitCode::from(1);
+        }
+    };
+    let flattened = match package::package(&file) {
+        Ok(text) => text,
+        Err(why) => {
+            eprintln!("mrt-game: {why}");
+            return ExitCode::from(65);
+        }
+    };
+    // Beside the entry rather than over it: packaging something onto the file
+    // it was made from is a mistake nobody recovers from.
+    let out = file.with_file_name("game.packaged.mrt");
+    if let Err(e) = std::fs::write(&out, &flattened) {
+        eprintln!("mrt-game: could not write '{}': {e}", out.display());
+        return ExitCode::from(1);
+    }
+    println!(
+        "Wrote {} ({} lines).",
+        out.display(),
+        flattened.lines().count()
+    );
     ExitCode::SUCCESS
 }
