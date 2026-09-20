@@ -1677,9 +1677,10 @@ A new surface is transparent rather than black, because a sprite is a shape
 with nothing around it: one that began opaque would stamp a rectangle of
 background over whatever it landed on.
 
-`gameDraw`'s fourth argument is `{angle, scaleX, scaleY, anchorX, anchorY}`,
-or `null`, and any field left out keeps its default — `angle: 0, scaleX: 1,
-scaleY: 1, anchorX: 0, anchorY: 0`, exactly what the three-argument call has
+`gameDraw`'s fourth argument is `{angle, scaleX, scaleY, anchorX, anchorY,
+srcX, srcY, srcWidth, srcHeight}`, or `null`, and any field left out keeps
+its default — `angle: 0, scaleX: 1, scaleY: 1, anchorX: 0, anchorY: 0`, no
+source rectangle (the whole sprite), exactly what the three-argument call has
 always meant, so no existing program's drawing changes:
 
 ```mrt
@@ -1706,6 +1707,28 @@ one rather than blended into existence. A `scaleX` or `scaleY` of zero or
 less draws nothing, the same answer a negative width gives `gameRect` — a
 size that came out backwards is a bug in the caller's arithmetic, not a
 request to flip the sprite.
+
+`srcX`, `srcY`, `srcWidth` and `srcHeight` crop the sprite to one rectangle
+of it before anything else in the transform applies — one frame of a sprite
+sheet, addressed the same way every other rectangle in this engine is. They
+come as a set: naming one without the other three is rejected rather than
+treating the rest as "the whole sprite", since a caller who names one
+almost certainly meant all four and mistyped one. The cropped rectangle
+must fit inside the sprite being drawn, or `gameDraw` raises rather than
+reading past its edge or into whatever frame happens to sit next to it on
+the sheet.
+
+```mrt
+// A walk cycle laid out left to right in one sheet, four frames of 16x16
+// each. Advancing `frame` each tick swaps which one shows, with no need to
+// cut the sheet into separate sprites first.
+gameDraw(walkSheet, x, y, {srcX: frame * 16, srcY: 0, srcWidth: 16, srcHeight: 16});
+```
+
+`anchorX`/`anchorY` are in the *cropped frame's own* local space either way,
+so a sheet of same-sized frames does not need a different anchor for each
+one — rotating or scaling a cropped frame works exactly like rotating or
+scaling a sprite that only ever held that one frame.
 
 `gameLoad` reads an ordinary PNG — any colour type at 8 bits a channel,
 palettes down to 1 bit, 16-bit channels reduced to 8 — and what it returns is

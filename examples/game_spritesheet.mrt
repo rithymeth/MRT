@@ -1,0 +1,56 @@
+// Drawing one frame of a sprite sheet, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// gameDraw's options object can crop the sprite to one rectangle of it
+// first -- srcX, srcY, srcWidth, srcHeight, addressed the same way every
+// other rectangle in this engine is. A sheet of same-sized animation
+// frames sits in one surface, and picking the frame to show each tick is
+// just choosing a different srcX.
+
+var FRAME_WIDTH = 8;
+var FRAME_HEIGHT = 8;
+
+// Drawing frame `frame` alone must show only its own colour -- none of its
+// neighbours on the sheet -- even though they all live in one surface.
+func drawFrame(sheet, frame, x, y) {
+    gameDraw(sheet, x, y, {srcX: frame * FRAME_WIDTH, srcY: 0, srcWidth: FRAME_WIDTH, srcHeight: FRAME_HEIGHT});
+}
+
+func main() {
+    gameInit(120, 40, "MRT Sprite Sheet");
+    gameClear(gameColor(18, 22, 38));
+
+    // A 4-frame walk cycle, laid out left to right in one 32x8 sheet: frame
+    // n is a solid colour so this example can tell them apart without an
+    // image file. A real sheet would be loaded with gameLoad instead.
+    var colors = [
+        gameColor(220, 70, 70),
+        gameColor(70, 220, 70),
+        gameColor(70, 70, 220),
+        gameColor(220, 220, 70)
+    ];
+    var sheet = gameSurface(FRAME_WIDTH * 4, FRAME_HEIGHT);
+    gameTarget(sheet);
+    var i = 0;
+    while (i < 4) {
+        gameRect(i * FRAME_WIDTH, 0, FRAME_WIDTH, FRAME_HEIGHT, colors[i]);
+        i = i + 1;
+    }
+    gameTarget(0);
+
+    drawFrame(sheet, 2, 10, 10);
+    print("frame 2 is blue:", gameColorAt(10, 10) == colors[2]);
+    print("not frame 0's red:", gameColorAt(10, 10) == colors[0]);
+
+    // The same crop composes with rotation and scale: frame 3, rotated a
+    // quarter turn about its own top-left corner and scaled up 2x.
+    gameDraw(sheet, 60, 10, {
+        srcX: 3 * FRAME_WIDTH, srcY: 0, srcWidth: FRAME_WIDTH, srcHeight: FRAME_HEIGHT,
+        angle: 1.5707963267948966, scaleX: 2, scaleY: 2});
+    print("rotated, scaled frame 3 still yellow:", gameColorAt(60, 10) == colors[3]);
+
+    gameSave("game_spritesheet.png");
+    print("wrote game_spritesheet.png");
+}
