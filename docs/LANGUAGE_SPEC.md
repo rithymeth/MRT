@@ -1511,10 +1511,12 @@ distortion the caller never asked for. `soundInfo(id).peak` reports it and
 |------|--------|
 | `soundPlay(id, options)` | Starts a sound; returns the voice it plays on. |
 | `soundStop(voice)` / `soundStopAll()` | Stops one voice, or everything. |
+| `soundFade(voice, volume, seconds)` | Ramps a playing voice's volume to `volume` over that many seconds. |
+| `soundFadeOut(voice, seconds)` | Fades to silence over that many seconds, then stops it. |
 | `soundPlaying()` | How many voices are sounding. |
 
-`options` is `{volume, pan, speed, loop}`, or `null`, and anything left out
-keeps its default:
+`options` is `{volume, pan, speed, loop, fadeIn}`, or `null`, and anything
+left out keeps its default:
 
 ```mrt
 soundPlay(brick, {volume: 0.5, pan: (x / WIDTH) * 2 - 1, speed: 1.2});
@@ -1538,6 +1540,29 @@ turning something down *without* also dulling it just makes a small bright
 noise rather than a distant one. `soundLowPass` does the same thing once and
 for all, for a sound whose distance never changes; the option does it live,
 because the same footstep is near in one moment and far in the next.
+
+`fadeIn` starts a voice silent and ramps it up to `volume` over that many
+seconds, in real time — a voice playing at double `speed` still takes the
+same wall-clock time to reach full volume, because a fade is a fact about
+how long a player waits, not about how much of the recording goes by
+underneath it. `soundFade` and `soundFadeOut` do the same ramp live, to or
+from any point in a track already playing:
+
+```mrt
+var music = soundPlay(theme, {loop: true, fadeIn: 2});
+// ...later, moving to a new level:
+soundFadeOut(music, 1.5);
+```
+
+A fade already in progress on a voice is replaced, not queued behind — what
+a program asks for most recently is what it wants, the same rule a live
+volume knob follows. `soundFadeOut` stops the voice once it reaches silence,
+so a looping track does not spend the rest of the program looping at a
+volume nobody can hear; `soundFade` never stops a voice on its own, since a
+fade to a nonzero volume — ducking music under dialogue, then bringing it
+back up — is not "finished" in the way a fade to silence is. Fading a voice
+that already stopped, or one that never existed, is not an error, the same
+as `soundStop`.
 
 The speaker opens on the first `soundPlay` rather than at startup, the way the
 window opens on the first `gameOpen` — so a program that only makes sounds and

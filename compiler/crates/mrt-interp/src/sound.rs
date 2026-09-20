@@ -129,7 +129,7 @@ fn envelope_of(value: &Value, who: &str) -> Result<Envelope, Signal> {
     })
 }
 
-/// Read `{volume, pan, speed, loop}`, filling in what it leaves out.
+/// Read `{volume, pan, speed, loop, fadeIn}`, filling in what it leaves out.
 ///
 /// An object rather than positional arguments: `soundPlay(s, 0.8, -0.3, 1.05,
 /// false)` says nothing at the call site about which number is which, and a
@@ -162,6 +162,7 @@ pub fn play_options(value: &Value, who: &str) -> Result<mrt_audio::mixer::Play, 
     how.speed = number("speed", how.speed, 0.0)?;
     how.cutoff = number("cutoff", how.cutoff as f32, 0.0)? as f64;
     how.looping = matches!(map.get(&key("loop")), Some(Value::Bool(true)));
+    how.fade_in = number("fadeIn", how.fade_in as f32, 0.0)? as f64;
     Ok(how)
 }
 
@@ -571,6 +572,39 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "audio")]
+    fn fading_a_voice_nothing_is_playing_on_is_not_an_error() {
+        // The same reasoning as soundStop: a game fading out music it is
+        // not certain is still playing should not have to check first.
+        assert_eq!(
+            main_of("soundFade(999, 0.5, 1); soundFadeOut(999, 1); print(\"carried on\");"),
+            "carried on"
+        );
+    }
+
+    #[test]
+    fn fade_arguments_are_validated_before_anything_asks_for_a_speaker() {
+        // Checked the same way regardless of whether this build has audio
+        // support at all -- the same split soundPlay's options take.
+        assert_eq!(
+            main_of("soundFade(1, -0.5, 1);"),
+            "Runtime Error: soundFade() needs the volume to be a number that is not negative, not -0.5. [line 1]"
+        );
+        assert_eq!(
+            main_of("soundFade(1, 0.5, -1);"),
+            "Runtime Error: soundFade() needs the fade to be a number that is not negative, not -1. [line 1]"
+        );
+        assert_eq!(
+            main_of("soundFadeOut(1, -1);"),
+            "Runtime Error: soundFadeOut() needs the fade to be a number that is not negative, not -1. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"soundFade(1, "loud", 1);"#),
+            "Runtime Error: soundFade() needs the volume to be a number, not string. [line 1]"
+        );
+    }
+
+    #[test]
     fn a_low_pass_makes_a_sound_duller_without_changing_its_length() {
         // Muffling is not the same as quietening: the sound lasts as long as
         // it did, and what it loses is its edge.
@@ -668,6 +702,56 @@ pub mod live {
     #[cfg(not(feature = "audio"))]
     pub fn stop(_bank: &Bank, _voice: Option<u64>) -> Result<Value, Signal> {
         Err(unsupported("soundStop"))
+    }
+
+    /// Ramp a voice's volume to `to` over `seconds`, optionally stopping it
+    /// once the fade completes.
+    ///
+    /// The arguments are validated here, unconditionally -- the same split
+    /// `play_options` takes with `soundPlay`: a bad argument is refused
+    /// before anything asks whether a speaker exists, so a build with no
+    /// audio support still catches a program's own mistakes the same way.
+    pub fn fade(
+        bank: &Bank,
+        voice: u64,
+        to: &Value,
+        seconds: &Value,
+        stop_at_end: bool,
+        who: &str,
+    ) -> Result<Value, Signal> {
+        let to = positive(to, who, "the volume")? as f32;
+        let seconds = positive(seconds, who, "the fade")?;
+        fade_checked(bank, voice, to, seconds, stop_at_end, who)
+    }
+
+    #[cfg(feature = "audio")]
+    fn fade_checked(
+        bank: &Bank,
+        voice: u64,
+        to: f32,
+        seconds: f64,
+        stop_at_end: bool,
+        _who: &str,
+    ) -> Result<Value, Signal> {
+        if let Some(speaker) = bank.speaker.as_ref() {
+            speaker.fade(voice, to, seconds, stop_at_end);
+        }
+        // Fading a voice nothing is playing on is not an error, the same as
+        // stopping one: a game fading out music it is not certain is still
+        // playing should not have to check first.
+        Ok(Value::Null)
+    }
+
+    #[cfg(not(feature = "audio"))]
+    fn fade_checked(
+        _bank: &Bank,
+        _voice: u64,
+        _to: f32,
+        _seconds: f64,
+        _stop_at_end: bool,
+        who: &str,
+    ) -> Result<Value, Signal> {
+        Err(unsupported(who))
     }
 
     /// How many voices are sounding right now.
