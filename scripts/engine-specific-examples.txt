@@ -15,4 +15,5 @@ game_sprites.mrt
 game_collide.mrt
 game_images.mrt
 game_transform.mrt
+game_raycast.mrt
 sound_effects.mrt
