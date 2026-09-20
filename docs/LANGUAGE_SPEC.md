@@ -1532,10 +1532,18 @@ gameDraw(ship, 20, 60);
 | `gameTargetId()` | Which surface drawing is landing on. |
 | `gameDraw(id, x, y)` | Stamps a sprite onto the current target, blending it. |
 | `gameSurfaceFree(id)` | Gives a surface up. Its id is never reused. |
+| `gameLoad(path)` | Reads a PNG into a new surface; returns its id. |
+| `gameSurfaceSize(id)` | `{width, height}` — including `0` for the screen. |
 
 A new surface is transparent rather than black, because a sprite is a shape
 with nothing around it: one that began opaque would stamp a rectangle of
 background over whatever it landed on.
+
+`gameLoad` reads an ordinary PNG — any colour type at 8 bits a channel,
+palettes down to 1 bit, 16-bit channels reduced to 8 — and what it returns is
+a sprite like any other: same ids, same `gameDraw`, and `gameTarget` works on
+it if a program wants to draw on top of the art it loaded. Interlaced PNGs are
+refused by name rather than decoded into a smear.
 
 The target is what *everything* follows — `gameWidth`, `gameHeight`,
 `gameColorAt` and `gameSave` all report and act on the current target, not on

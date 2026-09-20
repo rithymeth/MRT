@@ -787,4 +787,5 @@ export const ENGINE_SPECIFIC_EXAMPLES = new Set([
   'game_bounce.mrt',
   'game_sprites.mrt',
   'game_collide.mrt',
+  'game_images.mrt',
 ])

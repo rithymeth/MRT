@@ -27,6 +27,7 @@
 
 pub mod collide;
 pub mod font;
+pub mod inflate;
 pub mod png;
 
 use std::io;
@@ -96,10 +97,19 @@ pub const BLACK: Color = Color::rgb(0, 0, 0);
 pub const WHITE: Color = Color::rgb(255, 255, 255);
 
 /// A rectangle of pixels.
+///
+/// `Debug` prints its size rather than its million pixels, so a failed
+/// assertion about a surface stays readable.
 pub struct Surface {
     pub width: u32,
     pub height: u32,
     pixels: Vec<Color>,
+}
+
+impl std::fmt::Debug for Surface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Surface({}x{})", self.width, self.height)
+    }
 }
 
 impl Surface {
@@ -365,6 +375,22 @@ impl Surface {
                 }
             }
         }
+    }
+
+    /// A surface holding a decoded image.
+    pub fn from_image(image: &png::Decoded) -> Surface {
+        let mut surface = Surface::new(image.width, image.height, TRANSPARENT);
+        for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
+            surface.pixels[index] = Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3]);
+        }
+        surface
+    }
+
+    /// Read a PNG from disk.
+    pub fn load_png(path: impl AsRef<Path>) -> Result<Surface, String> {
+        let bytes = std::fs::read(path.as_ref())
+            .map_err(|e| format!("could not read {}: {e}", path.as_ref().display()))?;
+        Ok(Surface::from_image(&png::decode(&bytes)?))
     }
 
     /// The pixels as 8-bit RGBA, row-major: what an image file wants.
@@ -637,6 +663,41 @@ mod tests {
         surface.text(0, 0, "x", -4, RED);
         assert_eq!(count(&surface, RED), 0);
         assert_eq!(Surface::text_width("x", 0), 0);
+    }
+
+    #[test]
+    fn a_surface_saved_and_loaded_is_the_same_surface() {
+        // The two halves meeting: drawing, encoding, decoding, and back to
+        // the same pixels -- including the alpha, which a pipeline that
+        // flattened onto a background would quietly lose.
+        let mut drawn = Surface::new(12, 7, TRANSPARENT);
+        drawn.fill_circle(6, 3, 3, RED);
+        drawn.fill_rect(0, 0, 3, 2, Color::rgba(0, 0, 255, 128));
+        drawn.text(1, 4, "x", 1, WHITE);
+
+        let path = std::env::temp_dir().join("mrt_game_surface_round_trip.png");
+        drawn.save_png(&path).expect("writes");
+        let loaded = Surface::load_png(&path).expect("reads");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!((loaded.width, loaded.height), (12, 7));
+        for y in 0..7 {
+            for x in 0..12 {
+                assert_eq!(loaded.get(x, y), drawn.get(x, y), "at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn loading_something_that_is_not_an_image_reports_it() {
+        let path = std::env::temp_dir().join("mrt_game_not_an_image.png");
+        std::fs::write(&path, b"this is not a png").expect("writes");
+        let error = Surface::load_png(&path).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("signature"), "got {error:?}");
+
+        let missing = Surface::load_png("/nope/nowhere.png").unwrap_err();
+        assert!(missing.contains("could not read"), "got {missing:?}");
     }
 
     #[test]

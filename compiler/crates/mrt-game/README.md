@@ -21,7 +21,7 @@ test suite draws thousands of shapes and checks the pixels; a person runs the
 same program and looks at a PNG. When a window arrives it will present a
 surface this crate already got right.
 
-## The PNG encoder
+## PNG, both ways
 
 Writing a PNG normally means a dependency, and this workspace's manifest says
 in its first line that it has none.
@@ -33,7 +33,16 @@ CRC-32 per chunk and an Adler-32 over the whole. Every decoder reads it,
 because there is nothing unusual about it.
 
 The cost is bounded and honest: a file about the size of the raw pixels. If
-images ever need to be small, `png.rs` is the one file to replace.
+images ever need to be small, that half of `png.rs` is the one thing to
+replace.
+
+*Reading* is not symmetrical. A PNG from anywhere else is compressed with
+Huffman coding, so a decoder that only understood stored blocks would reject
+every real image in the world — which is why `inflate.rs` implements the whole
+of DEFLATE: stored blocks, the fixed tables, and dynamic Huffman with its code
+lengths encoded in a Huffman code of their own. It is checked against vectors
+from an independent compressor, because nothing this crate writes would
+exercise any of it.
 
 ## From MRT
 
@@ -94,7 +103,8 @@ can add a glyph by drawing one.
 ## Roadmap
 
 Done: the surface, the drawing primitives, PNG output, the `game*` built-ins,
-a window, input, a frame loop, text, sprites and collision.
+a window, input, a frame loop, text, sprites, collision, and loading art
+from PNG files.
 
 Sprites too: `gameSurface` makes an offscreen surface, `gameTarget` points
 drawing at it, and `gameDraw` stamps it. Ids are plain numbers, so the
@@ -125,5 +135,4 @@ hoists declarations at the top level and nowhere else, so a module moved into
 a function body would lose every forward reference in it, and the packager
 emits declarations first to reproduce that by construction.
 
-Next: audio, and loading art from image files — right now every sprite has to
-be drawn in code.
+Next: audio. A game with no sound is the last obvious gap.

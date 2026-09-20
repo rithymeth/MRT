@@ -1,0 +1,79 @@
+// Loading art from a file.
+//
+// MRT-Game is an engine extension — only the Rust engines have these
+// builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// Until now every sprite had to be drawn in code, which is fine for a circle
+// and hopeless for anything a person would draw. gameLoad reads a PNG into an
+// ordinary surface: same ids, same gameDraw, same gameTarget.
+//
+// This example makes its own art first so it needs no files beside it — but
+// the PNG it writes and reads back is an ordinary one, and any image editor
+// would produce the same thing.
+
+func drawTile(size) {
+    var tile = gameSurface(size, size);
+    gameTarget(tile);
+
+    // A little tree, on a transparent background. Transparent matters: a
+    // tile with an opaque backdrop stamps a square over whatever it lands on.
+    var trunk = gameColor(110, 78, 48);
+    var leaf = gameColor(74, 160, 92);
+    var dark = gameColor(52, 122, 70);
+    gameRect(size / 2 - 1, size / 2, 3, size / 2, trunk);
+    gameCircle(size / 2, size / 2 - 2, 7, leaf);
+    gameCircle(size / 2 - 4, size / 2 + 1, 5, dark);
+    gameCircle(size / 2 + 4, size / 2, 5, dark);
+
+    gameTarget(0);
+    return tile;
+}
+
+func main() {
+    gameInit(320, 180, "MRT Images");
+
+    // 1. Draw a tile and save it as a real PNG.
+    var drawn = drawTile(28);
+    gameTarget(drawn);
+    gameSave("tree_tile.png");
+    gameTarget(0);
+    print("wrote tree_tile.png");
+
+    // 2. Read it back. What comes back is a surface like any other.
+    var loaded = gameLoad("tree_tile.png");
+    var size = gameSurfaceSize(loaded);
+    print("loaded id:", loaded, "size:", size.width, "x", size.height);
+
+    // 3. The pixels survived the round trip, alpha included.
+    gameTarget(drawn);
+    var before = gameColorAt(14, 12);
+    var cornerBefore = gameColorAt(0, 0);
+    gameTarget(loaded);
+    var after = gameColorAt(14, 12);
+    var cornerAfter = gameColorAt(0, 0);
+    gameTarget(0);
+    print("a drawn pixel survived:", before == after);
+    print("so did a transparent one:", cornerBefore == cornerAfter);
+    print("and it really is transparent:", gameColorParts(cornerAfter).alpha == 0);
+
+    // 4. Use it the way a game would: one loaded image, stamped everywhere.
+    var sky = gameColor(120, 170, 210);
+    var grass = gameColor(96, 150, 84);
+    gameClear(sky);
+    gameRect(0, 120, gameWidth(), 60, grass);
+
+    var seed = 20240920;
+    var next = func() {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+    };
+    for (var i = 0; i < 14; i = i + 1) {
+        var x = floor(next() * (gameWidth() - size.width));
+        var y = 96 + floor(next() * 56);
+        gameDraw(loaded, x, y);
+    }
+
+    gameText(8, 8, "LOADED FROM A FILE", 2, gameColor(255, 255, 255));
+    gameSave("game_images.png");
+    print("wrote game_images.png");
+}

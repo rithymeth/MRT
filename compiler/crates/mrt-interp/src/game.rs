@@ -801,6 +801,90 @@ mod tests {
     }
 
     #[test]
+    fn an_image_can_be_saved_and_loaded_from_mrt() {
+        let dir = std::env::temp_dir().join("mrt_game_load_test.png");
+        let escaped = dir.to_string_lossy().replace('\\', "\\\\");
+        let _ = std::fs::remove_file(&dir);
+
+        assert_eq!(
+            main_of(&format!(
+                r#"gameInit(8, 8, "t");
+                   var red = gameColor(255, 0, 0);
+                   var s = gameSurface(4, 3);
+                   gameTarget(s);
+                   gamePixel(1, 1, red);
+                   gameSave("{escaped}");
+                   gameTarget(0);
+                   var loaded = gameLoad("{escaped}");
+                   var size = gameSurfaceSize(loaded);
+                   print(size.width, size.height);
+                   gameTarget(loaded);
+                   print(gameColorAt(1, 1) == red);
+                   print(gameColorParts(gameColorAt(0, 0)).alpha);"#
+            )),
+            "4 3\ntrue\n0",
+            "the pixel and the transparency both survived"
+        );
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn a_loaded_image_is_an_ordinary_sprite() {
+        // Ids come from the same counter, so loading and drawing are not two
+        // separate worlds a program has to keep straight.
+        let path = std::env::temp_dir().join("mrt_game_load_ids.png");
+        let escaped = path.to_string_lossy().replace('\\', "\\\\");
+        assert_eq!(
+            main_of(&format!(
+                r#"gameInit(8, 8, "t");
+                   var a = gameSurface(2, 2);
+                   gameTarget(a);
+                   gameRect(0, 0, 2, 2, gameColor(0, 255, 0));
+                   gameSave("{escaped}");
+                   gameTarget(0);
+                   var b = gameLoad("{escaped}");
+                   print(a, b);
+                   gameClear(gameColor(0, 0, 0));
+                   gameDraw(b, 3, 3);
+                   print(gameColorAt(3, 3) == gameColor(0, 255, 0));"#
+            )),
+            "1 2\ntrue"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loading_something_that_is_not_an_image_says_why() {
+        let path = std::env::temp_dir().join("mrt_game_not_png.png");
+        std::fs::write(&path, b"nope").expect("writes");
+        let escaped = path.to_string_lossy().replace('\\', "\\\\");
+        let output = main_of(&format!(r#"gameInit(4, 4, "t"); gameLoad("{escaped}");"#));
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            output.contains("gameLoad():") && output.contains("signature"),
+            "got {output:?}"
+        );
+
+        let missing = main_of(r#"gameInit(4, 4, "t"); gameLoad("/nope/nowhere.png");"#);
+        assert!(missing.contains("could not read"), "got {missing:?}");
+    }
+
+    #[test]
+    fn the_screens_size_is_available_without_switching_to_it() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(40, 30, "t");
+                   var s = gameSurface(4, 6);
+                   gameTarget(s);
+                   var screen = gameSurfaceSize(0);
+                   print(screen.width, screen.height, gameWidth());"#
+            ),
+            "40 30 4",
+            "gameSurfaceSize(0) is the screen even while a sprite is the target"
+        );
+    }
+
+    #[test]
     fn collision_needs_no_screen_at_all() {
         // It is arithmetic on boxes. A program doing physics headlessly --
         // a server, a test -- should not have to open a framebuffer first.
@@ -1031,6 +1115,11 @@ pub mod collide {
 /// Offscreen surfaces: the sprites a program draws once and stamps many times.
 pub mod sprites {
     use super::*;
+    use crate::value::{ObjKey, ObjMap};
+
+    fn key(name: &str) -> ObjKey {
+        ObjKey::Str(Rc::from(name))
+    }
 
     /// Make an offscreen surface and hand back its id.
     ///
@@ -1052,6 +1141,34 @@ pub mod sprites {
             mrt_game::TRANSPARENT,
         )));
         Ok(Value::Number(screen.sprites.len() as f64))
+    }
+
+    /// Load a PNG into a new surface and hand back its id.
+    ///
+    /// A loaded image is an ordinary sprite -- same ids, same `gameDraw`,
+    /// same `gameTarget` if a program wants to draw on top of it. Nothing
+    /// about it is a new kind of thing, which is the point.
+    pub fn load(s: &mut Option<Screen>, path: &str) -> Result<Value, Signal> {
+        let screen = screen(s, "gameLoad")?;
+        let surface =
+            Surface::load_png(path).map_err(|e| value_error(format!("gameLoad(): {e}")))?;
+        screen.sprites.push(Some(surface));
+        Ok(Value::Number(screen.sprites.len() as f64))
+    }
+
+    /// How big a surface is, without making it the target to ask.
+    pub fn size(s: &Option<Screen>, id: usize) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameSurfaceSize"))?;
+        let surface = if id == 0 {
+            &screen.surface
+        } else {
+            let index = screen.sprite_index(id, "gameSurfaceSize")?;
+            screen.sprites[index].as_ref().expect("checked live")
+        };
+        let mut map = ObjMap::new();
+        map.insert(key("width"), Value::Number(surface.width as f64));
+        map.insert(key("height"), Value::Number(surface.height as f64));
+        Ok(Value::object(map))
     }
 
     /// Point subsequent drawing at a surface. 0 is the screen.

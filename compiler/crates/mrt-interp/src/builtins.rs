@@ -95,6 +95,8 @@ const NAMES: &[&str] = &[
     "gameResolve",
     "gameSweep",
     "gameSurface",
+    "gameLoad",
+    "gameSurfaceSize",
     "gameTarget",
     "gameTargetId",
     "gameDraw",
@@ -366,6 +368,24 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 &mut interp.screen,
                 whole(&args[0], "gameSurface", "the width")?,
                 whole(&args[1], "gameSurface", "the height")?,
+            )
+        }
+        "gameLoad" => {
+            one(&args, "gameLoad")?;
+            let Value::Str(path) = &args[0] else {
+                return Err(type_error(format!(
+                    "gameLoad() needs a path, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            let path = path.clone();
+            crate::game::sprites::load(&mut interp.screen, &path)
+        }
+        "gameSurfaceSize" => {
+            one(&args, "gameSurfaceSize")?;
+            crate::game::sprites::size(
+                &interp.screen,
+                whole(&args[0], "gameSurfaceSize", "the surface")?,
             )
         }
         "gameTarget" => {
