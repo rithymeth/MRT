@@ -33,4 +33,10 @@ func main() {
     var dt = 0.016;
     x = x + gameGamepadAxis(0, "LeftX") * 100 * dt;
     print("x after one frame with the stick centred:", x);
+
+    // Rumbling a pad that was never there, or with a strength or duration
+    // that came out non-positive, both just answer false -- there is
+    // nothing to catch, the same rule every other gamepad query follows.
+    print("rumble with nothing connected:", gameGamepadRumble(0, 0.6, 0.15));
+    print("rumble with a non-positive strength:", gameGamepadRumble(0, 0, 1));
 }

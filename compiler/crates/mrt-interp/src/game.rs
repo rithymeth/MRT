@@ -701,6 +701,10 @@ mod tests {
             main_of(r#"gameInit(4, 4, "t"); gameGamepadButtonDown(0, "A");"#),
             "Runtime Error: gameGamepadButtonDown() needs a build with gamepad support; this one was built without it. [line 1]"
         );
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameGamepadRumble(0, 1, 0.1);"#),
+            "Runtime Error: gameGamepadRumble() needs a build with gamepad support; this one was built without it. [line 1]"
+        );
     }
 
     #[test]
@@ -716,9 +720,29 @@ mod tests {
                    print(gameGamepadCount());
                    print(gameGamepadButtonDown(0, "A"));
                    print(gameGamepadButtonPressed(0, "A"));
-                   print(gameGamepadAxis(0, "LeftX"));"#
+                   print(gameGamepadAxis(0, "LeftX"));
+                   print(gameGamepadRumble(0, 1, 0.1));"#
             ),
-            "0\nfalse\nfalse\n0"
+            "0\nfalse\nfalse\n0\nfalse"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "gamepad")]
+    fn rumble_at_a_non_positive_strength_or_duration_never_starts_it() {
+        // Answered rather than raised, the same rule every other malformed
+        // gamepad query follows -- and true regardless of whether a real
+        // pad happens to be connected, since a program handing this a
+        // negative duration made a mistake no controller could fix.
+        assert_eq!(
+            main_of(
+                r#"gameInit(4, 4, "t");
+                   print(gameGamepadRumble(0, 0, 1));
+                   print(gameGamepadRumble(0, -1, 1));
+                   print(gameGamepadRumble(0, 1, 0));
+                   print(gameGamepadRumble(0, 1, -1));"#
+            ),
+            "false\nfalse\nfalse\nfalse"
         );
     }
 
@@ -2108,5 +2132,35 @@ pub mod live {
     ) -> Result<Value, Signal> {
         screen(s, "gameGamepadAxis")?;
         Err(gamepad_unsupported("gameGamepadAxis"))
+    }
+
+    /// Rumble pad `index` at `strength` (0 to 1) for `seconds`, and report
+    /// whether it actually started. `false` covers an unknown or
+    /// disconnected pad, one with no rumble motor, and a non-positive
+    /// strength or duration alike -- the same rule an unrecognised button
+    /// or axis name already follows, so a program does not need a
+    /// different check for "this controller cannot rumble" than it already
+    /// has for "nothing is plugged in".
+    #[cfg(feature = "gamepad")]
+    pub fn gamepad_rumble(
+        s: &mut Option<Screen>,
+        index: usize,
+        strength: f64,
+        seconds: f64,
+    ) -> Result<Value, Signal> {
+        let screen = screen(s, "gameGamepadRumble")?;
+        let gamepads = ready_gamepads(screen, "gameGamepadRumble")?;
+        Ok(Value::Bool(gamepads.rumble(index, strength, seconds)))
+    }
+
+    #[cfg(not(feature = "gamepad"))]
+    pub fn gamepad_rumble(
+        s: &mut Option<Screen>,
+        _index: usize,
+        _strength: f64,
+        _seconds: f64,
+    ) -> Result<Value, Signal> {
+        screen(s, "gameGamepadRumble")?;
+        Err(gamepad_unsupported("gameGamepadRumble"))
     }
 }

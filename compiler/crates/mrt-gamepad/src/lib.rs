@@ -30,7 +30,9 @@
 //! would be asking it to know more about `gilrs` than about the game.
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
+use gilrs::ff::{BaseEffect, BaseEffectType, Effect, EffectBuilder, Replay, Ticks};
 use gilrs::{Axis as GAxis, Button as GButton, EventType, Gilrs};
 
 /// One connected gamepad's state, as of the last [`Gamepads::poll`].
@@ -50,6 +52,12 @@ pub struct Gamepads {
     // pad a player plugged in" to the id gilrs actually uses.
     order: Vec<gilrs::GamepadId>,
     pads: Vec<Pad>,
+    // Rumble effects still playing, each with when it should stop. `Effect`
+    // stops itself the moment every handle to it is dropped -- see
+    // `rumble` -- so this is also what *keeps* one playing: drop it too
+    // soon and the motor falls silent before the caller's own duration is
+    // up.
+    rumbles: Vec<(Instant, Effect)>,
 }
 
 /// A button name to the `gilrs` button it maps to, or `None` for a name this
@@ -134,7 +142,12 @@ impl Gamepads {
         let gilrs = Gilrs::new().map_err(|e| format!("could not read game controllers: {e}"))?;
         let order: Vec<_> = gilrs.gamepads().map(|(id, _)| id).collect();
         let pads = order.iter().map(|_| Pad::default()).collect();
-        Ok(Gamepads { gilrs, order, pads })
+        Ok(Gamepads {
+            gilrs,
+            order,
+            pads,
+            rumbles: Vec::new(),
+        })
     }
 
     /// Bring every pad's held state up to date with what has happened since
@@ -148,6 +161,13 @@ impl Gamepads {
     /// not promise -- the first query would silently erase what the second
     /// one was about to ask for.
     pub fn poll(&mut self) {
+        // Dropping a finished effect's handle here, rather than waiting for
+        // some other reason to touch this Vec, is what actually turns the
+        // motor off: gilrs stops an effect the moment its last handle goes,
+        // and nothing else in this crate would drop one otherwise.
+        let now = Instant::now();
+        self.rumbles.retain(|(stop_at, _)| now < *stop_at);
+
         while let Some(event) = self.gilrs.next_event() {
             let index = match self.order.iter().position(|&id| id == event.id) {
                 Some(index) => index,
@@ -258,6 +278,66 @@ impl Gamepads {
             .map(|pad| pad.value(axis) as f64)
             .unwrap_or(0.0)
     }
+
+    /// Rumble pad `index` at `strength` (0 to 1) for `seconds`.
+    ///
+    /// Returns whether it actually started -- `false` for an unknown or
+    /// disconnected pad, one with no rumble motor, or a strength or
+    /// duration that is not a positive number, the same "answer instead of
+    /// erroring" rule every other query here follows. A caller that wants
+    /// to know *why* it did not rumble has nothing to check that
+    /// `known`/`count` cannot already tell it; "no motor" and "no pad"
+    /// collapse to the same `false` on purpose, since a program reading a
+    /// controller that might not support rumble should not need a second
+    /// code path for it.
+    pub fn rumble(&mut self, index: usize, strength: f64, seconds: f64) -> bool {
+        if !(strength.is_finite() && strength > 0.0 && seconds.is_finite() && seconds > 0.0) {
+            return false;
+        }
+        let Some(&id) = self.order.get(index) else {
+            return false;
+        };
+        let supported = self
+            .gilrs
+            .connected_gamepad(id)
+            .is_some_and(|pad| pad.is_ff_supported());
+        if !supported {
+            return false;
+        }
+        // An hour is far past any sane rumble and keeps the duration well
+        // inside what `Duration::from_secs_f64` and `Ticks` both accept.
+        let seconds = seconds.min(3600.0);
+        let magnitude = (strength.min(1.0) * u16::MAX as f64).round() as u16;
+        let play_for = Ticks::from_ms((seconds * 1000.0).round() as u32);
+        let built = EffectBuilder::new()
+            .add_effect(BaseEffect {
+                kind: BaseEffectType::Strong { magnitude },
+                scheduling: Replay {
+                    play_for,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .add_effect(BaseEffect {
+                kind: BaseEffectType::Weak { magnitude },
+                scheduling: Replay {
+                    play_for,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .gamepads(&[id])
+            .finish(&mut self.gilrs);
+        let Ok(effect) = built else {
+            return false;
+        };
+        if effect.play().is_err() {
+            return false;
+        }
+        self.rumbles
+            .push((Instant::now() + Duration::from_secs_f64(seconds), effect));
+        true
+    }
 }
 
 #[cfg(test)]
@@ -342,5 +422,47 @@ mod tests {
         assert!(!pads.button_down(0, "A"));
         assert!(!pads.button_pressed(0, "A"));
         assert_eq!(pads.axis(0, "LeftX"), 0.0);
+    }
+
+    #[test]
+    fn rumbling_a_pad_that_has_never_connected_does_nothing() {
+        // The same answer every other query gives an index nothing ever
+        // connected on -- false rather than an error, and in particular
+        // nothing that would panic building an effect for a pad this crate
+        // has never heard of.
+        let mut pads = Gamepads::new().expect("opens");
+        assert!(!pads.rumble(0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn rumbling_at_a_non_positive_strength_or_duration_does_nothing() {
+        // A machine with no ff-capable pad connected already answers false
+        // for every strength and duration, so this only proves the checks
+        // run *before* asking gilrs anything -- they must, since a duration
+        // of 0 handed to `Duration::from_secs_f64` after that point would
+        // still be a valid call, just a silent no-op, and a negative one
+        // would panic there instead of being refused here.
+        let mut pads = Gamepads::new().expect("opens");
+        assert!(!pads.rumble(0, 0.0, 1.0));
+        assert!(!pads.rumble(0, -1.0, 1.0));
+        assert!(!pads.rumble(0, 1.0, 0.0));
+        assert!(!pads.rumble(0, 1.0, -1.0));
+        assert!(!pads.rumble(0, f64::NAN, 1.0));
+        assert!(!pads.rumble(0, 1.0, f64::INFINITY));
+    }
+
+    #[test]
+    fn rumbling_with_no_ff_capable_pad_connected_does_nothing() {
+        // A build server has no controller at all, let alone one with a
+        // rumble motor -- the ordinary case this crate is built around, not
+        // a failure. `is_ff_supported` on a pad `connected_gamepad` cannot
+        // find is what makes this the same `false` as the no-such-pad case
+        // above, with no separate error for "no motor" a caller would have
+        // to handle differently.
+        let mut pads = Gamepads::new().expect("opens");
+        pads.poll();
+        for index in 0..pads.count().max(1) {
+            assert!(!pads.rumble(index, 1.0, 0.05));
+        }
     }
 }
