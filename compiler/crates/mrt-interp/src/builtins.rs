@@ -96,6 +96,10 @@ const NAMES: &[&str] = &[
     "gameOverlap",
     "gameResolve",
     "gameSweep",
+    "gameCircleOverlap",
+    "gameCircleResolve",
+    "gameCircleBoxOverlap",
+    "gameCircleBoxResolve",
     "gameSurface",
     "gameLoad",
     "gameSurfaceSize",
@@ -398,6 +402,22 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 number(&args[2], "gameSweep")?,
                 &args[3],
             )
+        }
+        "gameCircleOverlap" => {
+            exactly(&args, 2, "gameCircleOverlap() takes two circles.")?;
+            crate::game::collide::circle_overlap(&args[0], &args[1])
+        }
+        "gameCircleResolve" => {
+            exactly(&args, 2, "gameCircleResolve() takes two circles.")?;
+            crate::game::collide::circle_resolve(&args[0], &args[1])
+        }
+        "gameCircleBoxOverlap" => {
+            exactly(&args, 2, "gameCircleBoxOverlap() takes a circle and a box.")?;
+            crate::game::collide::circle_box_overlap(&args[0], &args[1])
+        }
+        "gameCircleBoxResolve" => {
+            exactly(&args, 2, "gameCircleBoxResolve() takes a circle and a box.")?;
+            crate::game::collide::circle_box_resolve(&args[0], &args[1])
         }
         "gameSurface" => {
             exactly(&args, 2, "gameSurface() takes a width and a height.")?;

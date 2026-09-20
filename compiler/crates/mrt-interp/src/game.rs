@@ -1296,6 +1296,69 @@ mod tests {
     }
 
     #[test]
+    fn circle_overlap_needs_no_screen_either() {
+        assert_eq!(
+            main_of(
+                r#"var a = {x: 0, y: 0, radius: 5};
+                   print(gameCircleOverlap(a, {x: 9, y: 0, radius: 5}));
+                   print(gameCircleOverlap(a, {x: 10, y: 0, radius: 5}));
+                   print(gameCircleOverlap(a, {x: 100, y: 0, radius: 5}));"#
+            ),
+            "true\nfalse\nfalse"
+        );
+    }
+
+    #[test]
+    fn resolving_circles_pushes_them_apart_on_the_line_between_them() {
+        assert_eq!(
+            main_of(
+                r#"var a = {x: 0, y: 0, radius: 5};
+                   var b = {x: 6, y: 0, radius: 5};
+                   var push = gameCircleResolve(a, b);
+                   print(push.x, push.y);
+                   print(gameCircleResolve(a, {x: 100, y: 100, radius: 5}));"#
+            ),
+            "-4 0\nnull"
+        );
+    }
+
+    #[test]
+    fn a_circle_and_a_box_can_overlap_and_resolve() {
+        assert_eq!(
+            main_of(
+                r#"var wall = {x: 0, y: 0, width: 10, height: 10};
+                   var ball = {x: 15, y: 5, radius: 7};
+                   print(gameCircleBoxOverlap(ball, wall));
+                   var push = gameCircleBoxResolve(ball, wall);
+                   print(push.x, push.y);
+                   print(gameCircleBoxOverlap({x: 100, y: 100, radius: 1}, wall));
+                   print(gameCircleBoxResolve({x: 100, y: 100, radius: 1}, wall));"#
+            ),
+            "true\n2 0\nfalse\nnull"
+        );
+    }
+
+    #[test]
+    fn a_circle_that_is_not_one_says_which_field_is_missing() {
+        assert_eq!(
+            main_of(r#"gameCircleOverlap({x: 0, y: 0}, {x: 0, y: 0, radius: 1});"#),
+            "Runtime Error: gameCircleOverlap(): the first circle has no 'radius'. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gameCircleOverlap(5, {x: 0, y: 0, radius: 1});"#),
+            "Runtime Error: gameCircleOverlap() needs the first circle to be a circle object with x, y and radius, not number. [line 1]"
+        );
+    }
+
+    #[test]
+    fn a_circle_with_a_negative_radius_is_refused_rather_than_answered() {
+        assert_eq!(
+            main_of(r#"gameCircleOverlap({x: 0, y: 0, radius: -1}, {x: 0, y: 0, radius: 1});"#),
+            "Runtime Error: gameCircleOverlap(): the first circle has a negative radius, -1. [line 1]"
+        );
+    }
+
+    #[test]
     fn the_loop_builtins_still_need_a_screen_first() {
         // Whichever way the crate was built, asking about a window before
         // there is anything to show reports the missing gameInit rather than
@@ -1334,7 +1397,7 @@ mod tests {
 pub mod collide {
     use super::*;
     use crate::value::{ObjKey, ObjMap};
-    use mrt_game::collide::Aabb;
+    use mrt_game::collide::{Aabb, Circle};
 
     /// An object key, spelled once.
     fn key(name: &str) -> ObjKey {
@@ -1376,6 +1439,40 @@ pub mod collide {
         Ok(Aabb::new(field("x")?, field("y")?, width, height))
     }
 
+    /// Read `{x, y, radius}` out of an MRT object.
+    fn circle_of(value: &Value, who: &str, which: &str) -> Result<Circle, Signal> {
+        let Value::Object(map) = value else {
+            return Err(type_error(format!(
+                "{who}() needs {which} to be a circle object with x, y and radius, not {}.",
+                crate::value::type_name(value)
+            )));
+        };
+        let map = map.borrow();
+        let field = |name: &str| -> Result<f64, Signal> {
+            match map.get(&key(name)) {
+                Some(Value::Number(n)) if n.is_finite() => Ok(*n),
+                Some(Value::Number(n)) => {
+                    Err(value_error(format!("{who}(): {which}.{name} is {n}.")))
+                }
+                Some(other) => Err(type_error(format!(
+                    "{who}(): {which}.{name} is {}, not a number.",
+                    crate::value::type_name(other)
+                ))),
+                None => Err(value_error(format!("{who}(): {which} has no '{name}'."))),
+            }
+        };
+        let radius = field("radius")?;
+        // The same complaint a negative box size gets: a shape whose own
+        // definition is nonsense, not something every test below would have
+        // to guess an answer for.
+        if radius < 0.0 {
+            return Err(value_error(format!(
+                "{who}(): {which} has a negative radius, {radius}."
+            )));
+        }
+        Ok(Circle::new(field("x")?, field("y")?, radius))
+    }
+
     pub fn overlap(a: &Value, b: &Value) -> Result<Value, Signal> {
         Ok(Value::Bool(mrt_game::collide::overlap(
             &box_of(a, "gameOverlap", "the first box")?,
@@ -1413,6 +1510,53 @@ pub mod collide {
                 // getting it slightly wrong leaves things embedded in walls.
                 map.insert(key("x"), Value::Number(a.x + dx * hit.time));
                 map.insert(key("y"), Value::Number(a.y + dy * hit.time));
+                Value::object(map)
+            }
+            None => Value::Null,
+        })
+    }
+
+    /// Whether two circles share any area. A circle crosses as `{x, y,
+    /// radius}`, the same rule a box's `{x, y, width, height}` follows.
+    pub fn circle_overlap(a: &Value, b: &Value) -> Result<Value, Signal> {
+        Ok(Value::Bool(mrt_game::collide::circle_overlap(
+            &circle_of(a, "gameCircleOverlap", "the first circle")?,
+            &circle_of(b, "gameCircleOverlap", "the second circle")?,
+        )))
+    }
+
+    /// How far to move the first circle to separate it, or `null` if apart.
+    pub fn circle_resolve(a: &Value, b: &Value) -> Result<Value, Signal> {
+        let a = circle_of(a, "gameCircleResolve", "the first circle")?;
+        let b = circle_of(b, "gameCircleResolve", "the second circle")?;
+        Ok(match mrt_game::collide::circle_resolve(&a, &b) {
+            Some((x, y)) => {
+                let mut map = ObjMap::new();
+                map.insert(key("x"), Value::Number(x));
+                map.insert(key("y"), Value::Number(y));
+                Value::object(map)
+            }
+            None => Value::Null,
+        })
+    }
+
+    /// Whether a circle and a box share any area.
+    pub fn circle_box_overlap(c: &Value, b: &Value) -> Result<Value, Signal> {
+        Ok(Value::Bool(mrt_game::collide::circle_box_overlap(
+            &circle_of(c, "gameCircleBoxOverlap", "the circle")?,
+            &box_of(b, "gameCircleBoxOverlap", "the box")?,
+        )))
+    }
+
+    /// How far to move the circle to separate it from the box, or `null`.
+    pub fn circle_box_resolve(c: &Value, b: &Value) -> Result<Value, Signal> {
+        let c = circle_of(c, "gameCircleBoxResolve", "the circle")?;
+        let b = box_of(b, "gameCircleBoxResolve", "the box")?;
+        Ok(match mrt_game::collide::circle_box_resolve(&c, &b) {
+            Some((x, y)) => {
+                let mut map = ObjMap::new();
+                map.insert(key("x"), Value::Number(x));
+                map.insert(key("y"), Value::Number(y));
                 Value::object(map)
             }
             None => Value::Null,

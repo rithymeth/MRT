@@ -1,0 +1,43 @@
+// Circle collision, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// A circle is an ordinary object, {x, y, radius} -- the same shape a box
+// uses, {x, y, width, height}, for something a box rounds off too sharply:
+// a ball, a pickup, anything that should push and be pushed the same way
+// no matter which direction it is approached from.
+
+func main() {
+    // Two balls, 10 apart, radii summing to 16 -- 6 units of overlap.
+    var ball = {x: 40, y: 40, radius: 8};
+    var rock = {x: 50, y: 40, radius: 8};
+    print("balls overlap:", gameCircleOverlap(ball, rock));
+
+    var push = gameCircleResolve(ball, rock);
+    print("push:", push.x, push.y);
+
+    // Moving the ball by that push should leave the two exactly touching --
+    // no longer overlapping, no gap between them either.
+    var moved = {x: ball.x + push.x, y: ball.y + push.y, radius: ball.radius};
+    print("still touching, not overlapping:", gameCircleOverlap(moved, rock));
+
+    // Two circles far enough apart need no push at all.
+    var far = {x: 500, y: 500, radius: 5};
+    print("apart circles need no push:", gameCircleResolve(ball, far));
+
+    // A ball against a wall: the same overlap/resolve pair, but against a
+    // box instead of another circle.
+    var wall = {x: 0, y: 0, width: 20, height: 100};
+    var bouncer = {x: 25, y: 50, radius: 8};
+    print("ball touches wall:", gameCircleBoxOverlap(bouncer, wall));
+    var awayFromWall = gameCircleBoxResolve(bouncer, wall);
+    print("pushed clear of the wall:", awayFromWall.x, awayFromWall.y);
+
+    // A ball whose centre has gone all the way inside the wall still comes
+    // out cleanly -- through whichever face is nearest, the same
+    // shortest-way-out rule gameResolve follows for two boxes.
+    var buried = {x: 15, y: 50, radius: 8};
+    var outOfWall = gameCircleBoxResolve(buried, wall);
+    print("pushed out through the nearest face:", outOfWall.x, outOfWall.y);
+}
