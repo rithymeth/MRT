@@ -1781,6 +1781,48 @@ told apart from one that never existed — the first is a use-after-free in the
 program's own logic, and calling it "no such surface" would send its author
 looking for a typo.
 
+#### Particles: sparks, smoke, and other things spawned by the hundred
+
+| Call | Result |
+|------|--------|
+| `gameParticleSpawn(x, y, dx, dy, seconds, colour)` | Add one particle at a world position, moving at `(dx, dy)` pixels a second. |
+| `gameParticleUpdate(dt)` | Move and age every particle by `dt` seconds; drop the ones whose life has run out. |
+| `gameParticleDraw()` | Draw every live particle onto the current target. |
+| `gameParticleCount()` | How many particles are alive right now. |
+
+A sprite is drawn once and stamped many times; a particle is the opposite —
+spawned by the hundred and never addressed again. There is no id, because
+there is nothing to point back at: all of a screen's particles live in one
+pool, spawned into, aged, and drawn as a whole, the same way its camera and
+current draw target are state the screen already carries rather than
+something a program allocates and frees.
+
+```mrt
+var rand = random(1);
+for (var i = 0; i < 40; i = i + 1) {
+    var dx = (rand() - 0.5) * 160;
+    var dy = (rand() - 0.5) * 160;
+    gameParticleSpawn(hitX, hitY, dx, dy, 0.6, spark);
+}
+
+// Once a frame:
+gameParticleUpdate(gameDelta());
+gameParticleDraw();
+```
+
+A particle fades toward transparent as its own life runs out, rather than
+holding its full colour until it blinks out all at once — a burst that ended
+that way would read as a bug, not an effect. `gameParticleSpawn`'s `seconds`
+follows the same rule a negative box size does elsewhere: zero, negative, or
+non-finite spawns nothing rather than raising, since a caller's arithmetic
+came out degenerate and there is no picture to show for it.
+
+Particles are spawned in world pixels like everything else a program draws,
+so `gameCamera` scrolls them the same as it scrolls sprites and shapes.
+`gameParticleDraw` follows the current target exactly like `gameDraw` does —
+target a sprite first to bake an explosion's debris into it, or leave the
+target at the screen for the ordinary case.
+
 #### The loop belongs to the program
 
 A windowing library usually wants the loop: you hand it a callback and it

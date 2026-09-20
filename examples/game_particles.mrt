@@ -1,0 +1,77 @@
+// Particles: sparks spawned by the hundred, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// A sprite is drawn once and stamped many times; a particle is the
+// opposite -- spawned by the hundred and never addressed again. There is
+// no id: every screen holds one pool, spawned into, aged, and drawn as a
+// whole.
+
+func main() {
+    gameInit(60, 60, "MRT Particles");
+    gameClear(gameColor(10, 12, 20));
+
+    var spark = gameColor(255, 200, 90);
+    print("starts with none:", gameParticleCount());
+
+    // A burst of 20 sparks from the centre, each with its own (seeded, so
+    // this prints the same numbers on every machine) direction and speed --
+    // exactly what a real explosion spawns, just not drawn on its own here
+    // since where each one ends up depends on the seed.
+    var rand = random(1);
+    var i = 0;
+    while (i < 20) {
+        var dx = (rand() - 0.5) * 60;
+        var dy = (rand() - 0.5) * 60;
+        gameParticleSpawn(30, 30, dx, dy, 1.0, spark);
+        i = i + 1;
+    }
+    print("after the burst:", gameParticleCount());
+
+    // A particle with no life at all is never spawned -- the same "not an
+    // error, just nothing to show" rule a negative box size gets elsewhere.
+    gameParticleSpawn(30, 30, 0, 0, 0, spark);
+    print("a lifeless spawn added nothing:", gameParticleCount());
+
+    // One particle held still, apart from the moving burst, so drawing and
+    // the camera can be checked against a position that does not depend on
+    // where its own velocity happened to carry it.
+    gameParticleSpawn(10, 10, 0, 0, 5.0, spark);
+    gameParticleDraw();
+    print("the still particle is visible at its own position:", gameColorAt(10, 10) == spark);
+
+    // A camera move scrolls particles the same as it scrolls everything
+    // else a program draws: gameColorAt reads back the same world position
+    // gameParticleSpawn placed it at, regardless of where the camera is.
+    gameCamera(5, 5);
+    gameClear(gameColor(10, 12, 20));
+    gameParticleDraw();
+    print(
+        "still findable at its own world position after the camera moves:",
+        gameColorAt(10, 10) == spark
+    );
+
+    // Simulate half a second, one fixed step at a time -- the shape a real
+    // game loop takes, just without gamePresent() so this runs the same
+    // with or without a display.
+    var step = 1.0 / 60.0;
+    var frames = 0;
+    while (frames < 30) {
+        gameParticleUpdate(step);
+        frames = frames + 1;
+    }
+    print("burst (1s life) and still particle (5s life) both alive:", gameParticleCount());
+
+    // The burst's life is 1 second and half of it is already spent; run out
+    // the other half and only the longer-lived still particle remains.
+    frames = 0;
+    while (frames < 30) {
+        gameParticleUpdate(step);
+        frames = frames + 1;
+    }
+    print("just the still particle once the burst's life runs out:", gameParticleCount());
+
+    gameSave("game_particles.png");
+    print("wrote game_particles.png");
+}

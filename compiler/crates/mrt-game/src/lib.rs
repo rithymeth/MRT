@@ -28,6 +28,7 @@
 pub mod collide;
 pub mod font;
 pub mod inflate;
+pub mod particles;
 pub mod png;
 
 use std::io;

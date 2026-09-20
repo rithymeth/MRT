@@ -64,6 +64,13 @@ pub struct Screen {
     /// local space regardless of where the camera happens to be pointed.
     pub camera_x: i32,
     pub camera_y: i32,
+    /// Every live particle: sparks, smoke, an explosion's debris.
+    ///
+    /// One pool, not addressed by id the way a sprite is -- there is nothing
+    /// to draw once and stamp many times here, only points to spawn, age and
+    /// forget, so this is state the screen carries rather than a handle a
+    /// program has to keep.
+    pub particles: mrt_game::particles::Particles,
     /// The window, once `gameOpen` has made one.
     ///
     /// Opened lazily rather than by `gameInit`, which is what lets a program
@@ -226,6 +233,7 @@ pub fn init(width: usize, height: usize, title: &str) -> Result<Screen, Signal> 
         target: 0,
         camera_x: 0,
         camera_y: 0,
+        particles: mrt_game::particles::Particles::new(),
         #[cfg(feature = "window")]
         window: None,
         #[cfg(feature = "gamepad")]
@@ -1430,6 +1438,67 @@ mod tests {
     }
 
     #[test]
+    fn particles_spawn_move_age_and_draw() {
+        assert_eq!(
+            drawing(
+                r#"var white = gameColor(255, 255, 255);
+                   print(gameParticleCount());
+                   gameParticleSpawn(2, 2, 3, 0, 1, white);
+                   print(gameParticleCount());
+                   gameParticleDraw();
+                   print(gameColorAt(2, 2) == white);
+                   gameParticleUpdate(1);
+                   print(gameParticleCount());"#
+            ),
+            "0\n1\ntrue\n0"
+        );
+    }
+
+    #[test]
+    fn a_particle_with_non_positive_life_is_never_spawned() {
+        assert_eq!(
+            drawing(
+                r#"gameParticleSpawn(0, 0, 0, 0, 0, gameColor(255, 255, 255));
+                   print(gameParticleCount());"#
+            ),
+            "0"
+        );
+    }
+
+    #[test]
+    fn particle_drawing_follows_the_camera_like_everything_else() {
+        assert_eq!(
+            drawing(
+                r#"var white = gameColor(255, 255, 255);
+                   gameParticleSpawn(5, 5, 0, 0, 10, white);
+                   gameCamera(2, 1);
+                   gameParticleDraw();
+                   print(gameColorAt(5, 5) == white);"#
+            ),
+            "true",
+            "gameColorAt takes a world position too, so the same particle should still \
+             read back as white at its own world position once the camera has moved it"
+        );
+    }
+
+    #[test]
+    fn particle_calls_need_no_window_at_all() {
+        // Spawning, ageing and counting are arithmetic on a Vec, the same
+        // reason collision needs no screen either -- a program doing this
+        // headlessly should not have to open a framebuffer first, and
+        // drawing them needs only the target surface gameInit already made.
+        assert_eq!(
+            main_of(
+                r#"gameInit(4, 4, "t");
+                   gameParticleSpawn(0, 0, 0, 0, 1, gameColor(255, 0, 0));
+                   gameParticleUpdate(0.5);
+                   print(gameParticleCount());"#
+            ),
+            "1"
+        );
+    }
+
+    #[test]
     fn the_loop_builtins_still_need_a_screen_first() {
         // Whichever way the crate was built, asking about a window before
         // there is anything to show reports the missing gameInit rather than
@@ -1632,6 +1701,73 @@ pub mod collide {
             }
             None => Value::Null,
         })
+    }
+}
+
+/// Particles: sparks, smoke, an explosion's debris.
+///
+/// One pool per screen rather than one id per burst, the same shape the
+/// camera and the current draw target already take -- there is nothing here
+/// to draw once and stamp many times the way a sprite is, only points to
+/// spawn, age, and forget.
+pub mod particles {
+    use super::*;
+
+    /// Add one particle at `(x, y)` in world pixels, moving at `(vx, vy)`
+    /// pixels a second, living for `life` seconds.
+    ///
+    /// A non-positive or non-finite `life` spawns nothing rather than
+    /// raising -- the same rule a negative box size gets elsewhere in this
+    /// extension: a particle already dead the instant it exists is a
+    /// caller's arithmetic coming out degenerate, not a mistake worth
+    /// stopping the program over.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn(
+        s: &mut Option<Screen>,
+        x: f64,
+        y: f64,
+        vx: f64,
+        vy: f64,
+        life: f64,
+        color: Color,
+    ) -> Result<Value, Signal> {
+        let screen = screen(s, "gameParticleSpawn")?;
+        screen.particles.spawn(x, y, vx, vy, life, color);
+        Ok(Value::Null)
+    }
+
+    /// Age every particle by `dt` seconds and drop whichever ones have run
+    /// out of life.
+    pub fn update(s: &mut Option<Screen>, dt: f64) -> Result<Value, Signal> {
+        screen(s, "gameParticleUpdate")?.particles.update(dt);
+        Ok(Value::Null)
+    }
+
+    /// Draw every live particle onto the current target.
+    ///
+    /// Particles are spawned in world pixels like everything else a program
+    /// draws, so a camera move scrolls them the same as it scrolls the rest
+    /// of the world -- taken out and put back around the draw call for the
+    /// same reason `sprites::draw_transformed` does: `target_mut` and
+    /// `particles` are two fields of one `Screen`, and this is the cheap way
+    /// to convince the borrow checker they are different ones.
+    pub fn draw(s: &mut Option<Screen>) -> Result<Value, Signal> {
+        let screen = screen(s, "gameParticleDraw")?;
+        let (offset_x, offset_y) = if screen.target == 0 {
+            (-screen.camera_x, -screen.camera_y)
+        } else {
+            (0, 0)
+        };
+        let pool = std::mem::take(&mut screen.particles);
+        pool.draw(screen.target_mut(), offset_x, offset_y);
+        screen.particles = pool;
+        Ok(Value::Null)
+    }
+
+    /// How many particles are alive right now.
+    pub fn count(s: &Option<Screen>) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameParticleCount"))?;
+        Ok(Value::Number(screen.particles.count() as f64))
     }
 }
 
