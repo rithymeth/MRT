@@ -689,6 +689,70 @@ mod tests {
     }
 
     #[test]
+    fn gamedraw_without_options_is_unchanged() {
+        // The three-argument call is what every program written before
+        // rotation and scale existed already makes, so it has to keep
+        // meaning exactly what it always meant.
+        assert_eq!(
+            main_of(
+                r#"gameInit(10, 10, "t");
+                   var red = gameColor(255, 0, 0);
+                   var dot = gameSurface(2, 2);
+                   gameTarget(dot);
+                   gameRect(0, 0, 2, 2, red);
+                   gameTarget(0);
+                   gameDraw(dot, 3, 3, null);
+                   print(gameColorAt(3, 3) == red, gameColorAt(4, 4) == red);"#
+            ),
+            "true true"
+        );
+    }
+
+    #[test]
+    fn gamedraw_can_rotate_and_scale_a_sprite() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(20, 20, "t");
+                   var red = gameColor(255, 0, 0);
+                   var bar = gameSurface(4, 2);
+                   gameTarget(bar);
+                   gameRect(0, 0, 4, 2, red);
+                   gameTarget(0);
+                   // A quarter turn about the sprite's own top-left corner:
+                   // 4 wide by 2 tall becomes 2 wide (columns 9 and 10) by
+                   // 4 tall (rows 10 through 13).
+                   gameDraw(bar, 10, 10, {angle: 1.5707963267948966});
+                   print(gameColorAt(9, 10) == red, gameColorAt(8, 10) == red);
+                   print(gameColorAt(10, 13) == red, gameColorAt(10, 14) == red);
+                   // Scaled up 3x with no rotation: a solid block, no seams.
+                   gameDraw(bar, 0, 0, {scaleX: 3, scaleY: 3});
+                   print(gameColorAt(11, 5) == red, gameColorAt(0, 0) == red);"#
+            ),
+            "true false\ntrue false\ntrue true"
+        );
+    }
+
+    #[test]
+    fn gamedraw_options_are_type_checked_like_any_other_object_argument() {
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var s = gameSurface(2, 2);
+                   gameDraw(s, 0, 0, 5);"#
+            ),
+            "Runtime Error: gameDraw() needs the options to be an object or null, not number. [line 3]"
+        );
+        assert_eq!(
+            main_of(
+                r#"gameInit(8, 8, "t");
+                   var s = gameSurface(2, 2);
+                   gameDraw(s, 0, 0, {angle: "sideways"});"#
+            ),
+            "Runtime Error: gameDraw(): angle must be a real number, not sideways. [line 3]"
+        );
+    }
+
+    #[test]
     fn a_new_sprite_is_transparent_rather_than_black() {
         // A sprite is a shape with nothing around it. One that began opaque
         // would stamp a rectangle of background over whatever it landed on,
@@ -1187,8 +1251,83 @@ pub mod sprites {
         Ok(Value::Number(screen.target as f64))
     }
 
+    /// A rotation and/or scale for `gameDraw`, anchored at a point in the
+    /// sprite's own pixel space.
+    ///
+    /// The default is angle 0, scale 1, anchored at the sprite's own
+    /// top-left corner (0, 0) -- exactly what plain `gameDraw(id, x, y)` has
+    /// always meant. `draw` below is defined *in terms of* this default
+    /// rather than the other way around, so the two cannot drift apart the
+    /// way two independent implementations of "no transform" eventually do.
+    pub struct Transform {
+        pub angle: f64,
+        pub scale_x: f64,
+        pub scale_y: f64,
+        pub anchor_x: f64,
+        pub anchor_y: f64,
+    }
+
+    impl Default for Transform {
+        fn default() -> Transform {
+            Transform {
+                angle: 0.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                anchor_x: 0.0,
+                anchor_y: 0.0,
+            }
+        }
+    }
+
+    /// Read `{angle, scaleX, scaleY, anchorX, anchorY}`, filling in what it
+    /// leaves out -- the same shape `soundPlay`'s options take, for the same
+    /// reason: a game calls this every frame, and a positional
+    /// `gameDraw(id, x, y, 0, 1.5, 1.5, 8, 8)` says nothing at the call site
+    /// about which number is which.
+    pub fn transform_of(value: &Value, who: &str) -> Result<Transform, Signal> {
+        let mut t = Transform::default();
+        if matches!(value, Value::Null) {
+            return Ok(t);
+        }
+        let Value::Object(map) = value else {
+            return Err(type_error(format!(
+                "{who}() needs the options to be an object or null, not {}.",
+                crate::value::type_name(value)
+            )));
+        };
+        let map = map.borrow();
+        let number = |name: &str, fallback: f64| -> Result<f64, Signal> {
+            match map.get(&key(name)) {
+                None => Ok(fallback),
+                Some(Value::Number(n)) if n.is_finite() => Ok(*n),
+                Some(other) => Err(value_error(format!(
+                    "{who}(): {name} must be a real number, not {}.",
+                    crate::value::stringify(other)
+                ))),
+            }
+        };
+        t.angle = number("angle", t.angle)?;
+        t.scale_x = number("scaleX", t.scale_x)?;
+        t.scale_y = number("scaleY", t.scale_y)?;
+        t.anchor_x = number("anchorX", t.anchor_x)?;
+        t.anchor_y = number("anchorY", t.anchor_y)?;
+        Ok(t)
+    }
+
     /// Stamp a sprite onto the current target, blending it.
     pub fn draw(s: &mut Option<Screen>, id: usize, x: i32, y: i32) -> Result<Value, Signal> {
+        draw_transformed(s, id, x, y, &Transform::default())
+    }
+
+    /// `draw`, rotated and/or scaled about a point in the sprite's own pixel
+    /// space -- see `Surface::blit_transformed` for the geometry.
+    pub fn draw_transformed(
+        s: &mut Option<Screen>,
+        id: usize,
+        x: i32,
+        y: i32,
+        transform: &Transform,
+    ) -> Result<Value, Signal> {
         let screen = screen(s, "gameDraw")?;
         let index = screen.sprite_index(id, "gameDraw")?;
         if screen.target == id {
@@ -1202,7 +1341,16 @@ pub mod sprites {
         // above is what makes it sound -- taking the target would leave the
         // slot empty underneath the blit.
         let sprite = screen.sprites[index].take().expect("checked live");
-        screen.target_mut().blit(&sprite, x, y);
+        screen.target_mut().blit_transformed(
+            &sprite,
+            x,
+            y,
+            transform.angle,
+            transform.scale_x,
+            transform.scale_y,
+            transform.anchor_x,
+            transform.anchor_y,
+        );
         screen.sprites[index] = Some(sprite);
         Ok(Value::Null)
     }

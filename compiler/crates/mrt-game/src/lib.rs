@@ -377,6 +377,115 @@ impl Surface {
         }
     }
 
+    /// `blit`, rotated about `(anchor_x, anchor_y)` (a point in `source`'s own
+    /// pixel space) and scaled, with that anchor point landing at `(x, y)`.
+    ///
+    /// `angle` is radians, clockwise, matching screen space where Y already
+    /// points down: what would be counterclockwise in ordinary math looks
+    /// clockwise once Y is flipped, and fighting that would make every other
+    /// angle in a program that also does its own trigonometry disagree with
+    /// this one.
+    ///
+    /// This walks the *destination* bounding box and inverse-maps each pixel
+    /// back into source space, not the other way around. Forward-mapping each
+    /// source pixel is the naive approach and it is wrong at any scale above
+    /// 1: two adjacent source pixels can land two destination pixels apart,
+    /// leaving an unpainted seam between them that forward-mapping has no way
+    /// to fill in. Walking the destination instead means every destination
+    /// pixel gets exactly one answer to "what colour am I", with no gaps and
+    /// no pixel visited twice.
+    ///
+    /// Sampling is nearest-neighbour, matching `text`'s `scale`: this crate's
+    /// rule for a pixel that does not land exactly on another pixel is to
+    /// pick one rather than to blend one into existence, and that rule does
+    /// not change just because the source of the fraction is now a rotation
+    /// instead of an integer zoom.
+    #[allow(clippy::too_many_arguments)]
+    pub fn blit_transformed(
+        &mut self,
+        source: &Surface,
+        x: i32,
+        y: i32,
+        angle: f64,
+        scale_x: f64,
+        scale_y: f64,
+        anchor_x: f64,
+        anchor_y: f64,
+    ) {
+        // A size of zero or less is the same "nothing to draw" this crate
+        // already gives a negative width or radius, not an error: the
+        // caller's arithmetic came out degenerate, and there is a real
+        // picture to show for it -- none.
+        if scale_x <= 0.0 || scale_y <= 0.0 || !scale_x.is_finite() || !scale_y.is_finite() {
+            return;
+        }
+        let (w, h) = (source.width as f64, source.height as f64);
+        let (sin, cos) = angle.sin_cos();
+
+        // Forward-map the four corners once, just to find how much of the
+        // destination this could possibly touch -- the same clip-before-the-
+        // inner-loop shape `fill_rect` uses, for the same reason.
+        let forward = |sx: f64, sy: f64| -> (f64, f64) {
+            let (dx, dy) = ((sx - anchor_x) * scale_x, (sy - anchor_y) * scale_y);
+            (
+                x as f64 + dx * cos - dy * sin,
+                y as f64 + dx * sin + dy * cos,
+            )
+        };
+        let corners = [
+            forward(0.0, 0.0),
+            forward(w, 0.0),
+            forward(0.0, h),
+            forward(w, h),
+        ];
+        let min_x = corners.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let max_x = corners
+            .iter()
+            .map(|p| p.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_y = corners.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let max_y = corners
+            .iter()
+            .map(|p| p.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        // A right angle's sine and cosine are not exact in floating point
+        // (`cos(FRAC_PI_2)` is a hair above zero, not zero), so a corner that
+        // is mathematically exactly on a pixel boundary can land a shade
+        // past it. Widening the box by a fraction of a pixel costs a few
+        // wasted inverse-mapped lookups at the edge -- each answered "not in
+        // the source" and skipped -- against the alternative of silently
+        // shaving a column or row off a sprite rotated by the one angle
+        // every game rotates things by.
+        const SLACK: f64 = 1e-6;
+        let x0 = ((min_x - SLACK).floor() as i32).max(0);
+        let y0 = ((min_y - SLACK).floor() as i32).max(0);
+        let x1 = ((max_x + SLACK).ceil() as i32).min(self.width as i32);
+        let y1 = ((max_y + SLACK).ceil() as i32).min(self.height as i32);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+
+        for py in y0..y1 {
+            for px in x0..x1 {
+                // The inverse of `forward`: undo the placement, the rotation,
+                // then the scale, landing back in source-local pixel space.
+                let (dx, dy) = (px as f64 - x as f64, py as f64 - y as f64);
+                let (rx, ry) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+                let (u, v) = (rx / scale_x + anchor_x, ry / scale_y + anchor_y);
+                // The same slack as the bounding box, here so that a source
+                // coordinate that should be exactly on an integer (again,
+                // typically from a right-angle rotation) doesn't get floored
+                // down to the pixel before it because it landed a hair under.
+                if let Some(color) =
+                    source.get((u + SLACK).floor() as i32, (v + SLACK).floor() as i32)
+                {
+                    self.draw(px, py, color);
+                }
+            }
+        }
+    }
+
     /// A surface holding a decoded image.
     pub fn from_image(image: &png::Decoded) -> Surface {
         let mut surface = Surface::new(image.width, image.height, TRANSPARENT);
@@ -604,6 +713,104 @@ mod tests {
         assert_eq!(screen.get(1, 1), Some(RED));
         assert_eq!(screen.get(2, 1), Some(BLACK), "transparent left it alone");
         assert_eq!(screen.get(2, 2).unwrap().red(), 128, "half over black");
+    }
+
+    #[test]
+    fn a_transformed_blit_at_identity_matches_a_plain_one() {
+        let mut sprite = Surface::new(3, 2, TRANSPARENT);
+        sprite.set(0, 0, RED);
+        sprite.set(2, 1, BLUE);
+
+        let mut plain = Surface::new(8, 8, BLACK);
+        plain.blit(&sprite, 2, 3);
+
+        let mut transformed = Surface::new(8, 8, BLACK);
+        transformed.blit_transformed(&sprite, 2, 3, 0.0, 1.0, 1.0, 0.0, 0.0);
+
+        for y in 0..8 {
+            for x in 0..8 {
+                assert_eq!(
+                    plain.get(x, y),
+                    transformed.get(x, y),
+                    "identity transform must reproduce a plain blit at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_quarter_turn_swaps_width_and_height() {
+        // A 4-wide, 2-tall solid rectangle, rotated a quarter turn about its
+        // own top-left corner (angle is clockwise, and Y already points
+        // down), should land as 2 wide and 4 tall with that same corner
+        // still at the origin.
+        let sprite = Surface::new(4, 2, RED);
+        let mut screen = Surface::new(10, 10, BLACK);
+        screen.blit_transformed(
+            &sprite,
+            5,
+            5,
+            std::f64::consts::FRAC_PI_2,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+        );
+
+        // The rotation sweeps the sprite's original width up over its own
+        // corner rather than out past it, so the 2-wide result sits at
+        // columns 4 and 5, not 5 and 6.
+        assert_eq!(screen.get(5, 5), Some(RED), "the shared corner");
+        assert_eq!(screen.get(4, 5), Some(RED), "now 2 wide");
+        assert_eq!(screen.get(5, 8), Some(RED), "now 4 tall");
+        assert_eq!(screen.get(3, 5), Some(BLACK), "not 4 wide any more");
+        assert_eq!(screen.get(5, 9), Some(BLACK), "not 5 tall");
+    }
+
+    #[test]
+    fn scaling_up_covers_the_gaps_a_forward_mapped_blit_would_leave() {
+        let sprite = Surface::new(2, 2, RED);
+        let mut screen = Surface::new(10, 10, BLACK);
+        screen.blit_transformed(&sprite, 1, 1, 0.0, 3.0, 3.0, 0.0, 0.0);
+
+        for y in 1..7 {
+            for x in 1..7 {
+                assert_eq!(screen.get(x, y), Some(RED), "no seam at ({x}, {y})");
+            }
+        }
+        assert_eq!(screen.get(7, 1), Some(BLACK), "clipped at the far edge");
+    }
+
+    #[test]
+    fn rotating_about_the_centre_keeps_the_centre_still() {
+        let mut sprite = Surface::new(3, 3, TRANSPARENT);
+        sprite.set(1, 1, RED);
+        let mut screen = Surface::new(10, 10, BLACK);
+        // A centre pixel, rotated about its own position, cannot move.
+        screen.blit_transformed(
+            &sprite,
+            4,
+            4,
+            std::f64::consts::FRAC_PI_2,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        );
+        assert_eq!(screen.get(4, 4), Some(RED));
+    }
+
+    #[test]
+    fn a_non_positive_scale_draws_nothing_rather_than_flipping_or_panicking() {
+        let sprite = Surface::new(2, 2, RED);
+        let mut screen = Surface::new(10, 10, BLACK);
+        screen.blit_transformed(&sprite, 5, 5, 0.0, 0.0, 1.0, 0.0, 0.0);
+        screen.blit_transformed(&sprite, 5, 5, 0.0, 1.0, -2.0, 0.0, 0.0);
+        for y in 0..10 {
+            for x in 0..10 {
+                assert_eq!(screen.get(x, y), Some(BLACK));
+            }
+        }
     }
 
     #[test]
