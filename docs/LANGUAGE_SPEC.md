@@ -1704,6 +1704,7 @@ gameDraw(ship, 20, 60);
 | `gameTargetId()` | Which surface drawing is landing on. |
 | `gameDraw(id, x, y, options)` | Stamps a sprite onto the current target, blending it. `options` is optional. |
 | `gameSurfaceFree(id)` | Gives a surface up. Its id is never reused. |
+| `gameDrawTilemap(id, x, y, tileWidth, tileHeight, tiles)` | Draws a whole grid of tiles from one sheet in a single call. |
 | `gameLoad(path)` | Reads a PNG into a new surface; returns its id. |
 | `gameSurfaceSize(id)` | `{width, height}` — including `0` for the screen. |
 
@@ -1763,6 +1764,35 @@ gameDraw(walkSheet, x, y, {srcX: frame * 16, srcY: 0, srcWidth: 16, srcHeight: 1
 so a sheet of same-sized frames does not need a different anchor for each
 one — rotating or scaling a cropped frame works exactly like rotating or
 scaling a sprite that only ever held that one frame.
+
+`gameDrawTilemap` draws a whole level from one sheet and one call, instead
+of the hundreds or thousands of individual `gameDraw` calls it would take to
+stamp each tile by hand, every frame. `tiles` is an array of rows, each an
+array of tile indices into the sheet's own grid — inferred from `tileWidth`
+and the sheet's own size alone, in the same row-major order a program would
+reach for on its own: tile `n` sits at column `n % columns`, row `n /
+columns`, where `columns` is the sheet's width divided by `tileWidth`.
+
+```mrt
+var level = [
+    [0, 0, 1, 0],
+    [0, 2, 1, 0],
+    [3, 3, 3, 3]
+];
+gameDrawTilemap(tileSheet, 0, 0, 16, 16, level);
+```
+
+`null` in place of an index leaves that cell empty rather than drawing
+anything — the shape a sparse layer (decorations scattered over a mostly
+empty overlay, say) needs. A level is *data* this way: reading one in from a
+file, generating one, or editing one at runtime is ordinary array work, not
+a wall of draw calls to regenerate. The sheet must be an exact grid of
+`tileWidth`×`tileHeight` tiles, and every non-null index must name a real
+tile in it — both raised rather than answered, since a level authored by
+hand is exactly where a typo'd size or index is likely, and a level
+half-drawn before the mistake surfaced would be a worse thing to debug than
+one that never started. Tiles are placed in world pixels and follow the
+camera exactly like `gameDraw` does.
 
 `gameLoad` reads an ordinary PNG — any colour type at 8 bits a channel,
 palettes down to 1 bit, 16-bit channels reduced to 8 — and what it returns is

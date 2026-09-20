@@ -1,0 +1,58 @@
+// A level as data: a grid of tile indices, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// gameDrawTilemap draws a whole level from one sheet in a single call,
+// instead of the hundreds of individual gameDraw calls it would take to
+// stamp each tile by hand, every frame. A level is then just an array a
+// program can build, load, or edit -- not a wall of draw calls to
+// regenerate every time it changes.
+
+func main() {
+    gameInit(64, 48, "MRT Tilemap");
+    gameClear(gameColor(10, 12, 20));
+
+    // A 4-tile sheet, 8x8 each, laid out 2 wide: 0 grass, 1 dirt, 2 water,
+    // 3 stone -- tile n at column n % 2, row n / 2.
+    var grass = gameColor(70, 160, 70);
+    var dirt = gameColor(120, 90, 60);
+    var water = gameColor(60, 110, 200);
+    var stone = gameColor(120, 120, 130);
+    var sheet = gameSurface(16, 16);
+    gameTarget(sheet);
+    gameRect(0, 0, 8, 8, grass);
+    gameRect(8, 0, 8, 8, dirt);
+    gameRect(0, 8, 8, 8, water);
+    gameRect(8, 8, 8, 8, stone);
+    gameTarget(0);
+
+    // The level itself: ordinary data, a 4-row by 6-column grid. A border
+    // of stone, water down the middle, grass and dirt filling the rest.
+    var level = [
+        [3, 3, 3, 3, 3, 3],
+        [3, 0, 0, 2, 1, 3],
+        [3, 0, 0, 2, 1, 3],
+        [3, 3, 3, 3, 3, 3]
+    ];
+    gameDrawTilemap(sheet, 0, 0, 8, 8, level);
+
+    print("a stone corner:", gameColorAt(0, 0) == stone);
+    print("water down the middle:", gameColorAt(24, 8) == water);
+    print("grass in the interior:", gameColorAt(8, 8) == grass);
+    print("dirt on the right side:", gameColorAt(32, 8) == dirt);
+
+    // A sparse second layer: null everywhere except where a decoration
+    // sits, drawn right over the level without disturbing anything else.
+    var decorations = [
+        [null, null, null, null, null, null],
+        [null, 0, null, null, null, null],
+        [null, null, null, null, null, null],
+        [null, null, null, null, null, null]
+    ];
+    gameDrawTilemap(sheet, 0, 0, 8, 8, decorations);
+    print("still grass where the decoration landed:", gameColorAt(8, 8) == grass);
+
+    gameSave("game_tilemap.png");
+    print("wrote game_tilemap.png");
+}

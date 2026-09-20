@@ -110,6 +110,7 @@ const NAMES: &[&str] = &[
     "gameTarget",
     "gameTargetId",
     "gameDraw",
+    "gameDrawTilemap",
     "gameSurfaceFree",
     "gameColorAt",
     "gameText",
@@ -518,6 +519,25 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                     crate::game::sprites::draw_transformed(&mut interp.screen, id, x, y, &transform)
                 }
             }
+        }
+        "gameDrawTilemap" => {
+            exactly(
+                &args,
+                6,
+                "gameDrawTilemap() takes a surface, x, y, a tile width, a tile height, and a tiles array.",
+            )?;
+            let id = whole(&args[0], "gameDrawTilemap", "the surface")?;
+            let x = coord(&args[1], "gameDrawTilemap", "x")?;
+            let y = coord(&args[2], "gameDrawTilemap", "y")?;
+            crate::game::sprites::draw_tilemap(
+                &mut interp.screen,
+                id,
+                x,
+                y,
+                &args[3],
+                &args[4],
+                &args[5],
+            )
         }
         "gameSurfaceFree" => {
             one(&args, "gameSurfaceFree")?;
