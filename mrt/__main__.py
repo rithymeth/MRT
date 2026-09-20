@@ -80,7 +80,9 @@ def explain_if_nothing_ran(interpreter: Interpreter, path: str = None) -> None:
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: mrt <script>")
+        # Every other diagnostic in this file goes to stderr, keeping stdout
+        # reserved for the program's own output.
+        print("Usage: mrt <script>", file=sys.stderr)
         sys.exit(1)
 
     sys.exit(run_file(sys.argv[1]))
