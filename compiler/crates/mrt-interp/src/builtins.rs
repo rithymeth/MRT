@@ -142,6 +142,7 @@ const NAMES: &[&str] = &[
     "gameGamepadButtonDown",
     "gameGamepadButtonPressed",
     "gameGamepadAxis",
+    "gameGamepadRumble",
 ];
 
 pub fn install(globals: &Env) {
@@ -794,6 +795,17 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 )));
             };
             crate::game::live::gamepad_axis(&mut interp.screen, index, axis)
+        }
+        "gameGamepadRumble" => {
+            exactly(
+                &args,
+                3,
+                "gameGamepadRumble() takes a pad index, a strength, and a duration in seconds.",
+            )?;
+            let index = whole(&args[0], "gameGamepadRumble", "the pad index")?;
+            let strength = number(&args[1], "gameGamepadRumble")?;
+            let seconds = number(&args[2], "gameGamepadRumble")?;
+            crate::game::live::gamepad_rumble(&mut interp.screen, index, strength, seconds)
         }
 
         "aiTrainLinear" => {

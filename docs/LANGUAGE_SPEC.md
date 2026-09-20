@@ -1838,6 +1838,7 @@ use a fixed step and ignore it: real elapsed time is never the same twice.
 | `gameGamepadButtonDown(index, name)` | Whether a button is held now — `"A"`, `"LeftBumper"`, `"DPadUp"`. |
 | `gameGamepadButtonPressed(index, name)` | Whether it went down since the last frame, held or not. |
 | `gameGamepadAxis(index, name)` | A stick's position, -1 to 1 — `"LeftX"`, `"LeftY"`, `"RightX"`, `"RightY"`. |
+| `gameGamepadRumble(index, strength, seconds)` | Rumble the pad. Returns whether it actually started. |
 
 Button and axis names are Xbox-style, because that is what most controllers
 and most players already think in, regardless of which pad is actually
@@ -1859,7 +1860,17 @@ crash to notice by a stack trace.
 ```mrt
 player.x = player.x + gameGamepadAxis(0, "LeftX") * speed * gameDelta();
 if (gameGamepadButtonPressed(0, "A")) { jump(); }
+if (justLanded) { gameGamepadRumble(0, 0.6, 0.15); }
 ```
+
+`gameGamepadRumble`'s `strength` runs from 0 to 1 and `seconds` is how long
+to rumble for; its return value is `true` only if a motor actually started
+turning. `false` covers every reason it might not have — a pad nothing has
+ever connected on, one that has since disconnected, one with no rumble
+motor at all, or a `strength` or `seconds` that is not a positive number —
+because a program reading a controller that might not support rumble
+should not need a different check for "this pad cannot rumble" than it
+already has for "nothing is plugged in".
 
 The gamepad subsystem opens on the first gamepad call rather than at
 `gameInit`, the same reasoning as the window and the speaker: a program that
