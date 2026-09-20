@@ -12,6 +12,7 @@ mrt-parser = { path = "../mrt-parser" }
 mrt-ai = { path = "../mrt-ai" }
 mrt-audio = { path = "../mrt-audio" }
 mrt-game = { path = "../mrt-game" }
+mrt-net = { path = "../mrt-net" }
 # Optional, and off by default. The window and the speaker are the only
 # things in this workspace with dependency trees, and mrt-interp's is the
 # test suite run most often -- so `cargo test -p mrt-interp` stays hermetic

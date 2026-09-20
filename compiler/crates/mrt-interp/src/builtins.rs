@@ -108,6 +108,8 @@ const NAMES: &[&str] = &[
     "gameTextWidth",
     "gameTextHeight",
     "gameSave",
+    "netGet",
+    "netPost",
     "soundTone",
     "soundSweep",
     "soundLoad",
@@ -521,6 +523,19 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 )));
             };
             crate::game::save(&interp.screen, path)
+        }
+
+        // -- network --------------------------------------------------------
+        // A response is an ordinary object, exactly as a model is an ordinary
+        // array. See crate::net for what a program may and may not put in a
+        // request, and why https says no rather than falling back.
+        "netGet" => {
+            between(&args, 1, 2, "netGet() takes 1 or 2 arguments.")?;
+            crate::net::get(&args)
+        }
+        "netPost" => {
+            between(&args, 2, 3, "netPost() takes 2 or 3 arguments.")?;
+            crate::net::post(&args)
         }
 
         // -- sound ----------------------------------------------------------

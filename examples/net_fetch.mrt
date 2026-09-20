@@ -1,0 +1,70 @@
+// Fetching over HTTP, and reading the answer with the JSON parser that is
+// itself written in MRT.
+//
+// MRT-Net is an engine extension: only the Rust engines have netGet and
+// netPost. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// Point it at a server and it fetches. With nothing listening it says so and
+// carries on, so this runs anywhere -- including a build machine with no
+// network at all, which is where it usually runs.
+
+import { parse, stringify } from "./lib/json.mrt";
+
+var URL = "http://127.0.0.1:8080/stock.json";
+
+// Everything a request is checked for happens before a socket is opened, so
+// these three answer the same on a machine with no network as on one with.
+func refused(label, attempt) {
+    try {
+        attempt();
+        print("${label}: allowed");
+    } catch (e) {
+        print("${label}: ${e.message}");
+    }
+}
+
+func main() {
+    print("-- checked before anything is opened --");
+    refused("https", func() { netGet("https://example.com/"); });
+    refused("not a url", func() { netGet("example.com/thing"); });
+    refused("a header the client owns", func() {
+        netGet("http://127.0.0.1:1/", {headers: {Host: "somewhere-else"}});
+    });
+    refused("a header with a newline in it", func() {
+        netGet("http://127.0.0.1:1/", {headers: {"X-Note": "a\nGET / HTTP/1.1"}});
+    });
+
+    print("");
+    print("-- the fetch --");
+    print("GET ${URL}");
+
+    var reply = null;
+    try {
+        reply = netGet(URL, {timeout: 5});
+    } catch (e) {
+        // The kind, not the message: what the operating system calls a
+        // refused connection differs between machines, and this program
+        // prints the same thing on all of them.
+        print("nothing answered there (${e.kind})");
+    }
+
+    if (reply == null) {
+        print("serve a JSON file on that port and run this again");
+        return;
+    }
+
+    var contentType = get(reply.headers, "content-type", "unknown");
+    print("status ${reply.status}, ok ${reply.ok}, ${contentType}");
+
+    // The body is a string, and the parser is the one in lib/json.mrt: the
+    // extension fetches bytes, and the language makes sense of them.
+    var stock = parse(reply.body);
+    print("warehouse: ${stock.warehouse}");
+
+    var held = filter(stock.items, func(item) { return item.count > 0; });
+    print("in stock: ${len(held)} of ${len(stock.items)}");
+
+    var value = reduce(map(held, func(item) { return item.price * item.count; }),
+                       func(a, b) { return a + b; }, 0);
+    print(stringify({warehouse: stock.warehouse, lines: len(held), value: value}));
+}
