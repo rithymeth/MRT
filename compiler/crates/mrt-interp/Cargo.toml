@@ -10,6 +10,7 @@ mrt-diagnostics = { path = "../mrt-diagnostics" }
 mrt-ast = { path = "../mrt-ast" }
 mrt-parser = { path = "../mrt-parser" }
 mrt-ai = { path = "../mrt-ai" }
+mrt-audio = { path = "../mrt-audio" }
 mrt-game = { path = "../mrt-game" }
 # Optional, and off by default. The window is the only thing in this
 # workspace with a dependency tree, and mrt-interp's is the test suite run

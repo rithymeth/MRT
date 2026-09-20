@@ -40,6 +40,7 @@ pub mod env;
 pub mod error;
 pub mod game;
 pub mod generator;
+pub mod sound;
 pub mod value;
 pub mod vm;
 
@@ -96,6 +97,10 @@ pub struct Interpreter {
     /// namespace import turns it into an object and `keys()` on that object
     /// is observable.
     current_exports: Exports,
+
+    /// Every sound a program has made. Empty until it makes one, so a
+    /// program that never mentions audio pays nothing for it.
+    pub(crate) sounds: sound::Bank,
 
     /// The game extension's screen, once `gameInit` has made one.
     ///
@@ -282,6 +287,7 @@ impl Interpreter {
             module_loading: Vec::new(),
             current_exports: Vec::new(),
             screen: None,
+            sounds: sound::Bank::default(),
         }
     }
 

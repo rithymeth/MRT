@@ -788,4 +788,5 @@ export const ENGINE_SPECIFIC_EXAMPLES = new Set([
   'game_sprites.mrt',
   'game_collide.mrt',
   'game_images.mrt',
+  'sound_effects.mrt',
 ])

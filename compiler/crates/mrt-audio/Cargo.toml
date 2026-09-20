@@ -1,0 +1,15 @@
+[package]
+name = "mrt-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# No dependencies. Sound is arithmetic on an array of samples, the same way a
+# framebuffer is arithmetic on an array of pixels -- and like `mrt-game`, all
+# of it can be checked on a machine with no hardware for it, which is what a
+# build server is. Talking to a sound card is a separate crate's problem.
+[dependencies]
+
+[lints]
+workspace = true

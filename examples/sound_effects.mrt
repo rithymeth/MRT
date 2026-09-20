@@ -1,0 +1,82 @@
+// Making game sounds without an audio file in sight.
+//
+// MRT-Game is an engine extension — only the Rust engines have these
+// builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// There is no playback yet: these builtins make sounds, combine them, and
+// write a .wav you can play. That is deliberate rather than unfinished — a
+// mix is arithmetic on samples, and whether it is right is a question about
+// numbers, which a test can check and a speaker cannot.
+
+// A jump: pitch sliding up fast, cut short.
+func jump() {
+    return soundSweep("square", 220, 660, 0.12,
+        {attack: 0.002, decay: 0.02, sustain: 0.6, release: 0.05});
+}
+
+// A coin: two clean notes, the second higher — the oldest trick in the book.
+func coin() {
+    var first = soundTone("square", 988, 0.06, {attack: 0.001, release: 0.02});
+    var second = soundTone("square", 1319, 0.14, {attack: 0.001, release: 0.09});
+    return soundThen(first, second);
+}
+
+// Getting hurt: sliding down, with noise underneath for grit.
+func hurt() {
+    var fall = soundSweep("saw", 440, 80, 0.25, {attack: 0.001, release: 0.12});
+    var grit = soundTone("noise", 0, 0.25, {attack: 0.001, release: 0.2});
+    return soundMix([
+        {sound: fall, volume: 0.7},
+        {sound: grit, volume: 0.3}
+    ]);
+}
+
+func describe(label, id) {
+    var info = soundInfo(id);
+    print(label,
+          "| " + toString(round(info.seconds * 1000)) + "ms",
+          "| peak " + toString(round(info.peak * 100) / 100),
+          "| " + toString(info.rate) + "Hz");
+}
+
+func main() {
+    var jumpSound = jump();
+    var coinSound = coin();
+    var hurtSound = hurt();
+
+    describe("jump", jumpSound);
+    describe("coin", coinSound);
+    describe("hurt", hurtSound);
+
+    // Every sound starts and ends at silence. That is what the envelope's
+    // attack and release are for: a waveform that begins at full volume is a
+    // vertical step, and a speaker asked to jump like that clicks.
+    var info = soundInfo(jumpSound);
+    print("shaped, so it cannot click:", info.peak <= 1);
+
+    // Mixing adds rather than averages, so a stack can exceed full scale.
+    // Nothing clamps it silently — peak says so, and normalize fixes it.
+    var stacked = soundMix([
+        {sound: jumpSound, volume: 1},
+        {sound: coinSound, volume: 1},
+        {sound: hurtSound, volume: 1}
+    ]);
+    print("stacked peak:", round(soundInfo(stacked).peak * 100) / 100, "(over 1 means it would clip)");
+
+    var safe = soundNormalize(stacked, 0.9);
+    print("after normalizing:", round(soundInfo(safe).peak * 100) / 100);
+
+    // A little arrangement, so the file is worth listening to.
+    var gap = soundTone("sine", 0, 0.1, {attack: 0, decay: 0, sustain: 0, release: 0});
+    var track = soundThen(soundThen(soundThen(jumpSound, gap), coinSound), soundThen(gap, hurtSound));
+    describe("track", track);
+
+    soundSave(track, "sound_effects.wav");
+    print("wrote sound_effects.wav");
+
+    // Reading it back proves the file is a real one rather than only
+    // something this program can open.
+    var reloaded = soundLoad("sound_effects.wav");
+    var back = soundInfo(reloaded);
+    print("reloaded:", back.frames == soundInfo(track).frames, "frames,", back.channels, "channel");
+}

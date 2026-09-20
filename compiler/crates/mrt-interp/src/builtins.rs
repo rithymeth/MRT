@@ -106,6 +106,16 @@ const NAMES: &[&str] = &[
     "gameTextWidth",
     "gameTextHeight",
     "gameSave",
+    "soundTone",
+    "soundSweep",
+    "soundLoad",
+    "soundSave",
+    "soundMix",
+    "soundThen",
+    "soundGain",
+    "soundNormalize",
+    "soundInfo",
+    "soundFree",
     "gameOpen",
     "gamePresent",
     "gameDelta",
@@ -476,6 +486,95 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
                 )));
             };
             crate::game::save(&interp.screen, path)
+        }
+
+        // -- sound ----------------------------------------------------------
+        // Sounds are ids, exactly as sprites are, and for the same reason: a
+        // second of stereo is 88,200 samples. See crate::sound.
+        "soundTone" | "soundSweep" => {
+            let takes = if name == "soundTone" { 4 } else { 5 };
+            exactly(
+                &args,
+                takes,
+                if name == "soundTone" {
+                    "soundTone() takes a wave, a frequency, a length, and an envelope."
+                } else {
+                    "soundSweep() takes a wave, two frequencies, a length, and an envelope."
+                },
+            )?;
+            let Value::Str(wave) = &args[0] else {
+                return Err(type_error(format!(
+                    "{name}() needs the wave to be a string, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            let wave = wave.clone();
+            if name == "soundTone" {
+                crate::sound::tone(&mut interp.sounds, &wave, &args[1], &args[2], &args[3])
+            } else {
+                crate::sound::sweep(
+                    &mut interp.sounds,
+                    &wave,
+                    &args[1],
+                    &args[2],
+                    &args[3],
+                    &args[4],
+                )
+            }
+        }
+        "soundLoad" => {
+            one(&args, "soundLoad")?;
+            let Value::Str(path) = &args[0] else {
+                return Err(type_error(format!(
+                    "soundLoad() needs a path, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            let path = path.clone();
+            crate::sound::load(&mut interp.sounds, &path)
+        }
+        "soundSave" => {
+            exactly(&args, 2, "soundSave() takes a sound and a path.")?;
+            let id = whole(&args[0], "soundSave", "the sound")?;
+            let Value::Str(path) = &args[1] else {
+                return Err(type_error(format!(
+                    "soundSave() needs a path, not {}.",
+                    type_name(&args[1])
+                )));
+            };
+            let path = path.clone();
+            crate::sound::save(&interp.sounds, id, &path)
+        }
+        "soundMix" => {
+            one(&args, "soundMix")?;
+            crate::sound::mix(&mut interp.sounds, &args[0])
+        }
+        "soundThen" => {
+            exactly(&args, 2, "soundThen() takes two sounds.")?;
+            crate::sound::then(
+                &mut interp.sounds,
+                whole(&args[0], "soundThen", "the first sound")?,
+                whole(&args[1], "soundThen", "the second sound")?,
+            )
+        }
+        "soundGain" | "soundNormalize" => {
+            exactly(&args, 2, format!("{name}() takes a sound and a level."))?;
+            crate::sound::gain(
+                &mut interp.sounds,
+                whole(&args[0], name, "the sound")?,
+                number(&args[1], name)?,
+                name == "soundNormalize",
+            )
+        }
+        "soundInfo" => {
+            one(&args, "soundInfo")?;
+            crate::sound::info(&interp.sounds, whole(&args[0], "soundInfo", "the sound")?)
+        }
+        "soundFree" => {
+            one(&args, "soundFree")?;
+            interp
+                .sounds
+                .free(whole(&args[0], "soundFree", "the sound")?)
         }
 
         // -- the window half: a game's main loop lives in MRT source ---------

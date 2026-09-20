@@ -639,6 +639,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrt-audio"
+version = "0.1.0"
+
+[[package]]
 name = "mrt-check"
 version = "0.1.0"
 dependencies = [
@@ -664,6 +668,7 @@ version = "0.1.0"
 dependencies = [
  "mrt-ai",
  "mrt-ast",
+ "mrt-audio",
  "mrt-diagnostics",
  "mrt-game",
  "mrt-parser",

@@ -1445,6 +1445,49 @@ place. `scale` is whole-number pixel doubling rather than interpolation — a
 bitmap font resampled to a fractional size turns to mush, so the honest
 options are the sizes it has.
 
+#### Sound
+
+A sound is an **id**, exactly as a surface is, and for the same reason: a
+second of stereo audio is 88,200 samples, and as MRT values that is not a slow
+design but an unusable one.
+
+```mrt
+var coin = soundThen(
+    soundTone("square", 988, 0.06, {attack: 0.001, release: 0.02}),
+    soundTone("square", 1319, 0.14, {attack: 0.001, release: 0.09})
+);
+soundSave(coin, "coin.wav");
+```
+
+| Call | Result |
+|------|--------|
+| `soundTone(wave, hertz, seconds, envelope)` | A tone. Waves: `"square"`, `"sine"`, `"saw"`, `"triangle"`, `"noise"`. |
+| `soundSweep(wave, from, to, seconds, envelope)` | A tone whose pitch slides — every arcade sound that is not a flat beep. |
+| `soundLoad(path)` / `soundSave(id, path)` | Read and write `.wav`. |
+| `soundMix(parts)` | `[{sound: id, volume: 1}, …]` laid on top of each other. |
+| `soundThen(a, b)` | One after the other. |
+| `soundGain(id, amount)` / `soundNormalize(id, level)` | Quieter or louder; the second scales so the loudest sample sits at `level`. |
+| `soundInfo(id)` | `{seconds, frames, channels, rate, peak}`. |
+| `soundFree(id)` | Gives a sound up. Its id is never reused. |
+
+The `envelope` is `{attack, decay, sustain, release}` in seconds, or `null`
+for sensible defaults, and any field left out keeps its default. Attack and
+release are not decoration: a waveform that starts at full volume begins with
+a vertical step, and a speaker asked to jump like that ticks — which across a
+game firing hundreds of effects is the difference between sound and crackle.
+
+**Mixing adds rather than averages**, so a stack of sounds can exceed full
+scale. Nothing clamps it on the way in — silently flattening the peaks is
+distortion the caller never asked for. `soundInfo(id).peak` reports it and
+`soundNormalize` fixes it, which leaves the choice where it belongs. Writing a
+`.wav` does clamp, because a 16-bit integer has nowhere to put the overflow.
+
+**There is no playback yet.** These builtins make sounds and write files a
+person can play; driving a sound card is a separate piece, the way a window is
+separate from a framebuffer. That split is also what makes any of it testable:
+whether a mix is correct is a question about numbers, and a test can compare
+samples but cannot listen.
+
 #### Making a game
 
     mrt-game new pong     start a game in a new directory
