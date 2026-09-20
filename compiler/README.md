@@ -4,10 +4,8 @@ A new implementation of MRT, written in Rust: diagnostics, lexer, AST, parser,
 resolver, and a tree-walking interpreter that runs programs. It is the third
 implementation of the language, alongside the Python reference and the
 Playground's TypeScript one, and it is held to the same conformance corpus as
-they are.
-
-Generators are the one thing it does not implement — see [What is not here
-yet](#what-is-not-here-yet).
+they are. It ships both a tree-walker and a bytecode VM; see [What is not
+here yet](#what-is-not-here-yet) for what is still missing.
 
 ## Why this exists
 
@@ -205,8 +203,8 @@ Every bundled example and every shared regression case in
 byte-identical. Cases that stop on a feature this interpreter does not have
 yet are recorded as *unsupported* rather than skipped, and the unsupported set
 is a **ratchet**: the harness fails both when a case newly stops working and
-when a listed case starts working. Implementing generators is expected to make
-it fail once, on purpose, until the list is shortened.
+when a listed case starts working. The list is empty now — generators, the
+last gap, closed it — so any new entry needs a reason.
 
 ### Modules
 
@@ -390,18 +388,8 @@ uncallable because of which engine built it.
 
 ## What is not here yet
 
-**Generators.** Both existing implementations suspend one by delegating to a
-host coroutine — Python's `yield from`, JavaScript's `yield*` — and stable
-Rust has no equivalent. The options are all expensive: a thread per generator
-forces `Arc<Mutex<..>>` through the whole interpreter and gives back the
-performance this was built to measure; async-as-generators fights the borrow
-checker for a tree-walker holding `&mut self` across a yield; and an explicit
-resumable evaluator is most of a bytecode VM already.
-
-That last point is why generators are deferred rather than hacked around: in
-Rust the natural way to suspend execution *is* an instruction pointer over a
-flat program. The feature that is hardest to port is also the one that argues
-hardest for the VM — a better case for it than the timings make.
-
-**Everything downstream of the tree-walker**: HIR, MIR, bytecode, WASM. The
-interpreter exists partly to give those a number to beat.
+Generators and the bytecode VM, both described above, used to be listed here
+as future work; they aren't anymore. What's left is what comes after
+bytecode: this workspace has no native codegen and no WASM target, so
+`mrt-run --vm` is as far as a program gets without an interpreter loop
+between it and the CPU.

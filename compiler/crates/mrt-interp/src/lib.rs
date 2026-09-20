@@ -15,22 +15,26 @@
 //! than a bytecode VM -- which this exists to confirm or refute with a
 //! measurement rather than a projection.
 //!
-//! # What is not here yet: generators
+//! # Generators run on borrowed machinery
 //!
 //! Both existing implementations suspend a generator by delegating to a
 //! native coroutine in their host language -- Python's `yield from`,
-//! JavaScript's `yield*`. Rust has neither on stable. The options are all
-//! expensive: a thread per generator forces `Arc<Mutex<..>>` through the
-//! whole interpreter and gives back the performance this is trying to
-//! measure; async-as-generators fights the borrow checker for a tree-walker
-//! that holds `&mut self` across a yield; and an explicit resumable
-//! evaluator is most of a bytecode VM already.
+//! JavaScript's `yield*`. Rust has neither on stable, and the alternatives
+//! are all expensive: a thread per generator forces `Arc<Mutex<..>>` through
+//! the whole interpreter and gives back the performance this is trying to
+//! measure, and async-as-generators fights the borrow checker for a
+//! tree-walker that holds `&mut self` across a yield.
 //!
-//! That last point is the interesting one, and it is why generators are
-//! deferred rather than hacked around: in Rust the natural way to suspend
-//! execution *is* an explicit instruction pointer over a flat program, so the
-//! feature that is hardest to port is also the one that argues hardest for
-//! the VM. Calling a generator function raises a clear error meanwhile.
+//! What Rust does have a natural way to suspend is an explicit instruction
+//! pointer over a flat program, which is what `vm` is. So this tree-walker
+//! does not interpret `yield` itself: calling a generator function compiles
+//! its body and hands back a parked VM frame (see `make_generator` and
+//! `step_generator`), and resuming it steps that frame rather than
+//! recursing through `execute`/`evaluate`. A `yield` reaching either of
+//! those two functions directly is therefore not a missing feature but a
+//! classification bug -- the resolver failed to mark the enclosing function
+//! as a generator -- and is reported as a runtime error rather than a panic
+//! only so a bug there fails one program instead of the process.
 //!
 //! Everything else the language has is here, modules included.
 
@@ -492,7 +496,7 @@ impl Interpreter {
             }
             StmtKind::Yield { .. } => Err(Signal::error(
                 Kind::RuntimeError,
-                "Generators are not implemented in this interpreter yet.",
+                "'yield' reached outside a generator (the enclosing function was not classified as one).",
             )
             .at(Some(stmt.line))),
             StmtKind::Try {
@@ -794,7 +798,7 @@ impl Interpreter {
             }
             ExprKind::Yield(_) => Err(Signal::error(
                 Kind::RuntimeError,
-                "Generators are not implemented in this interpreter yet.",
+                "'yield' reached outside a generator (the enclosing function was not classified as one).",
             )
             .at(line)),
         }
