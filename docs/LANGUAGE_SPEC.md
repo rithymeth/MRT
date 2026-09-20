@@ -1738,6 +1738,78 @@ That matters more than it looks: there is no window yet, so a saved PNG and a
 read-back pixel are the only two ways to know what a frame contains, and only
 one of them can be automated.
 
+### MRT-Net
+
+Provided by the Rust engines only
+(`compiler/crates/mrt-net`, bridged in `compiler/crates/mrt-interp/src/net.rs`),
+it supplies an HTTP/1.1 client through built-ins prefixed `net`. Its example
+is `examples/net_fetch.mrt`.
+
+| Built-in | Answers |
+| --- | --- |
+| `netGet(url)` / `netGet(url, options)` | Fetches a URL. |
+| `netPost(url, body)` / `netPost(url, body, options)` | Sends `body`, a string, as the request body. |
+
+`options` is an ordinary object: `{headers: {...}, timeout: seconds}`. The
+timeout covers the whole exchange rather than each read, and defaults to ten
+seconds; a server dribbling one byte at a time cannot hold a program forever
+by keeping each individual read inside its own limit.
+
+#### A response is ordinary MRT data
+
+The same rule MRT-AI follows. A request answers with an object:
+
+```mrt
+var reply = netGet("http://127.0.0.1:8080/stock.json");
+print(reply.status, reply.ok);                    // 200 true
+print(reply.headers["content-type"]);             // application/json
+var data = parse(reply.body);                     // lib/json.mrt
+```
+
+`status` is the code, `ok` is whether it was in the 200s, `headers` is an
+object whose names are **lowercased** — HTTP header names are
+case-insensitive, and a program should not have to guess which capitalisation
+a particular server chose — and `body` is a string.
+
+A body that is not valid text is an **error**, not a lossy decode. MRT has no
+bytes type, and handing a program something that looks like data and is not
+would be worse than refusing.
+
+#### What a program may not put in a request
+
+`Host`, `Content-Length`, `Connection` and `Transfer-Encoding` belong to the
+client. A program setting one is refused rather than obeyed, because two of
+any of them is how one request gets read as two by a proxy and a server that
+disagree. A header value containing a newline, and a URL whose path contains
+whitespace or a control character, are refused for the same reason. All of
+these are checked **before a socket is opened**.
+
+#### https is refused, and says so
+
+Plain HTTP over TCP needs nothing but the standard library, so this crate
+keeps the workspace's zero-dependency promise. TLS does not: it means
+`rustls` and the tree underneath it, or platform FFI. Until that dependency
+is a decision somebody has made on purpose, an `https://` URL is refused by
+name — silently fetching it over plain HTTP would be worse than not fetching
+it at all.
+
+#### Failures are ordinary errors
+
+A refused connection, a timeout, a malformed response and a rejected header
+all throw with kind `ValueError`, catchable like any other, with a message
+naming the built-in and what went wrong. An extension does not get to add an
+error kind: the kinds are core's, and a program that catches on `e.kind`
+would otherwise be reading a taxonomy that depends on which engine it runs
+on.
+
+#### What is deliberately not here
+
+No server, no sockets exposed to the language, no async. A one-shot request
+needs none of them, and each would need a concurrency story the language does
+not have. Note also what this extension changes about running a program at
+all: before it, the worst an MRT file could do was write a file where it was
+told to.
+
 ## Known ambiguities (by design)
 
 - **Optional semicolons, no significant newlines.** A statement's `;` is

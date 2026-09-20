@@ -11,6 +11,7 @@ members = [
     "crates/mrt-parser",
     "crates/mrt-resolver",
     "crates/mrt-interp",
+    "crates/mrt-net",
     "crates/mrt-ai",
     "crates/mrt-audio",
     "crates/mrt-game",

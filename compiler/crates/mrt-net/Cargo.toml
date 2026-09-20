@@ -1,0 +1,14 @@
+[package]
+name = "mrt-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# No dependencies, and unlike the window and the speaker this one needs none:
+# `std::net` speaks TCP, and HTTP/1.1 over it is bytes in and bytes out. TLS
+# is the line that cannot be crossed for free -- see the README.
+[dependencies]
+
+[lints]
+workspace = true

@@ -44,6 +44,7 @@ pub mod env;
 pub mod error;
 pub mod game;
 pub mod generator;
+pub mod net;
 pub mod sound;
 pub mod value;
 pub mod vm;
