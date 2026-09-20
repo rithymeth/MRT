@@ -372,7 +372,8 @@ conformance corpus and required to produce byte-identical output.
   - `interpreter.py`: executes MRT programs
   - `ast.py`: abstract syntax tree definitions
 - `compiler/`: the **MRT 2.0 compiler** in Rust -- lexer, parser, resolver with
-  real source spans, and a tree-walking interpreter (`mrt-run`). See
+  real source spans, a tree-walking interpreter and a bytecode VM (`mrt-run`),
+  and `mrt-game` for making games. See
   [`compiler/README.md`](https://github.com/rithymeth/MRT/blob/main/compiler/README.md)
 - `src/`: the **Playground** -- a React app and the TypeScript interpreter
   (`src/lib/mrtInterpreter.ts`) that runs MRT in a browser

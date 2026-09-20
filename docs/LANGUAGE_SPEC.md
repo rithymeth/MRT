@@ -1445,6 +1445,22 @@ place. `scale` is whole-number pixel doubling rather than interpolation — a
 bitmap font resampled to a fractional size turns to mush, so the honest
 options are the sizes it has.
 
+#### Making a game
+
+    mrt-game new pong     start a game in a new directory
+    mrt-game run          play it
+    mrt-game check        parse and resolve it without running
+
+A separate command from `mrt`, because `mrt` is the Python reference
+implementation and MRT-Game is an extension only the Rust engines have — a
+command that exists but fails at the thing it is named for is worse than one
+that is not there.
+
+`new` scaffolds a complete, playable game rather than a stub. There is no
+`build` (MRT is interpreted, so it would be a synonym for `check`) and no
+`package` yet: packaging means flattening a game's imports into one file, and
+a command that only zipped a directory would look like it had done that.
+
 #### Collision, and the bug swept tests exist to prevent
 
 A box is an ordinary object, `{x, y, width, height}`, and none of these need a

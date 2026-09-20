@@ -1,0 +1,174 @@
+// A complete little game. Edit it, run it, break it.
+//
+// Run with:   mrt-game run
+// Check with: mrt-game check
+//
+// Everything here is MRT-Game, an engine extension: the Rust engines have
+// these builtins and the Python and TypeScript ones deliberately do not.
+
+struct Brick {
+    x;
+    y;
+    width;
+    height;
+    colour;
+    alive;
+}
+
+var WIDTH = 480;
+var HEIGHT = 360;
+var PADDLE_SPEED = 380;
+var BALL_SPEED = 260;
+
+func makeBricks() {
+    var bricks = [];
+    var colours = [
+        gameColor(232, 96, 64),
+        gameColor(238, 160, 70),
+        gameColor(120, 200, 140),
+        gameColor(90, 170, 235)
+    ];
+    for (var row = 0; row < 4; row = row + 1) {
+        for (var column = 0; column < 8; column = column + 1) {
+            push(bricks, Brick(
+                24 + column * 56,
+                50 + row * 22,
+                48,
+                14,
+                colours[row],
+                true
+            ));
+        }
+    }
+    return bricks;
+}
+
+func boxOf(thing) {
+    return {x: thing.x, y: thing.y, width: thing.width, height: thing.height};
+}
+
+func main() {
+    gameInit(WIDTH, HEIGHT, "MRT Breakout");
+
+    var sky = gameColor(14, 16, 28);
+    var ink = gameColor(235, 238, 246);
+    var paddleColour = gameColor(150, 210, 250);
+    var ballColour = gameColor(250, 224, 130);
+
+    var paddle = {x: WIDTH / 2 - 36, y: HEIGHT - 26, width: 72, height: 10};
+    var ball = {x: WIDTH / 2 - 4, y: HEIGHT / 2, width: 8, height: 8};
+    var ballDx = BALL_SPEED * 0.7;
+    var ballDy = BALL_SPEED;
+
+    var bricks = makeBricks();
+    var score = 0;
+    var lives = 3;
+    var message = "";
+
+    while (gameOpen()) {
+        // Real elapsed time, so the game runs at the same speed on a fast
+        // machine and a slow one. Capped, because a frame that took half a
+        // second -- a window being dragged, say -- would otherwise teleport
+        // the ball through a wall.
+        var dt = gameDelta();
+        if (dt > 0.05) { dt = 0.05; }
+
+        if (gameKeyPressed("Escape")) { gameClose(); }
+
+        // -- paddle ------------------------------------------------------
+        if (gameKeyDown("Left") || gameKeyDown("A")) {
+            paddle.x = paddle.x - PADDLE_SPEED * dt;
+        }
+        if (gameKeyDown("Right") || gameKeyDown("D")) {
+            paddle.x = paddle.x + PADDLE_SPEED * dt;
+        }
+        if (paddle.x < 0) { paddle.x = 0; }
+        if (paddle.x + paddle.width > WIDTH) { paddle.x = WIDTH - paddle.width; }
+
+        // -- ball --------------------------------------------------------
+        if (lives > 0 && message == "") {
+            var stepX = ballDx * dt;
+            var stepY = ballDy * dt;
+
+            // Walls, by reflection rather than by collision: they are the
+            // edges of the screen, and there is nothing to sweep against.
+            if (ball.x + stepX < 0 || ball.x + ball.width + stepX > WIDTH) {
+                ballDx = -ballDx;
+                stepX = -stepX;
+            }
+            if (ball.y + stepY < 0) {
+                ballDy = -ballDy;
+                stepY = -stepY;
+            }
+
+            // Bricks and paddle, by swept test: the ball moves several
+            // pixels a frame and a brick is fourteen tall, so a per-frame
+            // overlap check would miss it at speed.
+            var soonest = null;
+            var struck = null;
+            for (brick in bricks) {
+                if (!brick.alive) { continue; }
+                var hit = gameSweep(ball, stepX, stepY, boxOf(brick));
+                if (hit != null && (soonest == null || hit.time < soonest.time)) {
+                    soonest = hit;
+                    struck = brick;
+                }
+            }
+            var paddleHit = gameSweep(ball, stepX, stepY, paddle);
+            if (paddleHit != null && (soonest == null || paddleHit.time < soonest.time)) {
+                soonest = paddleHit;
+                struck = null;
+            }
+
+            if (soonest == null) {
+                ball.x = ball.x + stepX;
+                ball.y = ball.y + stepY;
+            } else {
+                ball.x = soonest.x;
+                ball.y = soonest.y;
+                if (soonest.normalX != 0) { ballDx = -ballDx; }
+                if (soonest.normalY != 0) { ballDy = -ballDy; }
+                if (struck != null) {
+                    struck.alive = false;
+                    score = score + 10;
+                }
+            }
+
+            // Missed.
+            if (ball.y > HEIGHT) {
+                lives = lives - 1;
+                ball.x = WIDTH / 2 - 4;
+                ball.y = HEIGHT / 2;
+                ballDy = BALL_SPEED;
+                if (lives == 0) { message = "GAME OVER"; }
+            }
+
+            var left = 0;
+            for (brick in bricks) {
+                if (brick.alive) { left = left + 1; }
+            }
+            if (left == 0) { message = "YOU WIN"; }
+        }
+
+        // -- draw --------------------------------------------------------
+        gameClear(sky);
+        for (brick in bricks) {
+            if (brick.alive) {
+                gameRect(brick.x, brick.y, brick.width, brick.height, brick.colour);
+            }
+        }
+        gameRect(paddle.x, paddle.y, paddle.width, paddle.height, paddleColour);
+        gameRect(ball.x, ball.y, ball.width, ball.height, ballColour);
+
+        gameText(8, 8, "SCORE ${score}", 1, ink);
+        var lifeText = "LIVES ${lives}";
+        gameText(WIDTH - gameTextWidth(lifeText, 1) - 8, 8, lifeText, 1, ink);
+        if (message != "") {
+            gameText((WIDTH - gameTextWidth(message, 3)) / 2, HEIGHT / 2 - 40, message, 3, ink);
+        }
+
+        gamePresent();
+    }
+
+    print("final score:", score);
+}

@@ -105,4 +105,20 @@ Only the last of those earns its place in an engine — overlap is four lines a
 program can write, but a fast mover crossing a thin wall between two frames
 overlaps it on no frame at all, and no better overlap test fixes that.
 
-Next: the CLI that packages a game.
+## The command
+
+    mrt-game new pong     start a game in a new directory
+    mrt-game run          play it
+    mrt-game check        parse and resolve it without running
+
+`new` scaffolds a complete, playable breakout — a loop, real elapsed time,
+input, swept collision and text — rather than a stub that prints "hello". The
+first edit anyone makes is then to a program that already works.
+
+There is no `build`: MRT is interpreted, so it would be a lie or a synonym for
+`check`. There is no `package` either, and that absence is deliberate rather
+than pending — packaging means flattening a game's imports into one file that
+runs anywhere MRT does, and a `package` that only zipped a directory would
+look like it had solved that.
+
+Next: `package`, done properly.
