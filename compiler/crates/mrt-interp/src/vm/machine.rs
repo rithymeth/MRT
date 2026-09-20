@@ -311,12 +311,13 @@ impl<'a> Vm<'a> {
 
     fn step(&mut self) -> Result<Step, Signal> {
         {
-            let (op, line) = {
+            let (op, line, site) = {
                 let frame = self.frames.last_mut().expect("a frame to be running");
                 let op = frame.proto.chunk.code[frame.ip];
                 let line = frame.proto.chunk.lines[frame.ip];
+                let site = frame.ip;
                 frame.ip += 1;
-                (op, line)
+                (op, line, site)
             };
 
             match op {
@@ -329,16 +330,25 @@ impl<'a> Vm<'a> {
                 Op::False => self.push(Value::Bool(false)),
 
                 Op::GetVar(i) => {
-                    let name = Rc::clone(&self.frame().proto.chunk.names[i as usize]);
-                    let value = self.frame().env.get(&name, Some(line))?;
+                    let chunk = &self.frame().proto.chunk;
+                    let name = Rc::clone(&chunk.names[i as usize]);
+                    let hint = chunk.var_hints[site].get();
+                    let (value, hops) = self.frame().env.get_hinted(&name, hint, Some(line))?;
+                    self.frame().proto.chunk.var_hints[site].set(hops);
                     self.push(value);
                 }
                 Op::SetVar(i) => {
-                    let name = Rc::clone(&self.frame().proto.chunk.names[i as usize]);
+                    let chunk = &self.frame().proto.chunk;
+                    let name = Rc::clone(&chunk.names[i as usize]);
+                    let hint = chunk.var_hints[site].get();
                     // Assignment is an expression, so the value stays on the
                     // stack as its result.
                     let value = self.stack.last().expect("a value to assign").clone();
-                    self.frame().env.assign(&name, value, Some(line))?;
+                    let hops = self
+                        .frame()
+                        .env
+                        .assign_hinted(&name, value, hint, Some(line))?;
+                    self.frame().proto.chunk.var_hints[site].set(hops);
                 }
                 Op::DefineVar(i) => {
                     let name = Rc::clone(&self.frame().proto.chunk.names[i as usize]);

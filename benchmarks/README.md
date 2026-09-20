@@ -289,3 +289,41 @@ within-run spread here is 12–24%, which is an order of magnitude larger than
 the effect being looked for; this machine cannot see it. The change stands on
 what is deterministic — an allocation and a hash that no longer happen — and
 no speedup is claimed for it.
+
+## An inline cache for globals and captured names, measured the same way
+
+The table above pointed at globals and built-in calls, not upvalues, as the
+real cost in `GetVar`/`SetVar`. The fix: each `GetVar`/`SetVar` **instruction**
+(not each name -- the same identifier can resolve differently at two source
+positions in one function) remembers how many scopes up it found its answer
+last time, and tries that scope first.
+
+This is sound because MRT's scoping is static: which names a given block can
+bind is fixed by its source text, never by which branch ran to reach it, so
+the hop count for one fixed bytecode position is the same on every execution
+of that instruction. It is still only a fast path, not a proof carried in the
+type system -- a hint that misses falls back to the ordinary walk from the
+top rather than reporting a wrong answer, so a mistake in that reasoning
+costs speed, never correctness (`Env::get_hinted`'s tests include a hint that
+names a real but wrong scope, and one longer than the whole chain).
+
+Wall-clock timing already burned this session once on a change with no
+measurable effect (the section above), so this one is checked the way the opcode
+table above was built: by counting, not timing. Instrumenting `Env` to tally
+every scope actually consulted, with the cache forced off (`hint = -1`
+always) against normal running:
+
+| benchmark | scopes visited, uncached | cached | reduction |
+|---|---:|---:|---:|
+| fib | 135,300 | 67,650 | 2.00x |
+| strings | 320,006 | 100,016 | 3.20x |
+| matching | 360,004 | 144,011 | 2.50x |
+| closures | 106,000 | 52,003 | 2.04x |
+| structs | 60,000 | 20,002 | 3.00x |
+| arrays | 270,006 | 90,006 | 3.00x |
+
+Every non-slotted variable access after the first at a given instruction now
+costs one hash lookup instead of a walk through every enclosing scope on the
+way to it. That is a real, deterministic reduction in the operation being
+optimised, independent of anything this machine's clock can or cannot
+resolve.

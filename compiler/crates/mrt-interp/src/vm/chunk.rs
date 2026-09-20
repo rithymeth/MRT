@@ -1,5 +1,6 @@
 //! The instruction set, and the compiled form of one function body.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use mrt_ast::{BinOp, MatchPattern, Name, Param, Pattern, Stmt};
@@ -175,6 +176,19 @@ pub struct Chunk {
     pub code: Vec<Op>,
     /// Line per instruction, for errors. Parallel to `code`.
     pub lines: Vec<u32>,
+    /// An inline cache for `GetVar`/`SetVar`: how many scopes up the *last*
+    /// execution of this instruction found its name, or -1 before the first.
+    /// Parallel to `code`; unused at every other kind of instruction.
+    ///
+    /// `Cell` rather than a plain `i32` because a `Proto` is shared by every
+    /// recursive call through an `Rc`, and this needs to be written back
+    /// through a shared reference. Safe with no lock: the VM is one thread,
+    /// and only the frame currently executing this instruction ever touches
+    /// its cache -- a call in flight and its own recursive call never touch
+    /// the same slot at the same moment, since the recursive call runs to
+    /// completion before the outer one resumes. See `Env::get_hinted` for
+    /// why a hop count found once is good for every later execution.
+    pub var_hints: Vec<Cell<i32>>,
     pub constants: Vec<Value>,
     /// Variable names, indexed by the `u32` in `GetVar`/`SetVar`/`DefineVar`.
     ///
@@ -223,6 +237,7 @@ impl Chunk {
         Chunk {
             code: Vec::new(),
             lines: Vec::new(),
+            var_hints: Vec::new(),
             constants: Vec::new(),
             names: Vec::new(),
             protos: Vec::new(),
@@ -237,6 +252,7 @@ impl Chunk {
     pub fn emit(&mut self, op: Op, line: u32) -> usize {
         self.code.push(op);
         self.lines.push(line);
+        self.var_hints.push(Cell::new(-1));
         self.code.len() - 1
     }
 
