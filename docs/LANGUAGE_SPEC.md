@@ -1621,7 +1621,7 @@ gameDraw(ship, 20, 60);
 | `gameSurface(width, height)` | A new offscreen surface, **transparent**; returns its id. |
 | `gameTarget(id)` | Points drawing at that surface. `0` is the screen. |
 | `gameTargetId()` | Which surface drawing is landing on. |
-| `gameDraw(id, x, y)` | Stamps a sprite onto the current target, blending it. |
+| `gameDraw(id, x, y, options)` | Stamps a sprite onto the current target, blending it. `options` is optional. |
 | `gameSurfaceFree(id)` | Gives a surface up. Its id is never reused. |
 | `gameLoad(path)` | Reads a PNG into a new surface; returns its id. |
 | `gameSurfaceSize(id)` | `{width, height}` — including `0` for the screen. |
@@ -1629,6 +1629,36 @@ gameDraw(ship, 20, 60);
 A new surface is transparent rather than black, because a sprite is a shape
 with nothing around it: one that began opaque would stamp a rectangle of
 background over whatever it landed on.
+
+`gameDraw`'s fourth argument is `{angle, scaleX, scaleY, anchorX, anchorY}`,
+or `null`, and any field left out keeps its default — `angle: 0, scaleX: 1,
+scaleY: 1, anchorX: 0, anchorY: 0`, exactly what the three-argument call has
+always meant, so no existing program's drawing changes:
+
+```mrt
+// Spin a ship in place: rotate about its own centre, which stays where it
+// was placed regardless of angle.
+gameDraw(ship, x, y, {angle: heading, anchorX: 8, anchorY: 8});
+
+// A sprite twice as tall as it is wide, drawn upright.
+gameDraw(banner, x, y, {scaleX: 1, scaleY: 2});
+```
+
+`angle` is radians, and clockwise — matching screen space, where Y already
+points down, so a positive angle turns the same way a clock's hand does
+rather than the way plain trigonometry would suggest. `anchorX`/`anchorY`
+name a point in the *sprite's own* pixel space (default `(0, 0)`, its
+top-left corner); that point is what rotates and scales in place and lands
+at `(x, y)`. A ship anchored at its centre spins on the spot; the same ship
+anchored at its top-left corner (the default) swings out from that corner
+like a door.
+
+Sampling is nearest-neighbour, the same rule `gameText`'s `scale` follows: a
+source pixel that does not land exactly on a destination pixel is assigned
+one rather than blended into existence. A `scaleX` or `scaleY` of zero or
+less draws nothing, the same answer a negative width gives `gameRect` — a
+size that came out backwards is a bug in the caller's arithmetic, not a
+request to flip the sprite.
 
 `gameLoad` reads an ordinary PNG — any colour type at 8 bits a channel,
 palettes down to 1 bit, 16-bit channels reduced to 8 — and what it returns is

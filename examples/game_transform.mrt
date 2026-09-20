@@ -1,0 +1,48 @@
+// Rotating and scaling a sprite, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// gameDraw(id, x, y) always meant "stamp this sprite with its top-left
+// corner at (x, y)". A fourth, optional argument adds a rotation and/or a
+// scale around a chosen point in the sprite's own pixel space, without
+// changing what the three-argument call has always meant.
+
+func main() {
+    gameInit(120, 120, "MRT Transform");
+    gameClear(gameColor(18, 22, 38));
+
+    var red = gameColor(220, 70, 70);
+    var arrow = gameSurface(12, 6);
+    gameTarget(arrow);
+    gameRect(0, 0, 12, 6, red);
+    gameTarget(0);
+
+    // Plain: the top-left corner lands exactly at (10, 10), same as always.
+    gameDraw(arrow, 10, 10);
+    print("plain corner:", gameColorAt(10, 10) == red);
+
+    // Rotated a quarter turn about its own top-left corner: 12 wide by 6
+    // tall becomes 6 wide by 12 tall, still anchored at that same corner.
+    gameDraw(arrow, 60, 10, {angle: 1.5707963267948966});
+    print("rotated corner still anchored:", gameColorAt(60, 10) == red);
+    print("now taller than it is wide:", gameColorAt(60, 20) == red);
+
+    // Scaled up 2x with no rotation: a clean block, no gaps between the
+    // enlarged pixels.
+    gameDraw(arrow, 10, 90, {scaleX: 2, scaleY: 2});
+    print("scaled corner:", gameColorAt(10, 90) == red);
+    print("scaled far corner:", gameColorAt(33, 101) == red);
+
+    // Rotated about its own centre: the centre pixel does not move, so a
+    // spinning sprite can be drawn at a fixed screen position every frame.
+    var centre = gameSurface(7, 7);
+    gameTarget(centre);
+    gamePixel(3, 3, red);
+    gameTarget(0);
+    gameDraw(centre, 90, 90, {angle: 0.7853981633974483, anchorX: 3, anchorY: 3});
+    print("centre pixel held still while rotating:", gameColorAt(90, 90) == red);
+
+    gameSave("game_transform.png");
+    print("wrote game_transform.png");
+}

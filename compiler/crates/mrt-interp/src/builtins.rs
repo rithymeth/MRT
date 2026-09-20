@@ -415,13 +415,27 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
             crate::game::sprites::current_target(&interp.screen)
         }
         "gameDraw" => {
-            exactly(&args, 3, "gameDraw() takes a surface, x, and y.")?;
-            crate::game::sprites::draw(
-                &mut interp.screen,
-                whole(&args[0], "gameDraw", "the surface")?,
-                coord(&args[1], "gameDraw", "x")?,
-                coord(&args[2], "gameDraw", "y")?,
-            )
+            // The fourth argument is optional so the common case -- no
+            // rotation, no scale -- stays the three-argument call every
+            // existing program already makes.
+            between(
+                &args,
+                3,
+                4,
+                "gameDraw() takes a surface, x, y, and optionally {angle, scaleX, scaleY, anchorX, anchorY}.",
+            )?;
+            let id = whole(&args[0], "gameDraw", "the surface")?;
+            let x = coord(&args[1], "gameDraw", "x")?;
+            let y = coord(&args[2], "gameDraw", "y")?;
+            match args.get(3) {
+                None | Some(Value::Null) => {
+                    crate::game::sprites::draw(&mut interp.screen, id, x, y)
+                }
+                Some(options) => {
+                    let transform = crate::game::sprites::transform_of(options, "gameDraw")?;
+                    crate::game::sprites::draw_transformed(&mut interp.screen, id, x, y, &transform)
+                }
+            }
         }
         "gameSurfaceFree" => {
             one(&args, "gameSurfaceFree")?;
