@@ -100,6 +100,10 @@ const NAMES: &[&str] = &[
     "gameCircleResolve",
     "gameCircleBoxOverlap",
     "gameCircleBoxResolve",
+    "gameParticleSpawn",
+    "gameParticleUpdate",
+    "gameParticleDraw",
+    "gameParticleCount",
     "gameSurface",
     "gameLoad",
     "gameSurfaceSize",
@@ -423,6 +427,37 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
         "gameCircleBoxResolve" => {
             exactly(&args, 2, "gameCircleBoxResolve() takes a circle and a box.")?;
             crate::game::collide::circle_box_resolve(&args[0], &args[1])
+        }
+        "gameParticleSpawn" => {
+            exactly(
+                &args,
+                6,
+                "gameParticleSpawn() takes x, y, dx, dy, a lifetime in seconds, and a colour.",
+            )?;
+            crate::game::particles::spawn(
+                &mut interp.screen,
+                number(&args[0], "gameParticleSpawn")?,
+                number(&args[1], "gameParticleSpawn")?,
+                number(&args[2], "gameParticleSpawn")?,
+                number(&args[3], "gameParticleSpawn")?,
+                number(&args[4], "gameParticleSpawn")?,
+                color(&args[5], "gameParticleSpawn")?,
+            )
+        }
+        "gameParticleUpdate" => {
+            exactly(&args, 1, "gameParticleUpdate() takes a delta time.")?;
+            crate::game::particles::update(
+                &mut interp.screen,
+                number(&args[0], "gameParticleUpdate")?,
+            )
+        }
+        "gameParticleDraw" => {
+            exactly(&args, 0, "gameParticleDraw() takes no arguments.")?;
+            crate::game::particles::draw(&mut interp.screen)
+        }
+        "gameParticleCount" => {
+            exactly(&args, 0, "gameParticleCount() takes no arguments.")?;
+            crate::game::particles::count(&interp.screen)
         }
         "gameSurface" => {
             exactly(&args, 2, "gameSurface() takes a width and a height.")?;
