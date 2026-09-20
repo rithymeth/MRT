@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import sys
 from functools import cmp_to_key
 from typing import Any, Dict, List, Optional
 from .ast import *
@@ -1016,6 +1017,15 @@ class Interpreter:
         # that conformance, which compares printed text across four
         # implementations, is unaffected.
         self.entry = ENTRY_MISSING
+        # Whether the program stopped on a runtime error (as opposed to
+        # running to completion, however little it printed). A CLI needs
+        # this to choose an exit code -- `interpret()` used to swallow every
+        # runtime error internally and this stayed `False` no matter what
+        # went wrong, which meant `mrt program.mrt` exited 0 on a crash. A
+        # shell script or CI step checking `$?` after running a program this
+        # way would see success on one that had actually stopped part way
+        # through.
+        self.had_error = False
 
         # -- Modules --
         # `module_path` is the absolute path of the file being run; imports
@@ -1316,6 +1326,11 @@ class Interpreter:
     def interpret(self, statements: List[Stmt]):
         try:
             self.clear_output()
+            # Reset for this run: an Interpreter can be reused (the web
+            # playground keeps one alive across requests), and a stale
+            # `True` from a previous program would report every later one
+            # as having failed too.
+            self.had_error = False
             # Function declarations are registered first (so they can refer
             # to each other in any order), then the remaining top-level
             # statements run in source order -- imports among them, which is
@@ -1345,15 +1360,18 @@ class Interpreter:
             # what the program chose to say.
             error_msg = f"Runtime Error: Uncaught {stringify(thrown.value)}"
             self.output.append(error_msg)
-            print(error_msg)
+            self.had_error = True
+            print(error_msg, file=sys.stderr)
         except MRTRuntimeError as e:
             error_msg = f"Runtime Error: {e}"
             self.output.append(error_msg)
-            print(error_msg)
+            self.had_error = True
+            print(error_msg, file=sys.stderr)
         except Exception as e:
             error_msg = f"Runtime Error: {str(e)}"
             self.output.append(error_msg)
-            print(error_msg)
+            self.had_error = True
+            print(error_msg, file=sys.stderr)
 
     def execute(self, stmt: Stmt):
         match stmt:

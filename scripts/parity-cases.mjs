@@ -8,6 +8,12 @@
 // implementations of the same language stay honest only if they are all
 // answering the same questions.
 
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+
 // -- Regression snippets -----------------------------------------------------
 // Each of these caught a real divergence during development; keep them here
 // so a future change can't silently reintroduce the same bug.
@@ -772,21 +778,24 @@ export const MODULE_CASES = [
 // four implementations agree on. These are the exceptions, and each one is a
 // divergence recorded rather than resolved.
 //
-// These examples call `ai*` or `game*` builtins that only the Rust engines
-// have (compiler/crates/mrt-ai, compiler/crates/mrt-game). That is settled
-// rather than outstanding: both are declared *engine extensions*, specified as
-// such under "Engine extensions" in docs/LANGUAGE_SPEC.md. Neither is part of
-// the language, so a program using one is not a conformance case and the Rust
-// harnesses skip it rather than reporting a mismatch nobody can act on.
-// Extensions carry their own tests in the crate that provides them, because
-// being outside the corpus means untested otherwise.
-export const ENGINE_SPECIFIC_EXAMPLES = new Set([
-  'ai_linear.mrt',
-  'ai_net.mrt',
-  'game_shapes.mrt',
-  'game_bounce.mrt',
-  'game_sprites.mrt',
-  'game_collide.mrt',
-  'game_images.mrt',
-  'sound_effects.mrt',
-])
+// These examples call `ai*` or `game*`/`sound*` builtins that only the Rust
+// engines have (compiler/crates/mrt-ai, compiler/crates/mrt-game,
+// compiler/crates/mrt-audio). That is settled rather than outstanding: all
+// are declared *engine extensions*, specified as such under "Engine
+// extensions" in docs/LANGUAGE_SPEC.md. None is part of the language, so a
+// program using one is not a conformance case and the Rust harnesses skip it
+// rather than reporting a mismatch nobody can act on. Extensions carry their
+// own tests in the crate that provides them, because being outside the
+// corpus means untested otherwise.
+//
+// The list itself lives in scripts/engine-specific-examples.txt rather than
+// here, because .github/workflows/ci.yml's "run every bundled example" step
+// needs the same names and is plain bash, not JavaScript. One text file
+// both can read is what keeps them from drifting apart; this export just
+// wraps it in a Set for callers that already expect one.
+export const ENGINE_SPECIFIC_EXAMPLES = new Set(
+  readFileSync(path.join(scriptDir, 'engine-specific-examples.txt'), 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+)

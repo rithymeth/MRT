@@ -38,7 +38,21 @@ jobs:
 
       - name: Run every bundled example program
         run: |
+          # examples/engine-specific ones (game*, ai*, sound*) call builtins
+          # only the Rust engines have and are expected to fail here -- see
+          # scripts/engine-specific-examples.txt, the one list this and
+          # scripts/parity-cases.mjs both read, so they cannot drift apart.
+          mapfile -t skip < <(grep -v '^#' scripts/engine-specific-examples.txt | grep -v '^[[:space:]]*$')
           for f in examples/*.mrt; do
+            name=$(basename "$f")
+            skip_this=false
+            for s in "${skip[@]}"; do
+              if [ "$s" = "$name" ]; then skip_this=true; fi
+            done
+            if [ "$skip_this" = true ]; then
+              echo "--- $f (skipped: engine extension) ---"
+              continue
+            fi
             echo "--- $f ---"
             mrt "$f"
           done
@@ -102,6 +116,18 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # cli's binaries (mrt-check, mrt-run, mrt-game) build mrt-interp with
+      # the window and audio features on unconditionally (see
+      # compiler/cli/Cargo.toml), so even the plain `cargo build` below needs
+      # these: alsa-sys links against libasound2 at build time, and
+      # xvfb/libxkbcommon-x11-0 are what let scripts/check-window.sh and
+      # scripts/check-game-cli.sh open a real window and talk to a (silent,
+      # cardless) sound device further down.
+      - name: Install system dependencies for the window and audio backends
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libxkbcommon-x11-0 xvfb
+
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
@@ -123,6 +149,16 @@ jobs:
 
       - name: Test
         run: cargo test --manifest-path compiler/Cargo.toml
+
+      # mrt-interp's window and audio support are optional features (see
+      # compiler/crates/mrt-interp/Cargo.toml) precisely so that `cargo test
+      # -p mrt-interp` alone stays hermetic; these two runs are what actually
+      # exercise the code behind each flag.
+      - name: Test with the window feature
+        run: cargo test --manifest-path compiler/Cargo.toml -p mrt-interp --features window
+
+      - name: Test with the audio feature
+        run: cargo test --manifest-path compiler/Cargo.toml -p mrt-interp --features audio
 
       # Frontend conformance: the same tokens and the same tree as the
       # reference implementation, rejecting exactly what it rejects, plus a
@@ -150,3 +186,20 @@ jobs:
       # a closed one passes unnoticed.
       - name: Check the bytecode VM against the Python reference interpreter
         run: node scripts/check-vm-conformance.mjs
+
+      # The packager's only real test: every module-system case and every
+      # bundled example that imports something, packaged and then run, must
+      # behave exactly like the unpackaged original -- on both engines.
+      - name: Check that mrt-game package preserves behavior
+        run: node scripts/check-package.mjs
+
+      # Opens a real window under Xvfb and presents real frames; see
+      # scripts/check-window.sh for why this can't be an ordinary `cargo test`.
+      - name: Check that a real window opens and presents frames
+        run: sh scripts/check-window.sh
+
+      # Scaffolds a game with `mrt-game new`, checks it, and runs it under
+      # Xvfb -- the one check that would notice a builtin the starter game
+      # uses getting renamed or changed elsewhere in the workspace.
+      - name: Check the mrt-game CLI end to end
+        run: sh scripts/check-game-cli.sh

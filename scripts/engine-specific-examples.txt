@@ -1,0 +1,17 @@
+# Examples that call ai* or game*/sound* builtins the Rust engines provide
+# and the Python reference and TypeScript playground deliberately do not.
+# See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+#
+# One list, read by scripts/parity-cases.mjs (which harnesses import
+# ENGINE_SPECIFIC_EXAMPLES from) and by .github/workflows/ci.yml's
+# "run every bundled example" step, so the two cannot drift apart.
+# Blank lines and lines starting with # are ignored.
+
+ai_linear.mrt
+ai_net.mrt
+game_shapes.mrt
+game_bounce.mrt
+game_sprites.mrt
+game_collide.mrt
+game_images.mrt
+sound_effects.mrt
