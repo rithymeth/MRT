@@ -1,0 +1,82 @@
+// A camera "rig": smooth follow toward a target position, plus a
+// temporary shake layered on top. Beyond gameCamera's own plain "move it
+// here", everything a camera needs is arithmetic on a couple of numbers
+// over time, so this computes a position; a program hands that straight
+// to gameCamera itself, the same way a Tween's own .value() is only ever
+// handed to something else -- this needs no screen and calls no game*
+// built-in.
+
+struct CameraRig {
+    x, y, targetX, targetY, rng,
+    smoothing = 8, shakeStrength = 0, shakeDuration = 0, shakeElapsed = 0,
+    shakeOffsetX = 0, shakeOffsetY = 0;
+
+    // Where the camera should be heading. Closed toward smoothly over
+    // update() calls rather than snapped to instantly -- what keeps a
+    // camera from whipping to a new position the instant its target does.
+    func follow(x, y) {
+        this.targetX = x;
+        this.targetY = y;
+    }
+
+    // Moves both the target and the camera itself there immediately, for
+    // a level transition or a respawn where smoothing would look wrong.
+    func snapTo(x, y) {
+        this.x = x;
+        this.y = y;
+        this.targetX = x;
+        this.targetY = y;
+    }
+
+    // Starts a shake: up to `strength` pixels of random jitter, decaying
+    // linearly to nothing over `duration` seconds. A shake already
+    // running is replaced rather than added to -- what a program asks
+    // for most recently is what it wants, the same rule soundFade
+    // follows for a live volume change.
+    func shake(strength, duration) {
+        this.shakeStrength = strength;
+        this.shakeDuration = duration;
+        this.shakeElapsed = 0;
+    }
+
+    // Advances the follow and the shake by `dt` seconds. The shake's
+    // jitter is rolled once here and cached, not on every read in
+    // position() below -- otherwise two reads in the same frame (a draw
+    // call and a debug print, say) would see the camera in two different
+    // places.
+    func update(dt) {
+        // Closes this fraction of the remaining distance to the target,
+        // scaled by dt so the camera reaches it in roughly the same real
+        // time regardless of frame rate. Clamped to 1 so a large dt (a
+        // stall, a slow first frame) cannot overshoot past the target.
+        var factor = min(1, this.smoothing * dt);
+        this.x = this.x + (this.targetX - this.x) * factor;
+        this.y = this.y + (this.targetY - this.y) * factor;
+
+        if (this.shakeElapsed < this.shakeDuration) {
+            this.shakeElapsed = this.shakeElapsed + dt;
+            var remaining = max(0, 1 - this.shakeElapsed / this.shakeDuration);
+            var magnitude = this.shakeStrength * remaining;
+            this.shakeOffsetX = (this.rng() * 2 - 1) * magnitude;
+            this.shakeOffsetY = (this.rng() * 2 - 1) * magnitude;
+        } else {
+            this.shakeOffsetX = 0;
+            this.shakeOffsetY = 0;
+        }
+    }
+
+    // `{x, y}`, ready to hand straight to gameCamera: the smoothed follow
+    // position plus whatever shake is live right now.
+    func position() {
+        return {x: this.x + this.shakeOffsetX, y: this.y + this.shakeOffsetY};
+    }
+}
+
+// A rig starting at `(x, y)`, already following that position (so the
+// first update() does not visibly snap from somewhere else). `seed`
+// drives the shake's own random jitter, the same seed random() itself
+// takes; two rigs given the same seed shake identically, which is what a
+// deterministic replay needs.
+export func cameraRig(x, y, seed = 1) {
+    return CameraRig(x, y, x, y, random(seed));
+}
