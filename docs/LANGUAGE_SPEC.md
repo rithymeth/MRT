@@ -2106,6 +2106,43 @@ so `gameCamera` scrolls them the same as it scrolls sprites and shapes.
 target a sprite first to bake an explosion's debris into it, or leave the
 target at the screen for the ordinary case.
 
+The loop above — a random `dx`/`dy` per particle, spawned in a batch — is
+exactly what `examples/lib/emitter.mrt`'s `burst` does, so a program that
+wants a one-off explosion does not have to write it out each time:
+
+```mrt
+import { burst, emitter } from "./lib/emitter.mrt";
+
+var rand = random(1);
+burst(hitX, hitY, 40, 80, 0.6, spark, rand);
+```
+
+`burst(x, y, count, spread, life, colour, rand)` spawns `count` particles at
+once, each with its own `dx`/`dy` picked independently between `-spread`
+and `spread`; `rand` is a `random(seed)` generator, so a burst replays
+identically given the same seed. A continuous source — smoke, a torch, a
+trail behind something moving — wants particles spawned a few at a time
+over many frames instead, which is what `emitter` is for:
+
+```mrt
+var smoke = emitter(chimneyX, chimneyY, /* rate */ 12, /* spread */ 10, 1.5, grey);
+while (gameOpen()) {
+    smoke.moveTo(chimneyX, chimneyY); // if the source itself can move
+    smoke.update(gameDelta());
+    // ...
+}
+```
+
+`update(dt)` accumulates `rate * dt` particles' worth of time and spawns
+however many whole ones that comes to, carrying any fractional remainder
+forward — so a rate that does not divide evenly into a frame still averages
+out correctly instead of being rounded away every frame. Neither of these
+is a built-in for the same reason scenes and tweening are not: deciding how
+many particles to spawn, in what pattern, how often, is arithmetic on top
+of a pool that already exists — the actual per-particle work stays in
+`gameParticleUpdate`/`gameParticleDraw`, which do need to touch every live
+particle every frame and so stay built-in.
+
 #### Saving and loading game state
 
 | Call | Result |
@@ -2281,6 +2318,79 @@ than a built-in for the same reason `collide`'s doc comment gives for not
 promoting simple arithmetic to a built-in — a program can write this in MRT
 and did, and an engine feature that only did this would earn nothing but a
 longer manual.
+
+#### Timers and coroutines
+
+A cooldown, a delayed explosion, a wave of enemies every few seconds — a
+game already tracks elapsed time itself, one `dt` at a time, so a timer is
+that same arithmetic done once and reused rather than a fresh
+`elapsed += dt; if (elapsed >= duration) { ... }` written out at every call
+site. `examples/lib/timers.mrt`'s `scheduler()` holds any number of them:
+
+```mrt
+import { scheduler } from "./lib/timers.mrt";
+
+var timers = scheduler();
+timers.after(3.0, func() { spawnBoss(); });
+var wave = timers.every(5.0, func() { spawnWave(); });
+
+while (gameOpen()) {
+    timers.update(gameDelta());
+    // ...
+    gamePresent();
+}
+
+// Later, once the boss fight starts:
+timers.cancel(wave);
+```
+
+`after(seconds, callback)` runs `callback` once; `every(seconds, callback)`
+runs it again every `seconds` until `cancel()` is called with the timer
+either one returned. A `dt` large enough to cross more than one interval
+fires a repeating timer once per interval it crossed, not just once — the
+same "don't drop what a big step covers" rule `CameraRig` and `Tween`
+follow elsewhere in this section.
+
+A cutscene, a multi-step tutorial, or any other scripted sequence is a
+different shape: not "wait, then do one thing" but "do this, wait, do the
+next thing, wait, ...". MRT already has exactly that control flow —
+`yield` pauses a generator and resumes it later — so `coroutine()` drives
+one by treating each yielded number as a pause, in seconds:
+
+```mrt
+import { coroutine } from "./lib/timers.mrt";
+
+func introCutscene() {
+    fadeIn();
+    yield 1.0;
+    showDialog("Welcome.");
+    yield 2.0;
+    showDialog("Let's begin.");
+}
+
+var intro = coroutine(introCutscene);
+while (!intro.done) {
+    intro.update(gameDelta());
+    // ...
+}
+```
+
+`coroutine(genFn)` starts `genFn` immediately, running it to its first
+`yield` — so `fadeIn()` above has already happened by the time `coroutine`
+returns, the same way calling a plain (non-generator) function would run
+its first line right away. Each `update(dt)` advances the clock and, once
+enough of it has passed, resumes the generator past its `yield` and runs
+it to the next one (or to the end, marking `.done`). A `dt` that overshoots
+more than one `yield` still lands on every step in between, in order,
+rather than skipping any of them.
+
+Neither half needs a screen or any `game*` call — a timer is arithmetic on
+a number, and a coroutine is MRT's own generators (see
+[Generators](#generators)) doing the actual waiting; `examples/timers.mrt`
+runs both without opening a window. They are included as a library for the
+same reason scenes above are: this is ordinary MRT a program could write
+for itself, so an engine built-in that only did this would earn nothing but
+a longer manual.
 
 #### Gamepads
 
