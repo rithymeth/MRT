@@ -1,0 +1,44 @@
+// A queue of fading pop-up notifications, from MRT source. Needs no
+// engine: an opacity that rises, holds, then falls is ordinary MRT, the
+// same as timers.mrt and emitter.mrt's own elapsed-time arithmetic.
+
+import { toastQueue } from "./lib/toast.mrt";
+
+func main() {
+    var toasts = toastQueue();
+    print("starts empty:", len(toasts.live) == 0);
+
+    // fadeIn 0.25s, hold 0.5s, fadeOut 0.25s -- a 1.0s lifetime split
+    // into clean eighths, so every checkpoint below lands on an exact
+    // binary fraction rather than needing a tolerance.
+    toasts.show("Level up!", 0.5, 0.25, 0.25);
+    print("appears immediately, fully transparent:", len(toasts.live) == 1 && toasts.live[0].opacity() == 0);
+
+    var step = 0.125;
+    toasts.update(step);
+    print("halfway through fading in:", toasts.live[0].opacity() == 0.5);
+
+    toasts.update(step); // 0.25s total: fadeIn just finished
+    print("fully visible once faded in:", toasts.live[0].opacity() == 1);
+
+    var i = 0;
+    while (i < 4) { toasts.update(step); i = i + 1; } // 0.75s total: hold just finished
+    print("still fully visible right through the hold:", toasts.live[0].opacity() == 1);
+
+    toasts.update(step); // 0.875s total: halfway through fading out
+    print("halfway through fading out:", toasts.live[0].opacity() == 0.5);
+
+    print("a second toast stacks alongside the first rather than waiting:", len(toasts.live) == 1);
+    toasts.show("+10 gold");
+    print("both are live at once:", len(toasts.live) == 2);
+
+    toasts.update(step); // the first toast's 1.0s lifetime is up
+    print("the first toast is gone once its fade-out finishes:", len(toasts.live) == 1);
+    print("the second, freshly shown, is still there:", toasts.live[0].text == "+10 gold");
+
+    try {
+        toasts.show("oops", -1);
+    } catch (e) {
+        print("a negative duration is refused:", e.kind);
+    }
+}
