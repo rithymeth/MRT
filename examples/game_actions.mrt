@@ -1,0 +1,52 @@
+// Named input actions, remappable at runtime, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md. examples/lib/actions.mrt
+// itself is not one -- it is ordinary MRT built on gameKeyDown and
+// gameGamepadButtonDown, and only this example is engine-specific because
+// it calls them.
+//
+// Nothing here is actually pressed -- a build server, this example run in
+// CI, has no keyboard or controller attached -- so every query below
+// answers false. That is the ordinary case gameGamepadButtonDown and
+// gameKeyDown already promise for a machine with nothing plugged in; see
+// game_gamepad.mrt for the same reasoning.
+
+import { actionMap } from "./lib/actions.mrt";
+
+func main() {
+    gameInit(20, 20, "MRT Actions");
+
+    var actions = actionMap();
+
+    // One action, bound to both a key and a gamepad button -- either
+    // being active is enough, so a player can use whichever they have.
+    actions.bindKey("jump", "Space");
+    actions.bindButton("jump", "A"); // matches any connected pad
+    print("jump held:", actions.down("jump"));
+    print("jump pressed this frame:", actions.pressed("jump"));
+
+    // A binding to one specific pad, rather than "any pad".
+    actions.bindButton("fire", "RightTrigger", 0);
+    print("fire held on pad 0 specifically:", actions.down("fire"));
+
+    // Two keys bound to the same action -- WASD and the arrow keys both
+    // move left.
+    actions.bindKey("left", "A");
+    actions.bindKey("left", "Left");
+    print("left held via either key:", actions.down("left"));
+
+    // An action nobody bound anything to is simply never active -- the
+    // same answer gameKeyDown gives a key name it does not recognise, not
+    // an error to catch.
+    print("an unbound action is never active:", actions.down("neverBound"));
+
+    // Rebinding replaces whatever an action already had -- the shape a
+    // "press a key to remap" settings screen needs.
+    actions.rebindKey("jump", "Up");
+    print("jump has exactly one binding after rebinding:", len(actions.bindings["jump"]));
+
+    // Unbinding clears an action entirely.
+    actions.unbind("fire");
+    print("fire has no bindings after unbind:", len(actions.bindings["fire"]));
+}

@@ -1,0 +1,91 @@
+// Bind named actions ("jump", "fire") to one or more keys and/or gamepad
+// buttons, checked and remapped by name instead of a game hardcoding
+// gameKeyDown("Space") at every call site.
+//
+// Why a library and not a built-in: an action is nothing but a list of
+// keys and buttons that all mean the same thing, and asking "is any of
+// them active right now" is a loop over gameKeyDown/gameGamepadButtonDown
+// -- the same four-lines-a-program-should-write-it reasoning
+// `gameOverlap`'s own doc comment gives for not promoting simple
+// arithmetic to a built-in.
+
+struct ActionMap {
+    bindings; // {actionName: [binding, ...]}
+
+    // Add one more binding to an action, on top of whatever it already
+    // has -- "jump" bound to both a key and a gamepad button, say. Prefer
+    // `bindKey`/`bindButton` below; this is what they call.
+    func bind(action, binding) {
+        if (!has(this.bindings, action)) { this.bindings[action] = []; }
+        push(this.bindings[action], binding);
+    }
+
+    func bindKey(action, key) {
+        this.bind(action, {kind: "key", key: key});
+    }
+
+    // `gamepad`, if given, restricts this binding to one controller by
+    // index; left out (the default), it matches a button pressed on *any*
+    // connected pad -- what a local single-player game almost always
+    // wants, since it should not matter which one the player picked up.
+    func bindButton(action, button, gamepad = null) {
+        this.bind(action, {kind: "button", button: button, gamepad: gamepad});
+    }
+
+    // Clears whatever an action was bound to and binds it to just this
+    // key -- the shape a "press a key to remap" settings screen needs.
+    func rebindKey(action, key) {
+        this.unbind(action);
+        this.bindKey(action, key);
+    }
+
+    func rebindButton(action, button, gamepad = null) {
+        this.unbind(action);
+        this.bindButton(action, button, gamepad);
+    }
+
+    func unbind(action) {
+        this.bindings[action] = [];
+    }
+
+    // Whether any binding for `action` is currently held. An action with
+    // no bindings at all -- never bound, or unbound and not rebound -- is
+    // not held, the same reasoning gameKeyDown gives an unrecognised key
+    // name: a typo'd action name is a bug that should show as "never
+    // fires" rather than a crash mid-frame.
+    func down(action) {
+        for (binding in get(this.bindings, action, [])) {
+            if (this.bindingActive(binding, false)) { return true; }
+        }
+        return false;
+    }
+
+    // Whether any binding for `action` went down since the last frame.
+    func pressed(action) {
+        for (binding in get(this.bindings, action, [])) {
+            if (this.bindingActive(binding, true)) { return true; }
+        }
+        return false;
+    }
+
+    func bindingActive(binding, edge) {
+        if (binding.kind == "key") {
+            if (edge) { return gameKeyPressed(binding.key); }
+            return gameKeyDown(binding.key);
+        }
+        if (binding.gamepad != null) {
+            if (edge) { return gameGamepadButtonPressed(binding.gamepad, binding.button); }
+            return gameGamepadButtonDown(binding.gamepad, binding.button);
+        }
+        for (var i = 0; i < gameGamepadCount(); i = i + 1) {
+            var active = gameGamepadButtonDown(i, binding.button);
+            if (edge) { active = gameGamepadButtonPressed(i, binding.button); }
+            if (active) { return true; }
+        }
+        return false;
+    }
+}
+
+export func actionMap() {
+    return ActionMap({});
+}
