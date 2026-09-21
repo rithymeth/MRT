@@ -1,0 +1,119 @@
+// Clickable buttons and keyboard/gamepad-navigable menus: the two shapes
+// most of a game's UI is built from, on top of gamePointer() and the input
+// actions.mrt already wraps gameKeyDown/gameGamepadButtonDown with.
+//
+// Neither widget is a built-in. Whether a point falls inside a rectangle,
+// and whether that rectangle's state changed since last frame, is
+// arithmetic on `gamePointer()`'s own `{x, y, down}` -- the same
+// four-lines-a-program-should-write-it-itself reasoning `gameOverlap`'s own
+// doc comment gives elsewhere. A menu's "which item is selected" is index
+// arithmetic layered on `actionMap`, already a library for exactly this
+// reason.
+
+import { actionMap } from "./actions.mrt";
+
+// A rectangular hit-target tracking hover and click state against the
+// pointer, frame by frame.
+struct Button {
+    x, y, width, height,
+    hovering = false, down = false, clicked = false, wasPointerDown = false;
+
+    // Recomputes hover/down/clicked from this frame's pointer position.
+    // Call this once a frame, before reading any of the three fields --
+    // the same "update, then read" shape Tween and Animation already take.
+    func update() {
+        var p = gamePointer();
+        this.hovering = p.x >= this.x && p.x < this.x + this.width
+            && p.y >= this.y && p.y < this.y + this.height;
+
+        var justPressed = p.down && !this.wasPointerDown;
+        var justReleased = !p.down && this.wasPointerDown;
+
+        // A press only "arms" the button if it started while hovering --
+        // pressing elsewhere and dragging onto the button does not count,
+        // the same way a real button only responds to a press it felt
+        // itself. Once armed, `.down` stays true for the whole hold, even
+        // if the pointer drifts off before release, so a caller drawing a
+        // "pushed in" look does not need to track that separately.
+        if (justPressed && this.hovering) { this.down = true; }
+
+        // `.clicked` is a one-frame pulse: true only on the exact frame
+        // the pointer is released while still over the button *and* the
+        // press that started this hold began here too -- press-and-drag-
+        // off-and-release is not a click, the same rule a mouse-driven UI
+        // anywhere else follows.
+        this.clicked = justReleased && this.down && this.hovering;
+        if (justReleased) { this.down = false; }
+
+        this.wasPointerDown = p.down;
+    }
+}
+
+// A button at `(x, y)`, `width` by `height` pixels. Hit-testing uses
+// exactly this rectangle in whatever coordinate space `gamePointer()`
+// itself reports -- window pixels, not world pixels the camera has
+// scrolled, since a menu is drawn on the screen the player sees, not into
+// the world.
+export func button(x, y, width, height) {
+    if (width <= 0 || height <= 0) {
+        throw {
+            kind: "ValueError",
+            message: "button() needs a positive width and height, not ${width}x${height}."
+        };
+    }
+    return Button(x, y, width, height);
+}
+
+// A list of items with one selected at a time, moved by the keyboard's
+// arrow keys or a gamepad's D-pad and confirmed by Enter/Space or A/Start
+// -- built on its own `actionMap` (see `.actions`), so a game that wants
+// different keys can rebind it exactly like any other action map.
+struct Menu {
+    items, actions, selected = 0, confirmed = false;
+
+    func current() {
+        return this.items[this.selected];
+    }
+
+    // Moves the selection, wrapping at either end -- a one-item menu is
+    // not a special case, since wrapping by one is simply a no-op.
+    func next() {
+        this.selected = (this.selected + 1) % len(this.items);
+    }
+
+    func previous() {
+        this.selected = (this.selected - 1 + len(this.items)) % len(this.items);
+    }
+
+    // Reads one frame of navigation input. `.confirmed` is true for
+    // exactly the frame a confirm was pressed, the same "since the last
+    // frame" shape `gameKeyPressed` itself takes.
+    func update() {
+        if (this.actions.pressed("down")) { this.next(); }
+        if (this.actions.pressed("up")) { this.previous(); }
+        this.confirmed = this.actions.pressed("confirm");
+    }
+}
+
+// A menu over `items`, starting on the first one. `items` must have at
+// least one entry -- a menu with nothing to select from is not a smaller
+// menu, it is a mistake the caller should hear about now rather than a
+// later `current()` failing to index into an empty array.
+export func menu(items) {
+    if (len(items) < 1) {
+        throw {
+            kind: "ValueError",
+            message: "menu() needs at least one item."
+        };
+    }
+    var actions = actionMap();
+    actions.bindKey("up", "Up");
+    actions.bindButton("up", "DPadUp");
+    actions.bindKey("down", "Down");
+    actions.bindButton("down", "DPadDown");
+    actions.bindKey("confirm", "Enter");
+    actions.bindKey("confirm", "Space");
+    actions.bindButton("confirm", "A");
+    actions.bindButton("confirm", "Start");
+    return Menu(items, actions);
+}

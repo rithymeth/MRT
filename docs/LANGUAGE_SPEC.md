@@ -2485,6 +2485,63 @@ screen needs: catch the next `gameKeyPressed`/`gameGamepadButtonPressed`
 and hand it straight to `rebindKey`/`rebindButton`. `unbind(action)`
 clears an action entirely.
 
+#### UI widgets: buttons and menus
+
+`gamePointer()` — `{x, y, down}`, documented above — is the one built-in a
+mouse-driven UI needs; hit-testing a rectangle against it, and turning
+"held" into "clicked," is arithmetic on top — the same reasoning
+`actions.mrt` above gives for not promoting a loop over `gameKeyDown` to a
+built-in. `examples/lib/ui.mrt`'s `button` does exactly that:
+
+```mrt
+import { button } from "./lib/ui.mrt";
+
+var startButton = button(60, 100, 120, 32);
+while (gameOpen()) {
+    startButton.update();
+    if (startButton.clicked) { startGame(); }
+    // ... draw startButton.hovering / startButton.down for feedback ...
+    gamePresent();
+}
+```
+
+`.hovering` is true while the pointer is over the button's rectangle.
+`.down` turns on the moment the pointer is pressed *while hovering*, and
+stays on for the whole hold even if the pointer drifts off before release
+— what a caller drawing a "pushed in" look wants. `.clicked` is a
+one-frame pulse, true only when the pointer is released while a same-
+origin press is still held over the button; pressing elsewhere and
+dragging onto the button, or pressing the button and dragging off before
+releasing, is not a click, the same as any other mouse-driven UI.
+
+A menu — a title screen's list of options, a pause menu's choices — is a
+different shape: not a rectangle under a pointer but a selection moved by
+the keyboard or a gamepad's D-pad. `examples/lib/ui.mrt`'s `menu` is built
+on `actions.mrt` above rather than reading `gameKeyPressed` itself, so it
+comes with rebinding for free:
+
+```mrt
+import { menu } from "./lib/ui.mrt";
+
+var mainMenu = menu(["New Game", "Continue", "Quit"]);
+while (gameOpen()) {
+    mainMenu.update();
+    if (mainMenu.confirmed) { select(mainMenu.current()); }
+    // ... draw mainMenu.items, highlighting mainMenu.selected ...
+    gamePresent();
+}
+```
+
+`next()`/`previous()` move the selection, wrapping at either end so a
+one-item menu is not a special case. `update()` reads one frame of Up/Down
+or D-pad input and Enter/Space or A/Start as confirm, through the menu's
+own `.actions` — an ordinary `ActionMap`, rebindable exactly like
+`actions.mrt`'s own example rebinds `"jump"`.
+
+Neither widget is a built-in for the same reason scenes and tweening are
+not: a program can write hit-testing and index arithmetic itself, and an
+engine feature that only did this would earn nothing but a longer manual.
+
 Conventions, fixed once: Y points **down** from a top-left origin; a colour
 channel outside 0–255 is an error rather than a clamp; coordinates may be
 fractional and are floored, since a moving thing is rarely on a whole pixel;
