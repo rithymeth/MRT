@@ -1570,6 +1570,119 @@ mod tests {
     }
 
     #[test]
+    fn pathfind_finds_the_shortest_route_as_an_array_of_waypoints() {
+        assert_eq!(
+            main_of(
+                r#"var grid = [
+                       [true, true, true],
+                       [true, true, true]
+                   ];
+                   var path = gamePathfind(grid, 0, 0, 2, 0);
+                   print(len(path));
+                   print(path[0].x, path[0].y);
+                   print(path[2].x, path[2].y);"#
+            ),
+            "3\n0 0\n2 0"
+        );
+    }
+
+    #[test]
+    fn pathfind_needs_no_screen_at_all() {
+        // Finding a route is arithmetic on an array of booleans, the same
+        // reasoning that lets gameOverlap and friends work headlessly.
+        assert_eq!(
+            main_of(r#"print(len(gamePathfind([[true, true]], 0, 0, 1, 0)));"#),
+            "2"
+        );
+    }
+
+    #[test]
+    fn pathfind_answers_null_when_there_is_no_route() {
+        assert_eq!(
+            main_of(
+                r#"var grid = [
+                       [true, false, true],
+                       [true, false, true],
+                       [true, false, true]
+                   ];
+                   print(gamePathfind(grid, 0, 0, 2, 0));"#
+            ),
+            "null"
+        );
+    }
+
+    #[test]
+    fn pathfind_answers_null_for_a_start_or_goal_on_a_wall() {
+        // Blocked but inside the grid is an ordinary question with an
+        // ordinary answer -- unlike being outside the grid entirely, which
+        // is refused below.
+        assert_eq!(
+            main_of(r#"print(gamePathfind([[true, false], [true, true]], 1, 0, 0, 0));"#),
+            "null"
+        );
+    }
+
+    #[test]
+    fn pathfind_rejects_a_start_or_goal_outside_the_grid() {
+        assert_eq!(
+            main_of(r#"gamePathfind([[true, true], [true, true]], 5, 5, 0, 0);"#),
+            "Runtime Error: gamePathfind(): the start (5, 5) is outside the 2x2 grid. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gamePathfind([[true, true], [true, true]], 0, 0, 5, 5);"#),
+            "Runtime Error: gamePathfind(): the goal (5, 5) is outside the 2x2 grid. [line 1]"
+        );
+    }
+
+    #[test]
+    fn pathfind_type_checks_its_grid_argument() {
+        assert_eq!(
+            main_of(r#"gamePathfind(5, 0, 0, 1, 1);"#),
+            "Runtime Error: gamePathfind() needs the grid to be an array of rows, not number. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gamePathfind([1, 2], 0, 0, 1, 0);"#),
+            "Runtime Error: gamePathfind(): row 0 of the grid must be an array, not number. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gamePathfind([[true, 1]], 0, 0, 1, 0);"#),
+            "Runtime Error: gamePathfind(): the cell at row 0, column 1 must be true or false, not number. [line 1]"
+        );
+    }
+
+    #[test]
+    fn pathfind_rejects_a_ragged_grid() {
+        assert_eq!(
+            main_of(r#"gamePathfind([[true, true], [true]], 0, 0, 1, 0);"#),
+            "Runtime Error: gamePathfind(): row 1 has 1 cells, but row 0 has 2. [line 1]"
+        );
+    }
+
+    #[test]
+    fn pathfind_rejects_an_empty_grid() {
+        assert_eq!(
+            main_of(r#"gamePathfind([], 0, 0, 0, 0);"#),
+            "Runtime Error: gamePathfind(): the grid has no rows. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gamePathfind([[]], 0, 0, 0, 0);"#),
+            "Runtime Error: gamePathfind(): the grid has no columns. [line 1]"
+        );
+    }
+
+    #[test]
+    fn pathfind_rejects_a_negative_or_fractional_coordinate() {
+        assert_eq!(
+            main_of(r#"gamePathfind([[true, true]], -1, 0, 0, 0);"#),
+            "Runtime Error: gamePathfind() needs the start x to be a non-negative whole number, not -1. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"gamePathfind([[true, true]], 0.5, 0, 0, 0);"#),
+            "Runtime Error: gamePathfind() needs the start x to be a non-negative whole number, not 0.5. [line 1]"
+        );
+    }
+
+    #[test]
     fn particles_spawn_move_age_and_draw() {
         assert_eq!(
             drawing(
@@ -1967,6 +2080,142 @@ pub mod collide {
                 map.insert(key("y"), Value::Number(y));
                 Value::object(map)
             }
+            None => Value::Null,
+        })
+    }
+}
+
+/// Grid pathfinding, needing no screen: finding a route through a grid is
+/// arithmetic on an array of booleans, the same reasoning that lets
+/// `collide` above work headlessly.
+pub mod pathfind {
+    use super::*;
+    use crate::value::{ObjKey, ObjMap};
+    use mrt_game::pathfind::{find_path, Grid};
+
+    fn key(name: &str) -> ObjKey {
+        ObjKey::Str(Rc::from(name))
+    }
+
+    /// Read a grid of booleans out of an array of rows -- the same shape
+    /// `gameDrawTilemap`'s `tiles` array takes, so a level that already
+    /// has one for drawing does not need a second one for finding a way
+    /// across it.
+    fn grid_of(value: &Value, who: &str) -> Result<Grid, Signal> {
+        let Value::Array(rows) = value else {
+            return Err(type_error(format!(
+                "{who}() needs the grid to be an array of rows, not {}.",
+                crate::value::type_name(value)
+            )));
+        };
+        let rows = rows.borrow();
+        if rows.is_empty() {
+            return Err(value_error(format!("{who}(): the grid has no rows.")));
+        }
+        let height = rows.len();
+        let mut width = None;
+        let mut walkable = Vec::new();
+        for (row_index, row) in rows.iter().enumerate() {
+            let Value::Array(cells) = row else {
+                return Err(type_error(format!(
+                    "{who}(): row {row_index} of the grid must be an array, not {}.",
+                    crate::value::type_name(row)
+                )));
+            };
+            let cells = cells.borrow();
+            match width {
+                None => width = Some(cells.len()),
+                Some(w) if w != cells.len() => {
+                    return Err(value_error(format!(
+                        "{who}(): row {row_index} has {} cells, but row 0 has {w}.",
+                        cells.len()
+                    )));
+                }
+                _ => {}
+            }
+            for (col_index, cell) in cells.iter().enumerate() {
+                match cell {
+                    Value::Bool(b) => walkable.push(*b),
+                    other => {
+                        return Err(type_error(format!(
+                            "{who}(): the cell at row {row_index}, column {col_index} must be true or false, not {}.",
+                            crate::value::type_name(other)
+                        )));
+                    }
+                }
+            }
+        }
+        let width = width
+            .filter(|w| *w > 0)
+            .ok_or_else(|| value_error(format!("{who}(): the grid has no columns.")))?;
+        Grid::new(width, height, walkable).map_err(|e| value_error(format!("{who}(): {e}.")))
+    }
+
+    /// A grid coordinate: a non-negative whole number. Pathfinding works on
+    /// cells, not pixels, so this has no fractional part to floor the way
+    /// `coord` does for a drawing position.
+    fn cell(value: &Value, who: &str, what: &str) -> Result<i32, Signal> {
+        match value {
+            Value::Number(n) if n.is_finite() && n.fract() == 0.0 && *n >= 0.0 => Ok(*n as i32),
+            Value::Number(n) => Err(value_error(format!(
+                "{who}() needs {what} to be a non-negative whole number, not {n}."
+            ))),
+            other => Err(type_error(format!(
+                "{who}() needs {what} to be a number, not {}.",
+                crate::value::type_name(other)
+            ))),
+        }
+    }
+
+    /// The shortest walkable route from one cell to another, as an array of
+    /// `{x, y}` waypoints including both ends, or `null` if none exists.
+    ///
+    /// A start or goal outside the grid's own bounds is raised rather than
+    /// answered with `null`, the same reasoning `gameDrawTilemap` raises on
+    /// a tile index outside its sheet: a level authored by hand is exactly
+    /// where a typo'd coordinate is likely, and `null` reads as "no route",
+    /// not "you asked about a cell that does not exist". A start or goal
+    /// that is *inside* the grid but blocked is not this case -- asking
+    /// for a route to or from a wall is an ordinary question with an
+    /// ordinary answer, `null`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn find(
+        grid: &Value,
+        start_x: &Value,
+        start_y: &Value,
+        goal_x: &Value,
+        goal_y: &Value,
+    ) -> Result<Value, Signal> {
+        let who = "gamePathfind";
+        let grid = grid_of(grid, who)?;
+        let start = (
+            cell(start_x, who, "the start x")?,
+            cell(start_y, who, "the start y")?,
+        );
+        let goal = (
+            cell(goal_x, who, "the goal x")?,
+            cell(goal_y, who, "the goal y")?,
+        );
+        for (label, (x, y)) in [("start", start), ("goal", goal)] {
+            if !grid.contains(x, y) {
+                return Err(value_error(format!(
+                    "{who}(): the {label} ({x}, {y}) is outside the {}x{} grid.",
+                    grid.width(),
+                    grid.height()
+                )));
+            }
+        }
+        Ok(match find_path(&grid, start, goal) {
+            Some(path) => Value::array(
+                path.into_iter()
+                    .map(|(x, y)| {
+                        let mut map = ObjMap::new();
+                        map.insert(key("x"), Value::Number(x as f64));
+                        map.insert(key("y"), Value::Number(y as f64));
+                        Value::object(map)
+                    })
+                    .collect(),
+            ),
             None => Value::Null,
         })
     }

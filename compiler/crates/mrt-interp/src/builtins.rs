@@ -100,6 +100,7 @@ const NAMES: &[&str] = &[
     "gameCircleResolve",
     "gameCircleBoxOverlap",
     "gameCircleBoxResolve",
+    "gamePathfind",
     "gameParticleSpawn",
     "gameParticleUpdate",
     "gameParticleDraw",
@@ -436,6 +437,14 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
         "gameCircleBoxResolve" => {
             exactly(&args, 2, "gameCircleBoxResolve() takes a circle and a box.")?;
             crate::game::collide::circle_box_resolve(&args[0], &args[1])
+        }
+        "gamePathfind" => {
+            exactly(
+                &args,
+                5,
+                "gamePathfind() takes a grid, a start x and y, and a goal x and y.",
+            )?;
+            crate::game::pathfind::find(&args[0], &args[1], &args[2], &args[3], &args[4])
         }
         "gameParticleSpawn" => {
             exactly(

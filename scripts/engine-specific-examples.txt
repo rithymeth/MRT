@@ -22,6 +22,7 @@ game_spritesheet.mrt
 game_font.mrt
 game_scenes.mrt
 game_tilemap.mrt
+game_pathfind.mrt
 game_raycast.mrt
 game_camera.mrt
 game_gamepad.mrt
