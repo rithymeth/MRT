@@ -1,0 +1,101 @@
+// Recording a sequence of input and playing it back later, action by
+// action -- what a deterministic replay, a demo that plays itself, or a
+// scripted regression test of a level needs: game logic that reads
+// `.down(name)`/`.pressed(name)` does not need to know whether those
+// answers are coming from a live device or a recording.
+//
+// Neither half is a built-in, and neither is tied to actionMap.mrt
+// specifically: `Recorder` only needs whatever it is given to have a
+// `down(name)` method, the same duck-typed shape `Menu`'s `.actions`
+// already is -- an `ActionMap`, or a program's own stand-in for testing,
+// both work.
+
+struct Recorder {
+    source, names, frames = [];
+
+    // Snapshots which of `names` are down right now, alongside `dt`, and
+    // appends it to `.frames`. Call this once a frame, the same place a
+    // live game would read `actions.pressed(...)` from instead.
+    func record(dt) {
+        var down = [];
+        for (name in this.names) {
+            if (this.source.down(name)) { push(down, name); }
+        }
+        push(this.frames, {dt: dt, down: down});
+    }
+}
+
+// Records which of `names` are down each frame, reading them from
+// `source` (an `ActionMap`, or anything else with a `down(name)`
+// method). `.frames` is a plain array of `{dt, down}` -- ordinary data,
+// ready to hand straight to `gameSaveData` to keep, or to `replay()` to
+// play back immediately.
+export func recorder(source, names) {
+    if (len(names) < 1) {
+        throw {
+            kind: "ValueError",
+            message: "recorder() needs at least one action name to track."
+        };
+    }
+    return Recorder(source, names);
+}
+
+// Plays back a recording made by `Recorder`, exposing the same
+// `down(name)`/`pressed(name)` shape an `ActionMap` does -- so a function
+// that reads input from `actions.down("jump")` reads exactly the same way
+// from a `Replay`, live or recorded, without a branch anywhere in it for
+// which one it has.
+struct Replay {
+    frames, index = -1, previousDown = [], currentDown = [], finished = false;
+
+    func down(name) {
+        return has(this.currentDown, name);
+    }
+
+    // Whether `name` went down on the frame currently loaded, compared
+    // to the one before it -- the same "since last frame" shape
+    // `ActionMap`'s own `pressed()` takes.
+    func pressed(name) {
+        return has(this.currentDown, name) && !has(this.previousDown, name);
+    }
+
+    // How many seconds the recording says the currently loaded frame
+    // took -- what a replay driven by its own recorded timing (rather
+    // than the real clock) should advance a game loop by, frame for
+    // frame, so the exact same sequence of dt's that produced the
+    // recording reproduces it.
+    func dt() {
+        if (this.finished) { return 0; }
+        return this.frames[this.index].dt;
+    }
+
+    // Loads the next recorded frame. Call once per iteration of a
+    // replay's own loop -- the one call a live game would make to
+    // `gamePresent()` at the end of a frame instead.
+    func advance() {
+        if (this.finished) { return; }
+        this.previousDown = this.currentDown;
+        this.index = this.index + 1;
+        if (this.index >= len(this.frames)) {
+            this.finished = true;
+            return;
+        }
+        this.currentDown = this.frames[this.index].down;
+    }
+}
+
+// A replay over `frames` (as recorded by `Recorder`, or reloaded with
+// `gameLoadData`), already loaded onto its first frame -- the same way
+// `coroutine()` runs its generator to its first `yield` right away rather
+// than waiting for a first `advance()`.
+export func replay(frames) {
+    if (len(frames) < 1) {
+        throw {
+            kind: "ValueError",
+            message: "replay() needs at least one recorded frame."
+        };
+    }
+    var r = Replay(frames);
+    r.advance();
+    return r;
+}

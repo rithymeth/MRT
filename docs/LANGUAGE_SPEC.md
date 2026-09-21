@@ -2655,6 +2655,59 @@ screen needs: catch the next `gameKeyPressed`/`gameGamepadButtonPressed`
 and hand it straight to `rebindKey`/`rebindButton`. `unbind(action)`
 clears an action entirely.
 
+#### Recording and replaying input
+
+A deterministic replay, a demo that plays itself on a title screen, or a
+scripted regression test of a level, all want the same thing: a sequence
+of input, captured once, played back exactly the same way every time.
+`examples/lib/replay.mrt`'s `Recorder` and `Replay` do that on top of an
+`ActionMap` (or anything else shaped like one — see below), rather than
+this being a built-in of its own:
+
+```mrt
+import { actionMap } from "./lib/actions.mrt";
+import { recorder, replay } from "./lib/replay.mrt";
+
+var actions = actionMap();
+actions.bindKey("left", "Left");
+actions.bindKey("right", "Right");
+actions.bindKey("jump", "Space");
+
+// Recording a playthrough:
+var rec = recorder(actions, ["left", "right", "jump"]);
+while (gameOpen()) {
+    rec.record(gameDelta());
+    // ... read actions.down(...)/actions.pressed(...) and play, as usual ...
+    gamePresent();
+}
+gameSaveData("playthrough.json", rec.frames);
+
+// Replaying it later, without a real keyboard at all:
+var play = replay(gameLoadData("playthrough.json"));
+while (!play.finished) {
+    // ... read play.down(...)/play.pressed(...) exactly like actions above ...
+    play.advance();
+}
+```
+
+`recorder(source, names)` snapshots which of `names` are down every time
+`.record(dt)` is called, alongside `dt` itself; `.frames` is the
+recording — an ordinary array of `{dt, down}`, ready for `gameSaveData` or
+for `replay()` directly. `replay(frames)` plays it back exposing the same
+`down(name)`/`pressed(name)` shape an `ActionMap` does, so a function
+that reads input from `actions.down("jump")` reads exactly the same way
+from a `Replay`, live or recorded, with no branch anywhere in it for
+which one it has. `.dt()` reports the recording's own timing for the
+frame currently loaded — driving a replayed game loop by the recorded
+dt's, not the real clock, is what makes the same sequence of frames come
+out identically every time. `advance()` moves to the next frame,
+`.finished` once every recorded frame has been used.
+
+`Recorder` is not tied to `ActionMap` specifically: it only needs
+`source` to have a `down(name)` method, the same duck typing `Menu`'s own
+`.actions` already relies on — a program's own stand-in works too, which
+is how `examples/replay.mrt` tests this without a real keyboard.
+
 #### UI widgets: buttons, menus and text fields
 
 `gamePointer()` — `{x, y, down}`, documented above — is the one built-in a

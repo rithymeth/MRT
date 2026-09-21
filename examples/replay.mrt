@@ -1,0 +1,66 @@
+// Recording and replaying a sequence of input, from MRT source. Needs no
+// engine: Recorder only needs its source to have a down(name) method, so
+// this uses a small stand-in rather than a real actionMap -- proving the
+// library works with anything shaped like one, the same duck typing
+// Menu's own .actions already relies on.
+
+import { recorder, replay } from "./lib/replay.mrt";
+
+struct FakeInput {
+    downNames;
+    func down(name) { return has(this.downNames, name); }
+}
+
+func main() {
+    var input = FakeInput([]);
+    var rec = recorder(input, ["left", "right", "jump"]);
+
+    // A short sequence: nothing held, then right, then right+jump, then
+    // just right again, then nothing -- five frames, each recorded after
+    // setting what the fake source reports for it.
+    rec.record(0.1);
+    input.downNames = ["right"];
+    rec.record(0.1);
+    input.downNames = ["right", "jump"];
+    rec.record(0.1);
+    input.downNames = ["right"];
+    rec.record(0.1);
+    input.downNames = [];
+    rec.record(0.1);
+
+    print("recorded exactly the frames asked for:", len(rec.frames) == 5);
+    print("a frame's own down list matches what was set for it:", rec.frames[2].down == ["right", "jump"]);
+
+    var play = replay(rec.frames);
+    print("starts loaded on the first frame:", !play.down("right") && !play.finished);
+
+    play.advance();
+    print("right is down on frame 2, and just pressed:", play.down("right") && play.pressed("right"));
+    print("jump is not down yet:", !play.down("jump"));
+
+    play.advance();
+    print("jump is down on frame 3, and just pressed:", play.down("jump") && play.pressed("jump"));
+    print("right is still down, but not freshly pressed:", play.down("right") && !play.pressed("right"));
+
+    play.advance();
+    print("jump let go on frame 4, right still held:", !play.down("jump") && play.down("right"));
+
+    play.advance();
+    print("everything let go on the last frame:", !play.down("right") && !play.down("jump"));
+    print("not finished while the last frame is still the one loaded:", !play.finished);
+
+    play.advance();
+    print("finished once every recorded frame has been used:", play.finished);
+    print("dt() answers 0 once finished, rather than indexing past the end:", play.dt() == 0);
+
+    try {
+        recorder(input, []);
+    } catch (e) {
+        print("recording with no action names is refused:", e.kind);
+    }
+    try {
+        replay([]);
+    } catch (e) {
+        print("replaying an empty recording is refused:", e.kind);
+    }
+}
