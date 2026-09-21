@@ -1,0 +1,129 @@
+// Easing curves and value tweening: taking a value smoothly from A to B
+// over time instead of jumping straight there -- the shape UI motion,
+// camera pans, and any animation that is not physics needs.
+//
+// Each easing function maps `t` in [0, 1] (how far through the tween) to
+// eased progress, also in [0, 1] for most curves -- `back` and `bounce`
+// overshoot past that on purpose, the "spring past the target and settle"
+// look they exist for. They are ordinary functions, so `Tween` below takes
+// one directly rather than a name to look up: pass `easeOutQuad`, or a
+// program's own `func(t) { ... }`, with no dispatch table in between.
+//
+// No sine, elastic, or any other trig-based curve: MRT has no sin/cos of
+// its own (see game_raycast.mrt's own Taylor series for why that is a
+// deliberate absence, not an oversight), and approximating one only for
+// this would be a library inventing complexity the language does not
+// have, rather than reusing complexity it does.
+
+export func easeLinear(t) { return t; }
+
+export func easeInQuad(t) { return t * t; }
+export func easeOutQuad(t) { return 1 - (1 - t) * (1 - t); }
+export func easeInOutQuad(t) {
+    if (t < 0.5) { return 2 * t * t; }
+    return 1 - pow(-2 * t + 2, 2) / 2;
+}
+
+export func easeInCubic(t) { return t * t * t; }
+export func easeOutCubic(t) { return 1 - pow(1 - t, 3); }
+export func easeInOutCubic(t) {
+    if (t < 0.5) { return 4 * t * t * t; }
+    return 1 - pow(-2 * t + 2, 3) / 2;
+}
+
+export func easeInQuart(t) { return t * t * t * t; }
+export func easeOutQuart(t) { return 1 - pow(1 - t, 4); }
+export func easeInOutQuart(t) {
+    if (t < 0.5) { return 8 * t * t * t * t; }
+    return 1 - pow(-2 * t + 2, 4) / 2;
+}
+
+export func easeInExpo(t) {
+    if (t == 0) { return 0; }
+    return pow(2, 10 * t - 10);
+}
+export func easeOutExpo(t) {
+    if (t == 1) { return 1; }
+    return 1 - pow(2, -10 * t);
+}
+
+export func easeInCirc(t) { return 1 - sqrt(1 - pow(t, 2)); }
+export func easeOutCirc(t) { return sqrt(1 - pow(t - 1, 2)); }
+
+var BACK = 1.70158;
+
+// Pulls back past 0 before launching forward, the way a jump crouches
+// first -- an overshoot, not a bug.
+export func easeInBack(t) {
+    return (BACK + 1) * t * t * t - BACK * t * t;
+}
+
+export func easeOutBack(t) {
+    var u = t - 1;
+    return 1 + (BACK + 1) * u * u * u + BACK * u * u;
+}
+
+// Bounces off the end like a dropped ball settling, in four decreasing
+// hops -- the one curve here naturally piecewise rather than one formula.
+export func easeOutBounce(t) {
+    var n = 7.5625;
+    var d = 2.75;
+    if (t < 1 / d) { return n * t * t; }
+    if (t < 2 / d) {
+        var u = t - 1.5 / d;
+        return n * u * u + 0.75;
+    }
+    if (t < 2.5 / d) {
+        var u = t - 2.25 / d;
+        return n * u * u + 0.9375;
+    }
+    var u = t - 2.625 / d;
+    return n * u * u + 0.984375;
+}
+
+export func easeInBounce(t) { return 1 - easeOutBounce(1 - t); }
+
+// Interpolates a single number from `from` to `to` over `duration`
+// seconds, shaped by `easing` -- any `t -> eased t` function, defaulting
+// to `easeLinear`.
+struct Tween {
+    from, to, duration, easing = easeLinear, elapsed = 0, finished = false;
+
+    // Advance by `dt` seconds. Clamps at `duration` and sets `.finished`
+    // rather than running past it, so `.value()` settles exactly on `to`
+    // instead of overshooting past whatever the easing curve does at
+    // t > 1 -- undefined territory none of the curves above promise
+    // anything about.
+    func update(dt) {
+        if (this.finished) { return; }
+        this.elapsed += dt;
+        if (this.elapsed >= this.duration) {
+            this.elapsed = this.duration;
+            this.finished = true;
+        }
+    }
+
+    // The current interpolated value. A zero-duration tween is `to`
+    // immediately -- there is no meaningful "halfway" to a tween that
+    // does not take any time.
+    func value() {
+        if (this.duration <= 0) { return this.to; }
+        var t = this.elapsed / this.duration;
+        return this.from + (this.to - this.from) * this.easing(t);
+    }
+
+    func restart() {
+        this.elapsed = 0;
+        this.finished = false;
+    }
+}
+
+export func tween(from, to, duration, easing = easeLinear) {
+    if (duration < 0) {
+        throw {
+            kind: "ValueError",
+            message: "tween() needs a non-negative duration, not ${duration}."
+        };
+    }
+    return Tween(from, to, duration, easing);
+}
