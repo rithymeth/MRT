@@ -1,14 +1,16 @@
-// Clickable buttons and keyboard/gamepad-navigable menus: the two shapes
-// most of a game's UI is built from, on top of gamePointer() and the input
-// actions.mrt already wraps gameKeyDown/gameGamepadButtonDown with.
+// Clickable buttons, keyboard/gamepad-navigable menus, and a typed text
+// field: the shapes most of a game's UI is built from, on top of
+// gamePointer()/gameTextInput() and the input actions.mrt already wraps
+// gameKeyDown/gameGamepadButtonDown with.
 //
-// Neither widget is a built-in. Whether a point falls inside a rectangle,
+// None of these are built-ins. Whether a point falls inside a rectangle,
 // and whether that rectangle's state changed since last frame, is
 // arithmetic on `gamePointer()`'s own `{x, y, down}` -- the same
 // four-lines-a-program-should-write-it-itself reasoning `gameOverlap`'s own
 // doc comment gives elsewhere. A menu's "which item is selected" is index
 // arithmetic layered on `actionMap`, already a library for exactly this
-// reason.
+// reason. A text field is `gameTextInput()`'s own characters appended to a
+// string, with Backspace and a length limit handled the same way.
 
 import { actionMap } from "./actions.mrt";
 
@@ -116,4 +118,63 @@ export func menu(items) {
     actions.bindButton("confirm", "A");
     actions.bindButton("confirm", "Start");
     return Menu(items, actions);
+}
+
+// A single line of typed text -- a player's name, a chat message, a
+// search box -- built on `gameTextInput()` (this frame's typed
+// characters) plus `gameKeyPressed("Backspace")`/`gameKeyPressed("Enter")`,
+// the same way `Button` is built on `gamePointer()` rather than either
+// being a built-in of its own.
+struct TextField {
+    maxLength, value = "", focused = false, submitted = false;
+
+    // Appends this frame's typed characters, handles Backspace, and
+    // notices Enter -- but only while `.focused`, so an unfocused field
+    // does not silently eat keystrokes some other part of the screen was
+    // meant to see. `.submitted` is a one-frame pulse, true only on the
+    // exact frame Enter was pressed, the same shape `gameKeyPressed`
+    // itself takes.
+    func update() {
+        this.submitted = false;
+        if (!this.focused) { return; }
+
+        // Newline/tab/carriage-return are stripped before appending, on
+        // the chance a platform's own text layer reports Enter or Tab as
+        // literal characters rather than leaving them to gameKeyPressed
+        // the way this crate's own key names expect -- a text field
+        // should never end up with a line break buried inside one line.
+        var typed = gameTextInput();
+        typed = replace(typed, "\n", "");
+        typed = replace(typed, "\t", "");
+        typed = replace(typed, "\r", "");
+        this.value = this.value + typed;
+        if (this.maxLength != null && len(this.value) > this.maxLength) {
+            this.value = substring(this.value, 0, this.maxLength);
+        }
+
+        if (gameKeyPressed("Backspace") && len(this.value) > 0) {
+            this.value = substring(this.value, 0, len(this.value) - 1);
+        }
+        if (gameKeyPressed("Enter")) {
+            this.submitted = true;
+        }
+    }
+
+    func clear() {
+        this.value = "";
+    }
+}
+
+// An empty text field. `maxLength`, left out, allows any length; given, a
+// character typed past it is simply not added, the same "not an error,
+// just nothing more to show" rule a particle spawned past its own life
+// gets elsewhere in this section.
+export func textField(maxLength = null) {
+    if (maxLength != null && maxLength < 0) {
+        throw {
+            kind: "ValueError",
+            message: "textField() needs a non-negative maxLength, not ${maxLength}."
+        };
+    }
+    return TextField(maxLength);
 }

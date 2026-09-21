@@ -151,6 +151,7 @@ const NAMES: &[&str] = &[
     "gameKeyDown",
     "gameKeyPressed",
     "gamePointer",
+    "gameTextInput",
     "gameClose",
     "gameSetFullscreen",
     "gameIsFullscreen",
@@ -922,6 +923,10 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
         "gamePointer" => {
             exactly(&args, 0, "gamePointer() takes no arguments.")?;
             crate::game::live::pointer(&interp.screen)
+        }
+        "gameTextInput" => {
+            exactly(&args, 0, "gameTextInput() takes no arguments.")?;
+            crate::game::live::text_input(&interp.screen)
         }
         "gameClose" => {
             exactly(&args, 0, "gameClose() takes no arguments.")?;

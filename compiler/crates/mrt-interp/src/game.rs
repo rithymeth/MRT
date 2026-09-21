@@ -2936,6 +2936,33 @@ pub mod live {
         Err(unsupported("gamePointer"))
     }
 
+    /// Text typed since the previous frame, in the order it was typed.
+    ///
+    /// Distinct from `key_down`/`key_pressed`: those report a physical
+    /// key's name, normalised so a game can ask "is W held" the same way
+    /// regardless of Shift or the keyboard's own layout. This instead
+    /// reports whatever text that key actually produced -- case as typed,
+    /// a symbol needing Shift, an accented letter or a non-Latin layout's
+    /// own character coming through as itself -- which is what a text
+    /// field wants and a "which key is this" query does not.
+    #[cfg(feature = "window")]
+    pub fn text_input(s: &Option<Screen>) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameTextInput"))?;
+        Ok(Value::str(
+            screen
+                .window
+                .as_ref()
+                .map(|w| w.text_input())
+                .unwrap_or_default(),
+        ))
+    }
+
+    #[cfg(not(feature = "window"))]
+    pub fn text_input(s: &Option<Screen>) -> Result<Value, Signal> {
+        s.as_ref().ok_or_else(|| no_screen("gameTextInput"))?;
+        Err(unsupported("gameTextInput"))
+    }
+
     /// End the loop, as if the close button had been pressed.
     #[cfg(feature = "window")]
     pub fn close(s: &mut Option<Screen>) -> Result<Value, Signal> {

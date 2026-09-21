@@ -2246,11 +2246,23 @@ pump, so a loop that decides to draw nothing on some frame still stays alive.
 | `gameKeyDown(name)` | Whether a key is held now — `"W"`, `"Left"`, `"Space"`, `"Escape"`. |
 | `gameKeyPressed(name)` | Whether it went down since the last frame, held or not. |
 | `gamePointer()` | `{x, y, down}`. |
+| `gameTextInput()` | Text typed since the previous frame, in order — `""` if none. |
 | `gameClose()` | Ends the loop, as the close button would. |
 | `gameSetFullscreen(fullscreen)` | Switches between borderless fullscreen and windowed. |
 | `gameIsFullscreen()` | Whether the window is fullscreen right now. |
 | `gameSetCursorVisible(visible)` | Shows or hides the pointer while it is over the window. |
 | `gameSetCursorLocked(locked)` | Confines the pointer to the window, or releases it. Returns whether it took hold. |
+
+`gameTextInput` answers a different question than `gameKeyDown`/
+`gameKeyPressed` do. Those report a *physical key's name*, normalised so
+`gameKeyDown("W")` means the same thing regardless of Shift or the
+keyboard's own layout — what a game asking "is the move-forward key held"
+wants. `gameTextInput` instead reports whatever text that key actually
+produced: case as typed, a symbol needing Shift, an accented letter or a
+non-Latin layout's own character coming through as itself — what a name
+field or a chat box wants. The two are read from the same keystrokes but
+answer different questions, and a program building a text field wants
+the second, not the first.
 
 The window opens on the first `gameOpen` rather than at `gameInit`, so a
 program that only draws and saves a PNG runs on a machine with no display at
@@ -2643,7 +2655,7 @@ screen needs: catch the next `gameKeyPressed`/`gameGamepadButtonPressed`
 and hand it straight to `rebindKey`/`rebindButton`. `unbind(action)`
 clears an action entirely.
 
-#### UI widgets: buttons and menus
+#### UI widgets: buttons, menus and text fields
 
 `gamePointer()` — `{x, y, down}`, documented above — is the one built-in a
 mouse-driven UI needs; hit-testing a rectangle against it, and turning
@@ -2696,9 +2708,39 @@ or D-pad input and Enter/Space or A/Start as confirm, through the menu's
 own `.actions` — an ordinary `ActionMap`, rebindable exactly like
 `actions.mrt`'s own example rebinds `"jump"`.
 
-Neither widget is a built-in for the same reason scenes and tweening are
-not: a program can write hit-testing and index arithmetic itself, and an
-engine feature that only did this would earn nothing but a longer manual.
+A name entry, a chat box, a search field — some text wants to be typed,
+not chosen. `examples/lib/ui.mrt`'s `textField` is built on `gameTextInput`
+plus `gameKeyPressed("Backspace")`/`gameKeyPressed("Enter")`, the same way
+`button` is built on `gamePointer` rather than either being a built-in of
+its own:
+
+```mrt
+import { textField } from "./lib/ui.mrt";
+
+var name = textField(20); // up to 20 characters
+name.focused = true;      // only a focused field reads input at all
+while (gameOpen()) {
+    name.update();
+    if (name.submitted) { confirmName(name.value); }
+    // ... draw name.value, plus a cursor while name.focused ...
+    gamePresent();
+}
+```
+
+`.update()` appends this frame's typed text to `.value`, handles
+Backspace, and enforces `maxLength` (left out, any length is allowed) —
+but only while `.focused`; an unfocused field leaves `.value` alone
+entirely, so a game with several fields on screen at once (or a button
+and a field both live) does not have every field eating every keystroke
+meant for whichever one the player actually clicked into. `.submitted` is
+a one-frame pulse, true only on the exact frame Enter was pressed, the
+same shape `Menu`'s own `.confirmed` takes. `.clear()` empties it, for a
+field reused after its value has already been read.
+
+None of these three widgets is a built-in for the same reason scenes and
+tweening are not: a program can write hit-testing, index arithmetic, and
+appending typed text to a string, itself, and an engine feature that only
+did this would earn nothing but a longer manual.
 
 Conventions, fixed once: Y points **down** from a top-left origin; a colour
 channel outside 0–255 is an error rather than a clamp; coordinates may be
