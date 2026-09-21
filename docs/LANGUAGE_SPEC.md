@@ -2328,6 +2328,50 @@ changing underneath it. A live `unlock(id)` with no matching definition
 bug worth hearing about immediately, unlike a save file simply predating
 a rename.
 
+#### Object pools
+
+A busy game spawning and dropping bullets, enemies, or pickups every
+frame wants to reuse the same handful of instances rather than allocate
+a fresh one each time. `examples/lib/pool.mrt`'s `pool(factory, reset)`
+does that, handing out each live object by a small integer id rather
+than the object itself:
+
+```mrt
+import { pool } from "./lib/pool.mrt";
+
+var bullets = pool(
+    func() { return Bullet(0, 0, 0, 0); },
+    func(b) { b.x = 0; b.y = 0; b.dx = 0; b.dy = 0; }
+);
+
+var id = bullets.acquire();
+bullets.get(id).x = playerX;
+bullets.get(id).dx = 5;
+
+// ... later, once the bullet leaves the screen or hits something ...
+bullets.release(id);
+```
+
+An id rather than a reference is the same reasoning `gameSurface`'s own
+sprites are addressed by id: a number costs the language no new type,
+and it stays a stable, comparable value even after the object underneath
+it has been recycled into something else. That last part matters because
+MRT struct instances compare *structurally* — two different bullets at
+the same position and velocity are `==` — so a raw reference could not
+otherwise tell two live objects apart the way an id always can.
+
+`acquire()` reuses a released slot if one is free, or grows the pool by
+one and calls `factory()` for a new object otherwise; either way, `reset`
+(if given) runs on the object first, so a bullet's id is always handed
+back in the same clean state whether it is brand new or a recycled one
+still carrying its previous life's position and velocity. `release(id)`
+frees the slot for reuse without shrinking capacity — allocate once,
+reuse forever, is the entire point — and, like `soundStop` on a voice
+that already stopped, releasing an id that is already free or never
+existed is not an error. `isAlive(id)` and `get(id)` (which returns
+`null` for a dead id) let a caller check before touching one; `counts()`
+returns `{live, capacity}` for a quick "23/64 bullets in flight" readout.
+
 #### The loop belongs to the program
 
 A windowing library usually wants the loop: you hand it a callback and it
