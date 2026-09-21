@@ -28,6 +28,7 @@ fn main() {
     println!("presented 5 frames");
     println!("delta is a real duration: {}", window.delta() >= 0.0);
     println!("no key is down: {}", !window.key_down("W"));
+    println!("nothing typed either: {}", window.text_input().is_empty());
 
     if window.is_fullscreen() {
         println!("FAIL starts fullscreen");

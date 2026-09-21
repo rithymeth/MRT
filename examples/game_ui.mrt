@@ -1,20 +1,22 @@
-// Clickable buttons and a keyboard/gamepad-navigable menu, from MRT source.
+// Clickable buttons, a keyboard/gamepad-navigable menu, and a typed text
+// field, from MRT source.
 //
 // game* is an engine extension: only the Rust engines have these builtins.
 // See "Engine extensions" in docs/LANGUAGE_SPEC.md. examples/lib/ui.mrt
-// itself is not one -- it is ordinary MRT built on gamePointer() and
-// actions.mrt, and only this example is engine-specific because it calls
-// gamePointer() (through Button.update()) and the input actions.mrt
-// itself wraps.
+// itself is not one -- it is ordinary MRT built on gamePointer(),
+// gameTextInput(), and actions.mrt, and only this example is
+// engine-specific because it calls them (through Button.update(),
+// TextField.update(), and the input actions.mrt itself wraps).
 //
 // gameOpen() is never called below, so there is no real window and no
 // real mouse or keyboard -- the same situation game_actions.mrt and
 // game_gamepad.mrt already document. gamePointer() then always answers
-// {x: 0, y: 0, down: false}, and every key/button query answers false,
-// which is the ordinary case each already promises for a machine with
-// nothing attached, not a fallback a try is written to catch.
+// {x: 0, y: 0, down: false}, gameTextInput() always answers "", and every
+// key/button query answers false, which is the ordinary case each already
+// promises for a machine with nothing attached, not a fallback a try is
+// written to catch.
 
-import { button, menu } from "./lib/ui.mrt";
+import { button, menu, textField } from "./lib/ui.mrt";
 
 func main() {
     gameInit(80, 40, "MRT UI");
@@ -66,5 +68,36 @@ func main() {
         menu([]);
     } catch (e) {
         print("a menu with no items is refused:", e.kind);
+    }
+
+    print("-- text field --");
+    // With no window, gameTextInput() always answers "" and
+    // gameKeyPressed("Backspace"/"Enter") always answer false, so typing
+    // itself cannot be exercised here -- the same limitation the button
+    // and menu checks above already work around. What update() does with
+    // whatever value is already there, though, is fully deterministic
+    // and does not depend on a real keyboard at all.
+
+    var unfocused = textField(4);
+    unfocused.value = "toolong";
+    unfocused.update();
+    print("an unfocused field is left alone entirely, however long:", unfocused.value == "toolong");
+
+    var limited = textField(3);
+    limited.focused = true;
+    limited.value = "hello";
+    limited.update();
+    print("update() enforces maxLength on whatever value is already there:", limited.value == "hel");
+
+    var field = textField();
+    print("starts empty, unfocused, unsubmitted:", field.value == "" && !field.focused && !field.submitted);
+    field.value = "typed earlier";
+    field.clear();
+    print("clear() empties it regardless of what was typed:", field.value == "");
+
+    try {
+        textField(-1);
+    } catch (e) {
+        print("a negative maxLength is refused:", e.kind);
     }
 }

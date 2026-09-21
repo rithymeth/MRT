@@ -66,6 +66,17 @@ struct Input {
     /// that only checks `held` would miss it entirely -- which feels like the
     /// game dropping input, and is impossible to reproduce on purpose.
     pressed: Vec<String>,
+    /// Text typed since the previous frame, in order.
+    ///
+    /// Kept separate from `pressed`: that is "which physical key", already
+    /// normalised to a name a game can compare against regardless of Shift
+    /// or layout, so `gameKeyDown("W")` works the same on an AZERTY
+    /// keyboard as a QWERTY one. This is the opposite -- "what would show
+    /// up in a text box" -- so it is left exactly as the platform reports
+    /// it: case as typed, and a dead key or a non-Latin layout's own
+    /// characters coming through as themselves rather than forced into a
+    /// single key's name.
+    typed: String,
     pointer: (f64, f64),
     pointer_down: bool,
 }
@@ -113,6 +124,18 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => self.open = false,
             WindowEvent::KeyboardInput { event, .. } => {
+                // Collected before the key-name lookup below and
+                // independently of it: a key whose *name* this crate does
+                // not recognise (an accented letter, a symbol needing
+                // Shift, a non-Latin layout's own character) can still
+                // produce ordinary text, and a text box should not lose it
+                // just because it is not one of the named keys a game asks
+                // "is this held" about.
+                if event.state == ElementState::Pressed {
+                    if let Some(text) = &event.text {
+                        self.input.typed.push_str(text);
+                    }
+                }
                 let Some(name) = key_name(&event.logical_key) else {
                     return;
                 };
@@ -314,6 +337,7 @@ impl Window {
             // A minimised window has no pixels. Not an error: the game keeps
             // running, there is just nowhere to put the frame.
             self.app.input.pressed.clear();
+            self.app.input.typed.clear();
             return Ok(());
         };
         surface
@@ -335,6 +359,7 @@ impl Window {
             .present()
             .map_err(|e| format!("could not show the frame: {e}"))?;
         self.app.input.pressed.clear();
+        self.app.input.typed.clear();
         Ok(())
     }
 
@@ -360,6 +385,11 @@ impl Window {
 
     pub fn pointer_down(&self) -> bool {
         self.app.input.pointer_down
+    }
+
+    /// Text typed since the previous `present`, in the order it was typed.
+    pub fn text_input(&self) -> String {
+        self.app.input.typed.clone()
     }
 
     /// Ask the window to close, as `gameClose()` does.
