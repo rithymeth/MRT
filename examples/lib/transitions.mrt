@@ -1,0 +1,70 @@
+// A screen-space cover, fading in and back out over a solid colour --
+// what a scene change, a level load, or a "you died" beat needs to hide
+// its own seam. Built entirely on the existing easing/tween library:
+// covering the screen is drawing one rectangle whose alpha channel is a
+// Tween's own `.value()`, the same "a program can write it and should"
+// reasoning `gameOverlap`'s own doc comment gives for not promoting this
+// to a built-in.
+
+import { tween, easeLinear } from "./easing.mrt";
+
+struct Transition {
+    red, green, blue, fadeOut, fadeIn, swapped = false, onSwap = null;
+
+    // Advances whichever half is still running. The two halves never run
+    // at once -- fadeIn only starts once fadeOut has fully covered the
+    // screen -- so there is always exactly one thing to advance.
+    func update(dt) {
+        if (!this.fadeOut.finished) {
+            this.fadeOut.update(dt);
+            if (this.fadeOut.finished && !this.swapped) {
+                this.swapped = true;
+                if (this.onSwap != null) { this.onSwap(); }
+            }
+            return;
+        }
+        this.fadeIn.update(dt);
+    }
+
+    // True once the screen has faded all the way back out -- the signal
+    // a program uses to stop drawing this and move on, the same shape
+    // Tween's own `.finished` already takes.
+    func finished() {
+        return this.fadeOut.finished && this.fadeIn.finished;
+    }
+
+    // Draws the current cover over whatever this frame has already
+    // drawn -- call it last, after the scene underneath. Follows the
+    // current draw target exactly like gameRect itself does, so a
+    // transition drawn while a sprite is the target covers that sprite,
+    // not the screen behind it.
+    func draw() {
+        var alpha = this.fadeOut.value();
+        if (this.fadeOut.finished) { alpha = this.fadeIn.value(); }
+        if (alpha <= 0) { return; }
+        gameRect(0, 0, gameWidth(), gameHeight(), gameColorAlpha(this.red, this.green, this.blue, floor(alpha)));
+    }
+}
+
+// A transition covering the screen in `color`, `duration` seconds to
+// fully cover it and `duration` again to uncover it, eased by `easing`.
+// `onSwap`, if given, fires exactly once, the instant the screen is fully
+// covered -- the moment to switch a scene, load a level, or do anything
+// else the player should not see happen. `color`'s own alpha is ignored;
+// the transition drives its own.
+export func transition(color, duration, easing = easeLinear, onSwap = null) {
+    if (duration < 0) {
+        throw {
+            kind: "ValueError",
+            message: "transition() needs a non-negative duration, not ${duration}."
+        };
+    }
+    var parts = gameColorParts(color);
+    return Transition(
+        parts.red, parts.green, parts.blue,
+        tween(0, 255, duration, easing),
+        tween(255, 0, duration, easing),
+        false,
+        onSwap
+    );
+}

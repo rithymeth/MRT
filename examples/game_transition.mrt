@@ -1,0 +1,53 @@
+// A fade-to-black scene transition, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md. examples/lib/transitions.mrt
+// itself is not one -- it is ordinary MRT built on the existing tween
+// library plus gameColorParts/gameColorAlpha/gameRect, and only this
+// example is engine-specific because it calls them.
+
+import { transition } from "./lib/transitions.mrt";
+import { easeLinear } from "./lib/easing.mrt";
+
+func main() {
+    gameInit(10, 10, "MRT Transition");
+    var sky = gameColor(30, 144, 255);
+    gameClear(sky);
+
+    var swapped = false;
+    var t = transition(gameColor(0, 0, 0), 0.5, easeLinear, func() { swapped = true; });
+
+    // Before the transition has run at all, it covers nothing -- the same
+    // "a Tween at elapsed 0 has not moved yet" starting point Tween
+    // itself has.
+    gameClear(sky);
+    t.draw();
+    print("nothing covered before any update:", gameColorAt(5, 5) == sky);
+
+    // Halfway to fully covering the screen.
+    t.update(0.25);
+    print("not fully covered yet, and the swap has not fired:", !t.fadeOut.finished && !swapped);
+
+    // The other half of fadeOut: now fully covers the screen, in exactly
+    // the colour asked for, and the swap fires exactly once, right here.
+    t.update(0.25);
+    print("fully covered now, and the swap fired exactly here:", t.fadeOut.finished && swapped);
+    gameClear(sky);
+    t.draw();
+    print("a fully covered screen reads pure black:", gameColorAt(5, 5) == gameColor(0, 0, 0));
+
+    // fadeIn undoes the cover the same way, in the same amount of time.
+    t.update(0.25);
+    print("uncovering, but not finished yet:", !t.finished());
+    t.update(0.25);
+    print("finished once faded all the way back in:", t.finished());
+    gameClear(sky);
+    t.draw();
+    print("a finished transition covers nothing again:", gameColorAt(5, 5) == sky);
+
+    try {
+        transition(gameColor(0, 0, 0), -1);
+    } catch (e) {
+        print("a negative duration is refused:", e.kind);
+    }
+}
