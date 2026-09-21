@@ -93,6 +93,8 @@ const NAMES: &[&str] = &[
     "gameCircleOutline",
     "gameCamera",
     "gameCameraPosition",
+    "gameCameraZoom",
+    "gameCameraZoomLevel",
     "gameOverlap",
     "gameResolve",
     "gameSweep",
@@ -401,6 +403,17 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
         "gameCameraPosition" => {
             exactly(&args, 0, "gameCameraPosition() takes no arguments.")?;
             crate::game::draw::camera_position(&interp.screen)
+        }
+        "gameCameraZoom" => {
+            exactly(&args, 1, "gameCameraZoom() takes a zoom.")?;
+            crate::game::draw::set_camera_zoom(
+                &mut interp.screen,
+                number(&args[0], "gameCameraZoom")?,
+            )
+        }
+        "gameCameraZoomLevel" => {
+            exactly(&args, 0, "gameCameraZoomLevel() takes no arguments.")?;
+            crate::game::draw::camera_zoom_level(&interp.screen)
         }
         "gameOverlap" => {
             exactly(&args, 2, "gameOverlap() takes two boxes.")?;
