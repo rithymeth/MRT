@@ -1,0 +1,78 @@
+// Spawning patterns for the particle pool, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md. Unlike camera.mrt or
+// timers.mrt, examples/lib/emitter.mrt calls gameParticleSpawn directly,
+// so it is engine-specific through and through -- the same as
+// actions.mrt wrapping gameKeyDown.
+
+import { burst, emitter } from "./lib/emitter.mrt";
+
+func main() {
+    gameInit(60, 60, "MRT Emitter");
+    gameClear(gameColor(10, 12, 20));
+    var spark = gameColor(255, 200, 90);
+
+    print("starts with none:", gameParticleCount());
+
+    // A burst spawns exactly the count asked for.
+    var rand = random(1);
+    burst(30, 30, 20, 30, 1.0, spark, rand);
+    print("a burst spawns exactly the count asked for:", gameParticleCount() == 20);
+
+    // A burst of zero is not an error -- it is simply nothing to spawn,
+    // the same "not an error, just nothing to show" rule
+    // gameParticleSpawn's own zero-life case follows.
+    burst(30, 30, 0, 30, 1.0, spark, rand);
+    print("a burst of zero spawns nothing more:", gameParticleCount() == 20);
+
+    // A spread of zero always lands exactly on the source, whatever rand
+    // says -- readable back with gameColorAt, the same way
+    // game_particles.mrt checks its own still particle.
+    burst(10, 10, 1, 0, 5.0, spark, rand);
+    gameParticleDraw();
+    print("zero spread lands exactly on the source:", gameColorAt(10, 10) == spark);
+
+    // A continuous emitter spawns a few at a time as update() is called,
+    // not all at once -- exactly one particle a step here, since
+    // rate * dt is exactly 1.
+    var trail = emitter(40, 40, 4, 15, 2.0, gameColor(120, 200, 255));
+    var before = gameParticleCount();
+    trail.update(0.25);
+    print("one step at rate * dt == 1 spawns exactly one:", gameParticleCount() == before + 1);
+    trail.update(0.25);
+    print("and the next step spawns exactly one more:", gameParticleCount() == before + 2);
+
+    // A rate that does not divide evenly into one step still averages out
+    // correctly: the fractional remainder carries forward instead of
+    // being rounded away every frame.
+    var trickle = emitter(5, 5, 2, 10, 1.0, gameColor(200, 200, 200));
+    var startCount = gameParticleCount();
+    trickle.update(0.25); // carry = 0.5
+    print("half a particle's worth of time spawns nothing yet:", gameParticleCount() == startCount);
+    trickle.update(0.25); // carry = 1.0
+    print("the accumulated remainder spawns it on the next step:", gameParticleCount() == startCount + 1);
+
+    // moveTo() changes where the *next* particles spawn, not the ones
+    // already out.
+    trickle.moveTo(50, 50);
+    trickle.update(0.5); // carry = 1.0 again, from the new position
+    gameClear(gameColor(10, 12, 20));
+    gameParticleDraw();
+    print("the emitter moved before its next spawn:", gameColorAt(50, 50) == gameColor(200, 200, 200));
+
+    // Neither factory silently accepts nonsense.
+    try {
+        burst(0, 0, 2.5, 10, 1.0, spark, rand);
+    } catch (e) {
+        print("a fractional burst count is refused:", e.kind);
+    }
+    try {
+        emitter(0, 0, -1, 5, 1.0, spark);
+    } catch (e) {
+        print("a negative rate is refused:", e.kind);
+    }
+
+    gameSave("game_emitter.png");
+    print("wrote game_emitter.png");
+}

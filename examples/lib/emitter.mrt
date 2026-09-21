@@ -1,0 +1,84 @@
+// Spawning patterns on top of MRT-Game's own particle pool
+// (gameParticleSpawn/gameParticleUpdate/gameParticleDraw/gameParticleCount,
+// see "Particles" in docs/LANGUAGE_SPEC.md) -- a burst of many at once from
+// a point, and a steady stream spawned a few at a time every frame, rather
+// than a program writing the same spawn loop out at every call site.
+//
+// The pool itself is a built-in because moving, aging and fading a hundred
+// points a frame is real per-particle work; deciding how many to spawn, in
+// what pattern, how often, is arithmetic on top of that -- so it lives
+// here instead, the same line drawn for scenes, tweening and camera shake
+// elsewhere in this section.
+//
+// Neither direction here is a true circle of angles: MRT has no sin/cos
+// (see game_raycast.mrt's own Taylor series, and easing.mrt's docs, for
+// why that is a deliberate absence). A spread of independently random
+// dx/dy, as game_particles.mrt's own burst already does by hand, is what
+// this reuses instead of inventing trigonometry a library should not need.
+
+// Spawns `count` particles from `(x, y)`, each with its own dx and dy
+// picked independently and uniformly from `-spread` to `spread` pixels a
+// second, living `life` seconds. `rand` is a generator from `random(seed)`
+// (see random()'s own docs) -- pass the same one across calls for a burst
+// that replays identically from a fixed seed.
+export func burst(x, y, count, spread, life, color, rand) {
+    if (count < 0 || count != floor(count)) {
+        throw {
+            kind: "ValueError",
+            message: "burst() needs a whole, non-negative particle count, not ${count}."
+        };
+    }
+    var i = 0;
+    while (i < count) {
+        var dx = (rand() - 0.5) * 2 * spread;
+        var dy = (rand() - 0.5) * 2 * spread;
+        gameParticleSpawn(x, y, dx, dy, life, color);
+        i = i + 1;
+    }
+}
+
+// A source that spawns particles of its own accord, `rate` a second, for
+// as long as `update(dt)` keeps being called -- smoke from a chimney, a
+// torch's sparks, a trail behind something moving, none of which spawn
+// all at once the way an explosion's burst() does.
+struct Emitter {
+    x, y, rate, spread, life, color, rand, carry = 0;
+
+    // Where new particles spawn from. Particles already spawned are not
+    // moved -- this only changes where the *next* ones will start, the
+    // same "moves the source, not what it already emitted" rule a real
+    // torch or a chimney follows.
+    func moveTo(x, y) {
+        this.x = x;
+        this.y = y;
+    }
+
+    // Accumulates `rate * dt` particles' worth of time and spawns however
+    // many whole ones that comes to, carrying the leftover fraction
+    // forward -- so a rate of, say, 3 a second spawns at a steady clip
+    // rather than only on whichever frames happen to cross a whole number
+    // on their own.
+    func update(dt) {
+        this.carry = this.carry + this.rate * dt;
+        while (this.carry >= 1) {
+            var dx = (this.rand() - 0.5) * 2 * this.spread;
+            var dy = (this.rand() - 0.5) * 2 * this.spread;
+            gameParticleSpawn(this.x, this.y, dx, dy, this.life, this.color);
+            this.carry = this.carry - 1;
+        }
+    }
+}
+
+// An emitter at `(x, y)`, spawning `rate` particles a second, each living
+// `life` seconds with dx/dy independently random within `spread` pixels a
+// second. `seed` drives that randomness the same way `random()` itself
+// takes a seed -- two emitters given the same seed spawn identically.
+export func emitter(x, y, rate, spread, life, color, seed = 1) {
+    if (rate < 0) {
+        throw {
+            kind: "ValueError",
+            message: "emitter() needs a non-negative rate, not ${rate}."
+        };
+    }
+    return Emitter(x, y, rate, spread, life, color, random(seed));
+}

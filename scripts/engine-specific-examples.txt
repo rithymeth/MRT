@@ -15,6 +15,7 @@ game_bounce.mrt
 game_sprites.mrt
 game_collide.mrt
 game_circles.mrt
+game_emitter.mrt
 game_particles.mrt
 game_tween.mrt
 game_save.mrt

@@ -2106,6 +2106,43 @@ so `gameCamera` scrolls them the same as it scrolls sprites and shapes.
 target a sprite first to bake an explosion's debris into it, or leave the
 target at the screen for the ordinary case.
 
+The loop above — a random `dx`/`dy` per particle, spawned in a batch — is
+exactly what `examples/lib/emitter.mrt`'s `burst` does, so a program that
+wants a one-off explosion does not have to write it out each time:
+
+```mrt
+import { burst, emitter } from "./lib/emitter.mrt";
+
+var rand = random(1);
+burst(hitX, hitY, 40, 80, 0.6, spark, rand);
+```
+
+`burst(x, y, count, spread, life, colour, rand)` spawns `count` particles at
+once, each with its own `dx`/`dy` picked independently between `-spread`
+and `spread`; `rand` is a `random(seed)` generator, so a burst replays
+identically given the same seed. A continuous source — smoke, a torch, a
+trail behind something moving — wants particles spawned a few at a time
+over many frames instead, which is what `emitter` is for:
+
+```mrt
+var smoke = emitter(chimneyX, chimneyY, /* rate */ 12, /* spread */ 10, 1.5, grey);
+while (gameOpen()) {
+    smoke.moveTo(chimneyX, chimneyY); // if the source itself can move
+    smoke.update(gameDelta());
+    // ...
+}
+```
+
+`update(dt)` accumulates `rate * dt` particles' worth of time and spawns
+however many whole ones that comes to, carrying any fractional remainder
+forward — so a rate that does not divide evenly into a frame still averages
+out correctly instead of being rounded away every frame. Neither of these
+is a built-in for the same reason scenes and tweening are not: deciding how
+many particles to spawn, in what pattern, how often, is arithmetic on top
+of a pool that already exists — the actual per-particle work stays in
+`gameParticleUpdate`/`gameParticleDraw`, which do need to touch every live
+particle every frame and so stay built-in.
+
 #### Saving and loading game state
 
 | Call | Result |
