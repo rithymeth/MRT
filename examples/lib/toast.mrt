@@ -1,0 +1,65 @@
+// A queue of short-lived pop-up messages -- "+10 gold", "Level up!" --
+// each shown for a fixed duration with a fade in and a fade out. Needs
+// no screen or any game* call: an opacity that rises, holds, then falls
+// is arithmetic on elapsed time, the same "a program can track this
+// itself" reasoning timers.mrt's own Scheduler and emitter.mrt's own
+// Emitter already reuse elsewhere in this section.
+
+struct Toast {
+    text, fadeIn, hold, fadeOut, elapsed = 0, dead = false;
+
+    func update(dt) {
+        this.elapsed = this.elapsed + dt;
+        if (this.elapsed >= this.fadeIn + this.hold + this.fadeOut) {
+            this.dead = true;
+        }
+    }
+
+    // Opacity from 0 to 1: rising through fadeIn, steady through hold,
+    // falling through fadeOut. A duration of 0 for either fade skips it
+    // outright rather than dividing by it.
+    func opacity() {
+        if (this.elapsed < this.fadeIn) {
+            if (this.fadeIn <= 0) { return 1; }
+            return this.elapsed / this.fadeIn;
+        }
+        var afterHold = this.elapsed - this.fadeIn - this.hold;
+        if (afterHold < 0) { return 1; }
+        if (this.fadeOut <= 0) { return 0; }
+        var remaining = 1 - afterHold / this.fadeOut;
+        if (remaining < 0) { return 0; }
+        return remaining;
+    }
+}
+
+// A live set of toasts, each ageing independently.
+struct ToastQueue {
+    live = [];
+
+    // Adds a new toast, visible immediately alongside whatever else is
+    // already showing -- toasts stack rather than waiting in line behind
+    // each other, the way a real game's "+10 gold" and "+5 XP" popping up
+    // back to back both stay on screen instead of one hiding the other.
+    // `hold` is how long it stays fully visible once faded in;
+    // `fadeIn`/`fadeOut` how long each transition takes.
+    func show(text, hold = 2, fadeIn = 0.2, fadeOut = 0.5) {
+        if (hold < 0 || fadeIn < 0 || fadeOut < 0) {
+            throw {
+                kind: "ValueError",
+                message: "show() needs non-negative durations."
+            };
+        }
+        push(this.live, Toast(text, fadeIn, hold, fadeOut));
+    }
+
+    // Ages every live toast by `dt` seconds and drops whichever ones
+    // have finished fading out.
+    func update(dt) {
+        for (t in this.live) { t.update(dt); }
+        this.live = filter(this.live, func(t) { return !t.dead; });
+    }
+}
+
+export func toastQueue() {
+    return ToastQueue();
+}

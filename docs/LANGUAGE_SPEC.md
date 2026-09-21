@@ -2451,6 +2451,44 @@ call, the same reasoning as everything else in this section — the alpha
 channel is the only part that needed easing.mrt's `Tween` doing any real
 work.
 
+#### Toast notifications
+
+"+10 gold," "Level up!," an achievement popping up in the corner — a
+short message that fades in, sits for a moment, then fades back out.
+`examples/lib/toast.mrt`'s `toastQueue` holds any number of these at
+once, each ageing on its own:
+
+```mrt
+import { toastQueue } from "./lib/toast.mrt";
+
+var toasts = toastQueue();
+// Later, whenever something worth telling the player happens:
+toasts.show("+10 gold");
+toasts.show("Level up!", 3, 0.3, 1); // hold 3s, fade in 0.3s, fade out 1s
+
+while (gameOpen()) {
+    toasts.update(gameDelta());
+    var y = 10;
+    for (t in toasts.live) {
+        gameDrawText(font, t.text, 10, y, 1); // ... at t.opacity(), somehow ...
+        y = y + 12;
+    }
+    gamePresent();
+}
+```
+
+`show(text, hold, fadeIn, fadeOut)` adds a toast immediately, alongside
+whatever is already showing — toasts stack rather than waiting in line
+behind each other, the same way a real game's "+10 gold" and "+5 XP"
+popping up back to back both stay on screen rather than one hiding the
+other. `.live` is the current set, each with `.text` and `.opacity()` (0
+to 1: rising through `fadeIn`, steady through `hold`, falling through
+`fadeOut`) for a program to draw however it likes; `update(dt)` ages
+every one and drops whichever have finished fading out. Needs no screen
+or any `game*` call: an opacity that rises, holds, then falls is elapsed-
+time arithmetic, the same reasoning `Scheduler` and `Emitter` already
+give elsewhere in this section.
+
 #### Timers and coroutines
 
 A cooldown, a delayed explosion, a wave of enemies every few seconds — a
