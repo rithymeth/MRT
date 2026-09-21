@@ -1,0 +1,48 @@
+// A pool of recycled bullets, from MRT source. Needs no engine:
+// recycling ids and their underlying objects is ordinary MRT, the same
+// as replay.mrt and leaderboard.mrt.
+
+import { pool } from "./lib/pool.mrt";
+
+struct Bullet {
+    x, y, dx, dy;
+}
+
+func main() {
+    var bullets = pool(
+        func() { return Bullet(0, 0, 0, 0); },
+        func(b) { b.x = 0; b.y = 0; b.dx = 0; b.dy = 0; }
+    );
+    print("starts empty:", bullets.counts().live == 0 && bullets.counts().capacity == 0);
+
+    var a = bullets.acquire();
+    print("acquiring grows the pool by one:", bullets.counts().live == 1 && bullets.counts().capacity == 1);
+    print("the id names a live object:", bullets.isAlive(a) && bullets.get(a) != null);
+
+    var b = bullets.acquire();
+    print("a second acquire gets its own id, not the same one:", a != b);
+    print("both are live at once:", bullets.counts().live == 2 && bullets.counts().capacity == 2);
+
+    // A caller sets up its own object however it likes, once acquired --
+    // pretend this bullet just fired toward the right.
+    bullets.get(a).x = 100;
+    bullets.get(a).dx = 5;
+
+    bullets.release(a);
+    print("releasing frees the id without shrinking capacity:", bullets.counts().live == 1 && bullets.counts().capacity == 2);
+    print("a released id is no longer alive:", !bullets.isAlive(a));
+    print("and no longer resolves to anything:", bullets.get(a) == null);
+
+    var c = bullets.acquire();
+    print("the next acquire reuses the freed id rather than growing:", c == a && bullets.counts().capacity == 2);
+    print("reset() ran on it, wiping the old bullet's position and velocity:", bullets.get(c).x == 0 && bullets.get(c).dx == 0);
+
+    // Neither is an error: a program that reads input this frame and
+    // releases something already gone, or twice, should not need to
+    // check first. `c` (still live, never released) is the only one
+    // left standing afterward.
+    bullets.release(999);
+    bullets.release(b);
+    bullets.release(b);
+    print("releasing an id that never existed, or one already released, is not an error:", bullets.counts().live == 1);
+}

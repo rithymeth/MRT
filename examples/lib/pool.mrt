@@ -1,0 +1,74 @@
+// A pool of recycled objects -- bullets, enemies, pickups -- so a busy
+// game reuses the same handful of instances instead of allocating a
+// fresh one every time something spawns and throwing it away every time
+// something dies.
+//
+// Handed out by a small integer id rather than the object itself, the
+// same reason `gameSurface`'s own sprites are addressed by id and not by
+// reference: a number costs the language no new type, and unlike the
+// object underneath it, an id stays a stable, comparable value even
+// after that object has been recycled into something else -- MRT
+// structs compare *structurally* (two different bullets at the same
+// position and velocity are `==`), so a raw reference could not
+// otherwise tell two live objects apart, and an id always can.
+
+struct Pool {
+    factory, reset = null, slots = [], freeIds = [];
+
+    // Whether `id` currently names a live object -- the same "a typo
+    // shows as nothing happening, not a crash" rule `gameKeyDown` gives
+    // an unrecognised key name, for an id that never existed or has
+    // since been released.
+    func isAlive(id) {
+        return id >= 0 && id < len(this.slots) && !has(this.freeIds, id);
+    }
+
+    // The object at `id`, or null if it names no live one.
+    func get(id) {
+        if (!this.isAlive(id)) { return null; }
+        return this.slots[id];
+    }
+
+    // Hands out an id: reuses a released slot if one exists, otherwise
+    // grows the pool by one and asks `factory` for a new object. Either
+    // way, `reset` (if the pool was given one) runs on it before the id
+    // is returned, so acquiring a bullet always starts from the same
+    // clean state whether its object is brand new or a recycled one
+    // still carrying its previous life's position and velocity.
+    func acquire() {
+        var id;
+        if (len(this.freeIds) > 0) {
+            id = this.freeIds[len(this.freeIds) - 1];
+            this.freeIds = slice(this.freeIds, 0, len(this.freeIds) - 1);
+        } else {
+            push(this.slots, this.factory());
+            id = len(this.slots) - 1;
+        }
+        if (this.reset != null) { this.reset(this.slots[id]); }
+        return id;
+    }
+
+    // Frees `id`'s slot for reuse. Releasing one already free, or one
+    // that never existed, is not an error -- the same reasoning
+    // `soundStop` gives for a voice that already stopped.
+    func release(id) {
+        if (!this.isAlive(id)) { return; }
+        push(this.freeIds, id);
+    }
+
+    // `{live, capacity}` -- `live` is how many ids are currently handed
+    // out, `capacity` is the total the pool has ever grown to. Capacity
+    // never drops back down when something is released: allocate once,
+    // reuse forever, is the entire point of pooling in the first place.
+    func counts() {
+        return {live: len(this.slots) - len(this.freeIds), capacity: len(this.slots)};
+    }
+}
+
+// A pool whose objects are made by calling `factory()` with no
+// arguments. `reset(obj)`, if given, runs once every time an id is
+// acquired -- new or recycled -- putting the object into whatever state
+// a freshly spawned one should start in.
+export func pool(factory, reset = null) {
+    return Pool(factory, reset);
+}
