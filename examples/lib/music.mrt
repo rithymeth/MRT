@@ -1,0 +1,121 @@
+// A background-music playlist: tracks queued in order, crossfading from
+// one into the next before it ends rather than cutting or leaving a gap
+// -- the shape a title screen's or a level's music almost always wants.
+//
+// MRT-Audio has no "tell me when a voice finishes" built-in, and does not
+// need one: soundInfo(id).seconds already gives a track's own length, so
+// tracking how far into it a player has gotten is arithmetic on elapsed
+// time -- the same "a program can track this itself" reasoning
+// timers.mrt's own Scheduler and emitter.mrt's own Emitter already reuse,
+// this time driving soundFade/soundFadeOut instead of gameParticleSpawn.
+
+struct MusicPlayer {
+    tracks, crossfade, loop, index = 0, elapsed = 0,
+    duration = 0, voice = null, nextVoice = null, crossfading = false,
+    finished = false;
+
+    // Starts the first track. Called once, by playlist() itself.
+    func start() {
+        this.duration = soundInfo(this.tracks[this.index]).seconds;
+        this.voice = soundPlay(this.tracks[this.index]);
+    }
+
+    // The id of whichever track is currently playing (or crossfading
+    // out of).
+    func current() {
+        return this.tracks[this.index];
+    }
+
+    // Advances the playlist by `dt` seconds: starts a crossfade once the
+    // current track is within `crossfade` seconds of its own end, and
+    // switches over to the next track once it actually ends. A single
+    // `update` only ever crosses one track boundary -- a `dt` that
+    // somehow spans more than a whole track's length (a stalled frame
+    // lasting longer than a song) needs one more `update` to fully catch
+    // up, the same as a paused game missing more than one repaint.
+    func update(dt) {
+        if (this.finished) { return; }
+        this.elapsed = this.elapsed + dt;
+
+        if (!this.crossfading && this.elapsed >= this.duration - this.crossfade) {
+            this.beginCrossfade();
+        }
+
+        if (this.crossfading && this.elapsed >= this.duration) {
+            this.advance();
+        }
+    }
+
+    // Starts the next track (if there is one) fading in while this one
+    // fades out. On a non-looping playlist's last track, there is
+    // nothing to crossfade into, so this just fades the last track to
+    // silence on its own -- soundFadeOut stops the voice once it gets
+    // there, so nothing further is owed to it.
+    func beginCrossfade() {
+        this.crossfading = true;
+        var nextIndex = (this.index + 1) % len(this.tracks);
+        if (nextIndex == 0 && !this.loop) {
+            soundFadeOut(this.voice, this.crossfade);
+            return;
+        }
+        this.nextVoice = soundPlay(this.tracks[nextIndex], {fadeIn: this.crossfade});
+        soundFadeOut(this.voice, this.crossfade);
+    }
+
+    // Moves the playlist's own bookkeeping on to the next track once the
+    // current one has actually ended. Any overshoot past the track's own
+    // length carries into the new one rather than being dropped, the
+    // same rule Coroutine and Emitter already follow for their own
+    // elapsed time.
+    func advance() {
+        var overshoot = this.elapsed - this.duration;
+        var nextIndex = (this.index + 1) % len(this.tracks);
+        if (nextIndex == 0 && !this.loop) {
+            this.finished = true;
+            this.voice = null;
+            return;
+        }
+        this.index = nextIndex;
+        this.voice = this.nextVoice;
+        this.nextVoice = null;
+        this.crossfading = false;
+        this.duration = soundInfo(this.tracks[this.index]).seconds;
+        this.elapsed = overshoot;
+    }
+
+    // Stops every voice this player has ever started, immediately --
+    // the whole playlist, not a fade. Marks the player finished so a
+    // later update() does not resurrect anything.
+    func stop() {
+        if (this.voice != null) { soundStop(this.voice); }
+        if (this.nextVoice != null) { soundStop(this.nextVoice); }
+        this.finished = true;
+    }
+}
+
+// A playlist over `tracks` (sound ids, in play order), each crossfading
+// into the next `crossfade` seconds before it ends. `loop`, true by
+// default, wraps back to the first track after the last rather than
+// finishing the playlist -- what background music almost always wants,
+// including a one-track "playlist" that seamlessly loops itself.
+//
+// Playing starts immediately: the first track is already sounding by the
+// time this returns, the same way `coroutine()` runs its generator to
+// its first yield right away rather than waiting for a first update().
+export func playlist(tracks, crossfade = 2, loop = true) {
+    if (len(tracks) < 1) {
+        throw {
+            kind: "ValueError",
+            message: "playlist() needs at least one track."
+        };
+    }
+    if (crossfade < 0) {
+        throw {
+            kind: "ValueError",
+            message: "playlist() needs a non-negative crossfade, not ${crossfade}."
+        };
+    }
+    var player = MusicPlayer(tracks, crossfade, loop);
+    player.start();
+    return player;
+}
