@@ -1,0 +1,56 @@
+// A ranked, capped list of scores -- ordinary array/sort arithmetic, the
+// same "a program can write it and should" reasoning `gameOverlap`'s own
+// doc comment gives elsewhere, with `.entries` left as plain data so it
+// is ready for `gameSaveData`/`gameLoadData` with no wrapper of its own.
+
+struct Leaderboard {
+    capacity, entries = [];
+
+    // Whether `score` would land on the list right now -- for a "new
+    // high score!" check before actually adding it. Always true while
+    // there is still room; once full, only a score beating the current
+    // lowest entry qualifies.
+    func qualifies(score) {
+        if (len(this.entries) < this.capacity) { return true; }
+        return score > this.entries[len(this.entries) - 1].score;
+    }
+
+    // Adds `{name, score}`, keeping the list sorted highest first and
+    // capped at `capacity` entries. Returns the rank it landed on
+    // (0-based), or null if it did not qualify -- an entry that does not
+    // make the cut is simply not kept, not an error, the same rule a
+    // particle spawned with no life left gets elsewhere in this section.
+    func add(name, score) {
+        if (!this.qualifies(score)) { return null; }
+        var entry = {name: name, score: score};
+        push(this.entries, entry);
+        this.entries = sort(this.entries, func(a, b) { return b.score - a.score; });
+        if (len(this.entries) > this.capacity) {
+            this.entries = slice(this.entries, 0, this.capacity);
+        }
+        for (var i = 0; i < len(this.entries); i = i + 1) {
+            if (this.entries[i] == entry) { return i; }
+        }
+        return null;
+    }
+}
+
+// A leaderboard holding at most `capacity` scores (10 by default),
+// optionally starting from `entries` already on it -- reloaded save
+// data, say. Each of `entries` is added one at a time through `add()`
+// itself rather than assumed already sorted and within capacity, so a
+// leaderboard reloaded after `capacity` changed, or from a file edited
+// by hand, still comes out correctly ranked and trimmed.
+export func leaderboard(capacity = 10, entries = []) {
+    if (capacity < 1 || capacity != floor(capacity)) {
+        throw {
+            kind: "ValueError",
+            message: "leaderboard() needs a positive whole capacity, not ${capacity}."
+        };
+    }
+    var board = Leaderboard(capacity);
+    for (entry in entries) {
+        board.add(entry.name, entry.score);
+    }
+    return board;
+}
