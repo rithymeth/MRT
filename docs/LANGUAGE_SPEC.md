@@ -2319,6 +2319,57 @@ promoting simple arithmetic to a built-in — a program can write this in MRT
 and did, and an engine feature that only did this would earn nothing but a
 longer manual.
 
+#### Screen transitions
+
+Switching scenes outright, as `switchTo` above does, has a seam: whatever
+the new scene draws on its first frame appears the instant the old one
+stops. A fade hides it — cover the screen, swap what is underneath while
+nothing can be seen, uncover it again — and covering the screen in a
+colour that grows more and less opaque is exactly what `examples/lib/easing.mrt`'s
+`Tween` already does, aimed at an alpha channel instead of a position:
+
+```mrt
+import { transition } from "./lib/transitions.mrt";
+import { sceneManager } from "./lib/scenes.mrt";
+
+var manager = sceneManager(titleScene);
+var fade = null;
+
+// Later, when it is time to change scenes:
+fade = transition(gameColor(0, 0, 0), 0.4, easeLinear, func() {
+    manager.switchTo(playScene);
+});
+
+while (gameOpen()) {
+    manager.update(gameDelta());
+    manager.draw();
+    if (fade != null) {
+        fade.update(gameDelta());
+        fade.draw(); // last, so it covers whatever manager.draw() just drew
+        if (fade.finished()) { fade = null; }
+    }
+    gamePresent();
+}
+```
+
+`transition(color, duration, easing, onSwap)` fades to fully covering the
+screen over `duration` seconds, then back to nothing over another
+`duration`. `onSwap` fires exactly once, the instant the screen is fully
+covered — the moment to call `manager.switchTo`, load a level, or do
+anything else the player should not see happen. `.finished()` mirrors
+`Tween`'s own field of the same name: true once the cover has faded all
+the way back out, the signal a program uses to stop drawing it.
+
+Unlike scenes above, this **is** engine-specific: covering the screen
+needs to know the screen's own size (`gameWidth`/`gameHeight`) and draw a
+rectangle (`gameRect`) with a colour whose components came apart
+(`gameColorParts`, since a packed colour is otherwise a one-way door — see
+its own doc comment). None of that is complicated enough to be a built-in
+of its own, though: it is still four lines of arithmetic and one draw
+call, the same reasoning as everything else in this section — the alpha
+channel is the only part that needed easing.mrt's `Tween` doing any real
+work.
+
 #### Timers and coroutines
 
 A cooldown, a delayed explosion, a wave of enemies every few seconds — a
