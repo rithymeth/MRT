@@ -27,6 +27,7 @@ game_camera.mrt
 game_gamepad.mrt
 game_window.mrt
 net_fetch.mrt
+net_multiplayer.mrt
 sound_effects.mrt
 sound_fades.mrt
 sound_positional.mrt

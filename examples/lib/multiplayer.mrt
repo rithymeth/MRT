@@ -1,0 +1,59 @@
+// A polling-based multiplayer client: submit this player's own state to a
+// shared server on an interval, and read back the most recent state every
+// other player submitted, the same way.
+//
+// mrt-net is deliberately a one-shot HTTP client -- no server, no sockets
+// exposed to the language, no async, see "What is deliberately not here"
+// under MRT-Net in docs/LANGUAGE_SPEC.md -- so this is the shape a program
+// reaches for instead: state polled and pushed as ordinary requests, not
+// pushed live over a socket. It suits a turn-based game, a shared
+// leaderboard, or anything slower-paced than an action game's own frame
+// rate; it is not a substitute for a real-time transport, and does not
+// pretend to be one.
+//
+// The server side is a program's own to write: any HTTP server that
+// accepts a POST to record one player's state and answers a GET with
+// everyone's latest. This library is only ever the client half -- the
+// half mrt-net can actually provide.
+
+import { parse, stringify } from "./json.mrt";
+
+struct RoomClient {
+    baseUrl, playerId, interval, elapsed = 0;
+
+    // Call once a frame with the time since the last call and this
+    // player's own current state (anything stringify can turn into JSON).
+    // Sends and fetches nothing more often than `interval` seconds apart,
+    // so a game polling every frame does not also make a request every
+    // frame.
+    //
+    // Returns the room's last known state for every player, an object
+    // keyed by player id, or `null` on a tick that skipped the network
+    // entirely (still inside `interval`) or found nobody to talk to. A
+    // program decides for itself what "no update this tick" means, the
+    // same way `soundPlay` leaves what "no speaker" means to its caller
+    // rather than guessing. A malformed reply -- the server answered, but
+    // not with JSON -- is not swallowed into `null` alongside those: it is
+    // a real bug, in this program or the one serving it, and propagates
+    // like any other error.
+    func sync(dt, state) {
+        this.elapsed += dt;
+        if (this.elapsed < this.interval) { return null; }
+        this.elapsed = 0;
+
+        var reply;
+        try {
+            netPost("${this.baseUrl}/players/${this.playerId}", stringify(state));
+            reply = netGet("${this.baseUrl}/players");
+        } catch (e) if (get(e, "kind", "") == "ValueError") {
+            return null;
+        }
+        return parse(reply.body);
+    }
+}
+
+// A client for one player in one room, without a caller having to spell
+// `elapsed = 0` themselves.
+export func roomClient(baseUrl, playerId, interval = 0.2) {
+    return RoomClient(baseUrl, playerId, interval);
+}
