@@ -2282,6 +2282,79 @@ promoting simple arithmetic to a built-in — a program can write this in MRT
 and did, and an engine feature that only did this would earn nothing but a
 longer manual.
 
+#### Timers and coroutines
+
+A cooldown, a delayed explosion, a wave of enemies every few seconds — a
+game already tracks elapsed time itself, one `dt` at a time, so a timer is
+that same arithmetic done once and reused rather than a fresh
+`elapsed += dt; if (elapsed >= duration) { ... }` written out at every call
+site. `examples/lib/timers.mrt`'s `scheduler()` holds any number of them:
+
+```mrt
+import { scheduler } from "./lib/timers.mrt";
+
+var timers = scheduler();
+timers.after(3.0, func() { spawnBoss(); });
+var wave = timers.every(5.0, func() { spawnWave(); });
+
+while (gameOpen()) {
+    timers.update(gameDelta());
+    // ...
+    gamePresent();
+}
+
+// Later, once the boss fight starts:
+timers.cancel(wave);
+```
+
+`after(seconds, callback)` runs `callback` once; `every(seconds, callback)`
+runs it again every `seconds` until `cancel()` is called with the timer
+either one returned. A `dt` large enough to cross more than one interval
+fires a repeating timer once per interval it crossed, not just once — the
+same "don't drop what a big step covers" rule `CameraRig` and `Tween`
+follow elsewhere in this section.
+
+A cutscene, a multi-step tutorial, or any other scripted sequence is a
+different shape: not "wait, then do one thing" but "do this, wait, do the
+next thing, wait, ...". MRT already has exactly that control flow —
+`yield` pauses a generator and resumes it later — so `coroutine()` drives
+one by treating each yielded number as a pause, in seconds:
+
+```mrt
+import { coroutine } from "./lib/timers.mrt";
+
+func introCutscene() {
+    fadeIn();
+    yield 1.0;
+    showDialog("Welcome.");
+    yield 2.0;
+    showDialog("Let's begin.");
+}
+
+var intro = coroutine(introCutscene);
+while (!intro.done) {
+    intro.update(gameDelta());
+    // ...
+}
+```
+
+`coroutine(genFn)` starts `genFn` immediately, running it to its first
+`yield` — so `fadeIn()` above has already happened by the time `coroutine`
+returns, the same way calling a plain (non-generator) function would run
+its first line right away. Each `update(dt)` advances the clock and, once
+enough of it has passed, resumes the generator past its `yield` and runs
+it to the next one (or to the end, marking `.done`). A `dt` that overshoots
+more than one `yield` still lands on every step in between, in order,
+rather than skipping any of them.
+
+Neither half needs a screen or any `game*` call — a timer is arithmetic on
+a number, and a coroutine is MRT's own generators (see
+[Generators](#generators)) doing the actual waiting; `examples/timers.mrt`
+runs both without opening a window. They are included as a library for the
+same reason scenes above are: this is ordinary MRT a program could write
+for itself, so an engine built-in that only did this would earn nothing but
+a longer manual.
+
 #### Gamepads
 
 | Call | Result |

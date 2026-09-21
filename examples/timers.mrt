@@ -1,0 +1,72 @@
+// A scheduler for delayed/repeating callbacks, and a coroutine sequenced
+// by generator yields -- from MRT source. Neither needs any engine: a
+// scheduler is arithmetic on accumulated dt, and a coroutine is MRT's own
+// generators, driven one step at a time.
+
+import { scheduler, coroutine } from "./lib/timers.mrt";
+
+func main() {
+    print("-- scheduler --");
+    var sched = scheduler();
+    var log = [];
+
+    sched.after(1.0, func() { push(log, "fired once"); });
+    var repeats = 0;
+    var repeating = sched.every(0.5, func() {
+        repeats += 1;
+        push(log, "tick ${repeats}");
+    });
+
+    var step = 0.25;
+    var i = 0;
+    while (i < 8) {
+        sched.update(step);
+        i += 1;
+    }
+    print("events after 2 seconds:", log);
+
+    sched.cancel(repeating);
+    log = [];
+    i = 0;
+    while (i < 4) {
+        sched.update(step);
+        i += 1;
+    }
+    print("a cancelled timer fires no more:", log);
+
+    // One large dt covering more than one interval still fires a
+    // repeating timer once per interval it crosses, not just once.
+    var burst = scheduler();
+    var bursts = [];
+    burst.every(1.0, func() { push(bursts, "boom"); });
+    burst.update(3.5);
+    print("one big step still fires every interval it covers:", bursts);
+
+    print("-- coroutine --");
+    func cutscene() {
+        print("fade in");
+        yield 1.0;
+        print("dialog");
+        yield 0.5;
+        print("done");
+    }
+
+    var co = coroutine(cutscene);
+    print("runs to its first yield as soon as it is created:", !co.done);
+    co.update(0.5);
+    co.update(0.5);
+    co.update(0.5);
+    print("finished once its generator runs out:", co.done);
+
+    // A dt that overshoots more than one yield still lands on every step,
+    // in order, carrying the overshoot forward instead of skipping any.
+    func steps() {
+        yield 1.0;
+        print("step one");
+        yield 1.0;
+        print("step two");
+    }
+    var fast = coroutine(steps);
+    fast.update(2.5);
+    print("a big dt still lands on every step in order, and finishes:", fast.done);
+}

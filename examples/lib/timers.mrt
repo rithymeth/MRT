@@ -1,0 +1,139 @@
+// Delayed and repeating callbacks, plus generator-driven coroutines for
+// scripted sequences -- a cutscene, a cooldown, a multi-step tutorial --
+// without a game hand-rolling its own elapsed-time bookkeeping for each
+// one.
+//
+// Neither half needs a screen or any game* call: a timer is arithmetic on
+// accumulated dt, and a coroutine is MRT's own generators (see
+// "Generators" in docs/LANGUAGE_SPEC.md) driven one step at a time by how
+// much of the requested pause has elapsed.
+
+struct Timer {
+    remaining, interval, repeating, callback, cancelled = false;
+}
+
+struct Scheduler {
+    timers;
+
+    // Runs `callback` once, `seconds` from now. Returns the timer, which
+    // cancel() accepts to call it off before it fires.
+    func after(seconds, callback) {
+        return this.schedule(seconds, false, callback);
+    }
+
+    // Runs `callback` every `seconds`, starting `seconds` from now, and
+    // again every `seconds` after that until cancelled.
+    func every(seconds, callback) {
+        return this.schedule(seconds, true, callback);
+    }
+
+    func schedule(seconds, repeating, callback) {
+        if (seconds <= 0) {
+            throw {
+                kind: "ValueError",
+                message: "Scheduler: needs a positive number of seconds, not ${seconds}."
+            };
+        }
+        var timer = Timer(seconds, seconds, repeating, callback);
+        push(this.timers, timer);
+        return timer;
+    }
+
+    // Calls off a timer returned by after()/every(). Safe to call more
+    // than once, or on a one-shot timer that has already fired.
+    func cancel(timer) {
+        timer.cancelled = true;
+    }
+
+    // Advances every live timer by `dt` seconds, firing callbacks whose
+    // time has come -- possibly more than once each, if `dt` is large
+    // enough to cover more than one interval of a repeating timer.
+    //
+    // Iterates a snapshot of `this.timers` rather than the field itself, so
+    // a callback that schedules a new timer on this same scheduler does not
+    // also run it within this same update() -- it is simply due, and picked
+    // up, next time.
+    func update(dt) {
+        var pending = slice(this.timers, 0, len(this.timers));
+        for (timer in pending) {
+            if (timer.cancelled) { continue; }
+            timer.remaining -= dt;
+            while (!timer.cancelled && timer.remaining <= 0) {
+                timer.callback();
+                if (timer.cancelled) { break; }
+                if (timer.repeating) {
+                    timer.remaining += timer.interval;
+                } else {
+                    timer.cancelled = true;
+                }
+            }
+        }
+        this.timers = filter(this.timers, func(t) { return !t.cancelled; });
+    }
+}
+
+export func scheduler() {
+    return Scheduler([]);
+}
+
+// A generator-driven sequence: `yield <seconds>` pauses that many seconds
+// before the next line runs. update(dt) is what actually advances time --
+// nothing in the generator runs on its own clock, so a coroutine a game
+// simply stops calling update() on for a while truly does not advance,
+// the same as a paused Tween or Animation.
+//
+//   func cutscene() {
+//       print("fade in");
+//       yield 1.0;
+//       print("dialog");
+//       yield 2.0;
+//       print("done");
+//   }
+//   var co = coroutine(cutscene);
+//   while (!co.done) { co.update(dt); }
+struct Coroutine {
+    gen, remaining = 0, done = false;
+
+    // Runs the generator to its next yield, or to the end, and records how
+    // many seconds it just asked to wait -- or marks this done, if the
+    // generator has finished for good.
+    func advance() {
+        var step = next(this.gen);
+        if (step.done) {
+            this.done = true;
+            return;
+        }
+        if (type(step.value) != "number" || step.value < 0) {
+            throw {
+                kind: "ValueError",
+                message: "coroutine: yield must produce a non-negative number of seconds, not ${step.value}."
+            };
+        }
+        this.remaining = step.value;
+    }
+
+    // Advances by `dt` seconds, running the generator forward through as
+    // many yields as `dt` covers. Any overshoot past a yield's own delay
+    // carries into the next one rather than being discarded, so a
+    // coroutine driven by a large or uneven dt still reaches the same
+    // sequence of steps a steady one would.
+    func update(dt) {
+        if (this.done) { return; }
+        this.remaining -= dt;
+        while (!this.done && this.remaining <= 0) {
+            var overshoot = this.remaining;
+            this.advance();
+            if (!this.done) { this.remaining += overshoot; }
+        }
+    }
+}
+
+// Starts `genFn` immediately, running it up to its first yield (or to
+// completion, for a generator with none) -- the same way a coroutine's
+// opening line should show up as soon as it is created, not wait for the
+// first update().
+export func coroutine(genFn) {
+    var co = Coroutine(genFn());
+    co.advance();
+    return co;
+}
