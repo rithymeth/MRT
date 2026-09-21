@@ -1951,6 +1951,37 @@ follows the camera exactly like `gameText` and `gameDraw` do; measuring one
 built-in font's measuring calls, since a loaded font's metrics live on the
 screen that loaded it.
 
+#### Frame animation
+
+`gameDraw`'s `srcX`/`srcY`/`srcWidth`/`srcHeight` already crop a sprite
+sheet to one frame — `game_spritesheet.mrt` picks one by hand. Which frame
+is showing at a given moment is index arithmetic on elapsed time, the same
+"four lines, a program should write it" reasoning `gameOverlap`'s own doc
+comment gives, so `examples/lib/animation.mrt` is a library, not a
+built-in:
+
+```mrt
+import { animation } from "./lib/animation.mrt";
+
+var walk = animation(4, 16, 16, 0.1, "loop"); // 4 frames, 16x16, 100ms each
+
+while (gameOpen()) {
+    walk.update(gameDelta());
+    gameDraw(walkSheet, x, y, walk.region());
+    gamePresent();
+}
+```
+
+`animation(frameCount, frameWidth, frameHeight, frameTime, mode)` reads a
+horizontal strip of same-sized frames. `mode` is `"loop"` (the default,
+wraps back to the first frame), `"once"` (stops on the last frame and sets
+`.finished`), or `"pingpong"` (plays forward then back, forever — useful
+for a walk cycle drawn as half as many frames as it needs). `.update(dt)`
+advances it, `.frame()` answers which frame index is showing, and
+`.region()` hands that back as the exact `{srcX, srcY, srcWidth,
+srcHeight}` object `gameDraw`'s options take. `.restart()` returns to the
+first frame, unfinished, for a one-shot effect a game plays more than once.
+
 #### Particles: sparks, smoke, and other things spawned by the hundred
 
 | Call | Result |

@@ -1,0 +1,77 @@
+// Sprite-sheet frame animation, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md. examples/lib/animation.mrt
+// itself is not one -- it is ordinary MRT, and only this example is engine-
+// specific because it happens to draw the frames it picks.
+//
+// This example builds its own synthetic strip, one flat colour per frame --
+// the same convention game_spritesheet.mrt uses for its own frames -- so it
+// needs no image file beside it.
+
+import { animation } from "./lib/animation.mrt";
+
+var FRAME = 8;
+var COLORS = [
+    gameColor(220, 70, 70),
+    gameColor(70, 220, 70),
+    gameColor(70, 70, 220),
+    gameColor(220, 220, 70)
+];
+
+func buildStrip() {
+    var strip = gameSurface(FRAME * len(COLORS), FRAME);
+    gameTarget(strip);
+    for (var i = 0; i < len(COLORS); i = i + 1) {
+        gameRect(i * FRAME, 0, FRAME, FRAME, COLORS[i]);
+    }
+    gameTarget(0);
+    return strip;
+}
+
+func main() {
+    gameInit(120, 40, "MRT Sprite Animation");
+    gameClear(gameColor(18, 22, 38));
+    var strip = buildStrip();
+
+    // Looping playback: the frame wraps back to 0 once it runs past the
+    // last one.
+    var loopAnim = animation(len(COLORS), FRAME, FRAME, 0.25, "loop");
+    print("frame at t=0:", loopAnim.frame());
+    loopAnim.update(0.5);
+    print("frame at t=0.5:", loopAnim.frame());
+    loopAnim.update(0.5);
+    print("frame at t=1.0, wrapped back to 0:", loopAnim.frame());
+
+    gameDraw(strip, 10, 10, loopAnim.region());
+    print("the drawn frame matches its own colour:", gameColorAt(10, 10) == COLORS[loopAnim.frame()]);
+
+    // Playing once: stops and stays on the last frame rather than wrapping
+    // or running past the end of the strip, and reports that it finished.
+    var onceAnim = animation(len(COLORS), FRAME, FRAME, 0.25, "once");
+    onceAnim.update(10);
+    print("a \"once\" animation clamps to the last frame:", onceAnim.frame() == len(COLORS) - 1);
+    print("and reports finished:", onceAnim.finished);
+    onceAnim.restart();
+    print("restart resets both:", onceAnim.frame() == 0 && !onceAnim.finished);
+
+    // Ping-pong: forward through every frame, then back, forever.
+    var pingAnim = animation(4, FRAME, FRAME, 0.25, "pingpong");
+    var frames = [];
+    for (var i = 0; i < 7; i = i + 1) {
+        push(frames, pingAnim.frame());
+        pingAnim.update(0.25);
+    }
+    print("pingpong sequence over one full cycle:", frames);
+
+    // An unrecognised mode is refused by name, the same reasoning
+    // soundTone refuses an unknown wave.
+    try {
+        animation(4, FRAME, FRAME, 0.25, "backwards");
+    } catch (e) {
+        print("an unknown mode is refused:", e.kind);
+    }
+
+    gameSave("game_animation.png");
+    print("wrote game_animation.png");
+}
