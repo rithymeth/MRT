@@ -1,0 +1,30 @@
+// Polling-based multiplayer state sync, from MRT source.
+//
+// MRT-Net is an engine extension: only the Rust engines have netGet and
+// netPost. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// Point ROOM_URL at a server that accepts POST /players/<id> to record a
+// player's state and answers GET /players with everyone's latest, and this
+// actually synchronises state between clients. With nothing listening it
+// says so and carries on, so this runs anywhere -- including a build
+// machine with no network at all, which is where it usually runs.
+
+import { roomClient } from "./lib/multiplayer.mrt";
+
+var ROOM_URL = "http://127.0.0.1:8080/room";
+
+func main() {
+    var client = roomClient(ROOM_URL, "player-1", 0.1);
+
+    // Below the interval, sync() makes no request at all -- observable
+    // without a server, since there is nothing here that could fail.
+    print("below the interval, no attempt is made:", client.sync(0.02, {x: 1, y: 2}) == null);
+
+    // Past the interval, a real attempt is made. With nothing listening,
+    // the attempt fails and sync() reports "no update" rather than
+    // raising -- a client polling a room that has not started yet is
+    // ordinary, not an error.
+    print("past the interval with no server, sync() reports no update:", client.sync(0.2, {x: 1, y: 2}) == null);
+
+    print("point ROOM_URL at a running room server to see players actually sync");
+}

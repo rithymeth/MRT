@@ -2182,8 +2182,8 @@ one of them can be automated.
 
 Provided by the Rust engines only
 (`compiler/crates/mrt-net`, bridged in `compiler/crates/mrt-interp/src/net.rs`),
-it supplies an HTTP/1.1 client through built-ins prefixed `net`. Its example
-is `examples/net_fetch.mrt`.
+it supplies an HTTP/1.1 client through built-ins prefixed `net`. Its examples
+are `examples/net_fetch.mrt` and `examples/net_multiplayer.mrt`.
 
 | Built-in | Answers |
 | --- | --- |
@@ -2249,6 +2249,37 @@ needs none of them, and each would need a concurrency story the language does
 not have. Note also what this extension changes about running a program at
 all: before it, the worst an MRT file could do was write a file where it was
 told to.
+
+#### Multiplayer, within those limits
+
+No socket does not mean no multiplayer — it means the shape available is
+**polling**: a client posts its own state and asks for everyone else's, on
+an interval, as ordinary one-shot requests. `examples/lib/multiplayer.mrt`
+is that pattern as a small client library, and `examples/net_multiplayer.mrt`
+its example. It suits a turn-based game or a shared leaderboard; it is not a
+substitute for a real-time transport, and does not pretend to be one.
+
+```mrt
+import { roomClient } from "./lib/multiplayer.mrt";
+
+var client = roomClient("http://game-server/room", "player-1", 0.2);
+
+while (gameOpen()) {
+    var others = client.sync(gameDelta(), {x: player.x, y: player.y});
+    if (others != null) { drawOthers(others); }
+    // ... the rest of the frame ...
+    gamePresent();
+}
+```
+
+`sync(dt, state)` sends and fetches nothing more often than the interval
+given to `roomClient` — a game calling it every frame does not also make a
+request every frame — and returns `null` on a tick that skipped the network
+entirely, or found nobody listening, so a caller decides for itself what "no
+update this tick" means. The server side — accepting a POST to record one
+player's state, answering a GET with everyone's latest — is a program's own
+to write; the library is only ever the client half, the half `mrt-net` can
+actually provide.
 
 ## Known ambiguities (by design)
 
