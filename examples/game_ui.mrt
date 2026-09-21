@@ -1,0 +1,70 @@
+// Clickable buttons and a keyboard/gamepad-navigable menu, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md. examples/lib/ui.mrt
+// itself is not one -- it is ordinary MRT built on gamePointer() and
+// actions.mrt, and only this example is engine-specific because it calls
+// gamePointer() (through Button.update()) and the input actions.mrt
+// itself wraps.
+//
+// gameOpen() is never called below, so there is no real window and no
+// real mouse or keyboard -- the same situation game_actions.mrt and
+// game_gamepad.mrt already document. gamePointer() then always answers
+// {x: 0, y: 0, down: false}, and every key/button query answers false,
+// which is the ordinary case each already promises for a machine with
+// nothing attached, not a fallback a try is written to catch.
+
+import { button, menu } from "./lib/ui.mrt";
+
+func main() {
+    gameInit(80, 40, "MRT UI");
+
+    // With no window, the pointer is fixed at the world's origin -- so a
+    // button placed there is "hovered" by that default position, and one
+    // placed elsewhere is not. Neither is ever down or clicked, since the
+    // pointer's own down state defaults to false the same way.
+    var onOrigin = button(0, 0, 10, 10);
+    onOrigin.update();
+    print("a button covering the default pointer position is hovered:", onOrigin.hovering);
+    print("but never down or clicked without a real click:", !onOrigin.down && !onOrigin.clicked);
+
+    var elsewhere = button(50, 20, 10, 10);
+    elsewhere.update();
+    print("a button elsewhere is not hovered by the default pointer:", !elsewhere.hovering);
+
+    try {
+        button(0, 0, -1, 10);
+    } catch (e) {
+        print("a non-positive size is refused:", e.kind);
+    }
+
+    print("-- menu --");
+    var main_menu = menu(["New Game", "Continue", "Quit"]);
+    print("starts on the first item:", main_menu.current());
+
+    main_menu.next();
+    print("next() moves forward:", main_menu.current());
+    main_menu.next();
+    main_menu.next();
+    print("next() wraps back to the first item:", main_menu.current());
+
+    main_menu.previous();
+    print("previous() wraps to the last item:", main_menu.current());
+
+    // No real keyboard or gamepad is attached, so a frame of navigation
+    // input moves nothing and confirms nothing.
+    var before = main_menu.current();
+    main_menu.update();
+    print("update() with no input changes neither selection nor confirmed:", main_menu.current() == before && !main_menu.confirmed);
+
+    // The menu's own actionMap is an ordinary one -- rebindable exactly
+    // like actions.mrt's own example does.
+    main_menu.actions.rebindKey("confirm", "X");
+    print("the menu's actions are rebindable like any other action map:", len(main_menu.actions.bindings["confirm"]) == 1);
+
+    try {
+        menu([]);
+    } catch (e) {
+        print("a menu with no items is refused:", e.kind);
+    }
+}
