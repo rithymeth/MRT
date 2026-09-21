@@ -2479,6 +2479,77 @@ same reason scenes above are: this is ordinary MRT a program could write
 for itself, so an engine built-in that only did this would earn nothing but
 a longer manual.
 
+#### Typewriter text and branching dialogue
+
+A speech bubble, a visual novel's script, an NPC's line — dialogue almost
+always wants text that types itself out rather than appearing all at
+once, and a "press to continue" beat once it has. Revealing a string one
+character at a time is elapsed-time arithmetic exactly like a `Tween`'s
+own `.value()`, just aimed at `substring` instead of a number, so
+`examples/lib/dialogue.mrt`'s `Typewriter` reuses that shape:
+
+```mrt
+import { typewriter } from "./lib/dialogue.mrt";
+
+var line = typewriter("Hello, traveler.", 30); // 30 characters a second
+while (gameOpen()) {
+    line.update(gameDelta());
+    if (actions.pressed("confirm")) { line.skip(); } // reveal the rest now
+    gameDrawText(font, line.visibleText(), x, y, 1);
+    gamePresent();
+}
+```
+
+A full conversation is a script — a plain array of `{speaker, text}`
+lines — with `dialogue(script, charsPerSecond)` walking through it one
+line at a time:
+
+```mrt
+import { dialogue } from "./lib/dialogue.mrt";
+
+var script = [
+    {speaker: "Guard", text: "Halt! Who goes there?"},
+    {speaker: "Guard", text: "State your business.", choices: [
+        {text: "I'm a merchant.", next: 2},
+        {text: "None of your concern.", next: 3}
+    ]},
+    {speaker: "Guard", text: "Very well, pass through.", next: 4},
+    {speaker: "Guard", text: "Then you shall not pass!"}
+];
+var talk = dialogue(script, 30);
+
+while (gameOpen()) {
+    talk.update(gameDelta());
+    // ... draw talk.speaker() and talk.text() ...
+    if (talk.awaitingChoice) {
+        // ... draw talk.choices, and call talk.choose(i) on the one picked ...
+    } else if (actions.pressed("confirm")) {
+        talk.advance();
+    }
+    if (talk.finished) { break; }
+    gamePresent();
+}
+```
+
+`advance()` does one of two things depending on where the current line
+is: if it is still typing, `advance()` finishes it instantly — the common
+"first press skips the typing, second press continues" a lot of dialogue
+boxes use — otherwise it moves on to the next line. A line's own `next`
+says which line follows; left out, it is simply the next one in the
+array, and a `next` pointing past the end of the script (or a last line
+with no `next` at all) ends the dialogue, setting `.finished`. A line
+with `choices` instead of a plain `next` pauses on `.awaitingChoice` once
+it is done typing, until `choose(i)` picks one and follows wherever that
+choice's own `next` leads — which is how the guard above ends up saying
+something different depending on what the player picked two lines
+earlier.
+
+Neither of these needs a screen or any `game*` call: typing a string out
+and following a script's own branches is ordinary MRT, the same reasoning
+`Scheduler` and `Coroutine` just above already give. Drawing the revealed
+text is left to the caller, the same way a `Tween`'s own `.value()` is
+only ever handed to something else.
+
 #### Gamepads
 
 | Call | Result |

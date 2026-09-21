@@ -1,0 +1,137 @@
+// A typewriter text reveal, and a branching dialogue script built on top
+// of it -- the pace and the "press to continue" beat a visual novel or an
+// NPC's speech bubble almost always wants, plus a way to offer the player
+// a choice and follow whichever line it leads to.
+//
+// Neither half needs a screen or any game* call: revealing a string one
+// character at a time is arithmetic on elapsed time, the same "a program
+// can track this itself" reasoning timers.mrt's own Coroutine already
+// gives for driving a sequence off dt rather than a built-in clock; which
+// line comes next is index arithmetic on a plain array of lines. Drawing
+// the revealed text and the current speaker's name is left to the
+// caller, the same way Tween hands back a number rather than drawing
+// anything itself.
+
+struct Typewriter {
+    text, charsPerSecond, revealed = 0, elapsed = 0;
+
+    // Advances by `dt` seconds, revealing however many more characters
+    // that comes to. Does nothing once every character is already
+    // showing, so elapsed does not grow without bound in a game that
+    // keeps calling update() long after a line finished typing.
+    func update(dt) {
+        if (this.finished()) { return; }
+        this.elapsed = this.elapsed + dt;
+        this.revealed = floor(this.elapsed * this.charsPerSecond);
+        if (this.revealed > len(this.text)) { this.revealed = len(this.text); }
+    }
+
+    // The characters revealed so far -- what a program actually draws.
+    func visibleText() {
+        return substring(this.text, 0, this.revealed);
+    }
+
+    func finished() {
+        return this.revealed >= len(this.text);
+    }
+
+    // Reveals every remaining character at once -- what "press to skip
+    // the typing" needs, the same instant jump snapTo gives a CameraRig.
+    func skip() {
+        this.revealed = len(this.text);
+    }
+}
+
+// `text` typed out at `charsPerSecond` characters a second.
+export func typewriter(text, charsPerSecond = 30) {
+    if (charsPerSecond <= 0) {
+        throw {
+            kind: "ValueError",
+            message: "typewriter() needs a positive character rate, not ${charsPerSecond}."
+        };
+    }
+    return Typewriter(text, charsPerSecond);
+}
+
+// A script is a plain array of lines, each `{speaker, text}` plus either
+// `next` (the index of the line that follows -- left out, it is simply
+// the next one in the array) or `choices` (an array of `{text, next}`,
+// offered to the player instead of continuing straight on). `next`s
+// pointing past the end of the script, or left out on the last line, end
+// the dialogue.
+struct Dialogue {
+    script, typewriter, index = 0, finished = false,
+    awaitingChoice = false, choices = null;
+
+    func line() {
+        return this.script[this.index];
+    }
+
+    // Who is speaking the current line, or null for one with no speaker
+    // set -- narration, a sign, a journal entry.
+    func speaker() {
+        return get(this.line(), "speaker", null);
+    }
+
+    // The current line's text, typed out so far.
+    func text() {
+        return this.typewriter.visibleText();
+    }
+
+    // Advances the typewriter. Does nothing while waiting on a choice --
+    // nothing to type until the player picks one.
+    func update(dt) {
+        if (this.finished || this.awaitingChoice) { return; }
+        this.typewriter.update(dt);
+    }
+
+    // One beat of input: if the current line is still typing, finishes
+    // it instantly rather than moving on -- the common "first press skips
+    // the typing, second press continues" a lot of dialogue boxes use.
+    // Once it is fully shown, moves to the next line, or opens a choice
+    // if this line offers one.
+    func advance() {
+        if (this.finished || this.awaitingChoice) { return; }
+        if (!this.typewriter.finished()) {
+            this.typewriter.skip();
+            return;
+        }
+        var current = this.line();
+        if (has(current, "choices")) {
+            this.awaitingChoice = true;
+            this.choices = current.choices;
+            return;
+        }
+        this.goTo(get(current, "next", this.index + 1));
+    }
+
+    // Picks choice `i` from the current line's `choices`, following
+    // whichever line it points to.
+    func choose(i) {
+        var choice = this.choices[i];
+        this.awaitingChoice = false;
+        this.choices = null;
+        this.goTo(choice.next);
+    }
+
+    func goTo(nextIndex) {
+        if (nextIndex == null || nextIndex < 0 || nextIndex >= len(this.script)) {
+            this.finished = true;
+            return;
+        }
+        this.index = nextIndex;
+        this.typewriter = typewriter(this.line().text, this.typewriter.charsPerSecond);
+    }
+}
+
+// A dialogue starting on `script`'s first line, each line typed out at
+// `charsPerSecond` characters a second.
+export func dialogue(script, charsPerSecond = 30) {
+    if (len(script) < 1) {
+        throw {
+            kind: "ValueError",
+            message: "dialogue() needs at least one line."
+        };
+    }
+    return Dialogue(script, typewriter(script[0].text, charsPerSecond));
+}

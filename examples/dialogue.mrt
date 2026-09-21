@@ -1,0 +1,76 @@
+// A branching dialogue script with a typewriter reveal, from MRT source.
+// Needs no engine: revealing text over time and following a script's
+// own branches is ordinary MRT, the same as timers.mrt and camera.mrt.
+
+import { dialogue, typewriter } from "./lib/dialogue.mrt";
+
+func main() {
+    print("-- typewriter --");
+    var tw = typewriter("Hello, traveler.", 20); // 20 characters a second
+    print("starts with nothing revealed:", tw.visibleText() == "" && !tw.finished());
+    tw.update(0.25);
+    tw.update(0.25); // 0.5s at 20/s = 10 characters
+    print("reveals exactly what the elapsed time earns:", tw.visibleText() == "Hello, tra");
+    tw.skip();
+    print("skip() reveals the rest immediately:", tw.visibleText() == "Hello, traveler." && tw.finished());
+
+    try {
+        typewriter("x", 0);
+    } catch (e) {
+        print("a non-positive character rate is refused:", e.kind);
+    }
+
+    print("-- dialogue --");
+    var script = [
+        {speaker: "Guard", text: "Halt! Who goes there?"},
+        {speaker: "Guard", text: "State your business.", choices: [
+            {text: "I'm a merchant.", next: 2},
+            {text: "None of your concern.", next: 3}
+        ]},
+        {speaker: "Guard", text: "Very well, pass through.", next: 4},
+        {speaker: "Guard", text: "Then you shall not pass!"}
+    ];
+
+    var d = dialogue(script, 20);
+    print("starts on the first line, nothing typed yet:", d.speaker() == "Guard" && d.text() == "");
+
+    d.update(0.25);
+    d.update(0.25); // 10 of "Halt! Who goes there?"'s 22 characters
+    print("typing partway through the first line:", d.text() == "Halt! Who " && !d.finished);
+
+    d.advance(); // still typing -- this skips to the end of the line
+    print("advance() while typing finishes the line instead of moving on:", d.text() == "Halt! Who goes there?");
+
+    d.advance(); // fully typed -- this moves to the next line
+    print("advance() once fully typed moves to the next line:", d.text() == "" && !d.awaitingChoice);
+
+    d.advance(); // skip line 1's typing
+    d.advance(); // fully typed, and this line has choices
+    print("a line with choices waits for one instead of continuing:", d.awaitingChoice && len(d.choices) == 2);
+
+    d.choose(0); // "I'm a merchant." -> line 2
+    print("choosing follows that choice's own line:", d.text() == "" && !d.awaitingChoice);
+    d.advance();
+    d.advance(); // line 2's own next (4) is past the end of the script
+    print("a next past the end of the script finishes the dialogue:", d.finished);
+
+    // The other branch leads somewhere different, and finishes on its
+    // own -- proving the two choices really do diverge, not just happen
+    // to land on the same ending by coincidence.
+    var hostile = dialogue(script, 20);
+    hostile.advance();
+    hostile.advance();
+    hostile.advance();
+    hostile.advance();
+    hostile.choose(1); // "None of your concern." -> line 3
+    print("the other choice leads to a different line:", hostile.text() == "");
+    hostile.advance();
+    hostile.advance(); // line 3 has no next of its own, so it just falls off the end
+    print("falling off the end finishes it too:", hostile.finished);
+
+    try {
+        dialogue([]);
+    } catch (e) {
+        print("an empty script is refused:", e.kind);
+    }
+}
