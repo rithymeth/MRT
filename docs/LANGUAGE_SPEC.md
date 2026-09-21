@@ -1982,6 +1982,47 @@ advances it, `.frame()` answers which frame index is showing, and
 srcHeight}` object `gameDraw`'s options take. `.restart()` returns to the
 first frame, unfinished, for a one-shot effect a game plays more than once.
 
+#### Tweening and easing
+
+Moving a value smoothly from A to B over time — a menu sliding in, a camera
+settling on a target, anything that is not physics — is one number,
+`floor`/`sqrt`/`pow` arithmetic, and a curve shaping how it gets there.
+None of that needs a screen or an engine feature of its own, so
+`examples/lib/easing.mrt` is a library:
+
+```mrt
+import { tween, easeOutBack } from "./lib/easing.mrt";
+
+var slideIn = tween(-40, 10, 0.4, easeOutBack);
+while (gameOpen()) {
+    slideIn.update(gameDelta());
+    gameRect(slideIn.value(), 20, 30, 12, panelColor);
+    gamePresent();
+}
+```
+
+An easing function maps `t` in `[0, 1]` (how far through the tween) to
+eased progress, itself a plain function so `tween` takes one directly —
+`easeOutBack`, or a program's own `func(t) { ... }` — rather than a name
+to look up. The library ships the standard curves that need no
+trigonometry: `easeLinear`; `easeIn`/`easeOut`/`easeInOut` for `Quad`,
+`Cubic`, and `Quart`; `easeInExpo`/`easeOutExpo`; `easeInCirc`/
+`easeOutCirc`; `easeInBack`/`easeOutBack` (pulls behind the start before
+launching forward); and `easeInBounce`/`easeOutBounce` (settles in four
+decreasing hops, like a dropped ball). Sine and elastic curves are
+deliberately absent: MRT has no `sin`/`cos` of its own (see
+`game_raycast.mrt`'s own Taylor series for why that is a considered
+absence, not an oversight), and approximating one only for this would be
+the library inventing complexity the language does not have.
+
+`tween(from, to, duration, easing)` ties a curve to a range and a length
+of time. `.update(dt)` advances it and clamps at `duration` rather than
+running past it, setting `.finished` — `.value()` after that always reads
+exactly `to`, whatever the curve does in between (`easeOutBack` dips below
+its start first, `easeOutBounce` hops past its end partway through; both
+still land precisely on target). `.restart()` returns to the beginning,
+unfinished.
+
 #### Particles: sparks, smoke, and other things spawned by the hundred
 
 | Call | Result |

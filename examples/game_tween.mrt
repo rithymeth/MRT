@@ -1,0 +1,60 @@
+// Smoothly animating a value with easing curves, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md. examples/lib/easing.mrt
+// itself is not one -- it is ordinary MRT arithmetic, and only this example
+// is engine-specific because it draws the value it tweens.
+
+import { tween, easeLinear, easeInQuad, easeOutQuad, easeInOutQuad, easeOutBack, easeOutBounce } from "./lib/easing.mrt";
+
+func main() {
+    gameInit(120, 30, "MRT Tweening");
+    gameClear(gameColor(18, 22, 38));
+
+    // The three quad curves agree at the ends and disagree in the middle
+    // -- that disagreement is the whole reason to pick one over another.
+    print("easeLinear(0.5):", easeLinear(0.5));
+    print("easeInQuad(0.5) starts slow:", easeInQuad(0.5));
+    print("easeOutQuad(0.5) starts fast:", easeOutQuad(0.5));
+    print("easeInOutQuad(0.5) lands exactly in the middle:", easeInOutQuad(0.5));
+
+    // Every curve here, however it overshoots along the way, lands on 0
+    // at t=0 and exactly on 1 at t=1 -- "back" pulls behind 0 first and
+    // "bounce" hops past 1, but both still land on target at the end.
+    // (easeOutBack(0) is 0 only up to floating-point rounding -- it is a
+    // cancellation of two different literals, not the same term reaching
+    // zero against itself the way t=1 does below.)
+    print("easeOutBack(0) is about 0:", abs(easeOutBack(0)) < 0.0001);
+    print("easeOutBack(1) == 1:", easeOutBack(1) == 1);
+    print("easeOutBounce(0) == 0:", easeOutBounce(0) == 0);
+    print("easeOutBounce(1) == 1:", easeOutBounce(1) == 1);
+
+    // A Tween ties an easing curve to a value, a range, and a duration.
+    var move = tween(10, 100, 1.0, easeInOutQuad);
+    print("value at t=0:", move.value());
+    move.update(0.5);
+    print("value halfway through:", move.value());
+    move.update(10); // far past the end
+    print("value settles exactly on 'to', not past it:", move.value() == 100);
+    print("and reports finished:", move.finished);
+
+    move.restart();
+    print("restart returns to the start:", move.value() == 10, !move.finished);
+
+    // A negative duration is refused rather than producing a tween that
+    // can never finish.
+    try {
+        tween(0, 1, -1);
+    } catch (e) {
+        print("a negative duration is refused:", e.kind);
+    }
+
+    // The shape a game loop takes: move a dot from one side of the screen
+    // to the other, eased, and draw it where it actually is right now.
+    var dot = tween(10, 100, 1.0, easeOutBack);
+    dot.update(0.6);
+    gameRect(floor(dot.value()), 13, 4, 4, gameColor(230, 200, 60));
+
+    gameSave("game_tween.png");
+    print("wrote game_tween.png");
+}
