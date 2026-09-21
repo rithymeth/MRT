@@ -1,0 +1,92 @@
+// A small stack-based scene manager for switching between a game's
+// screens -- title, play, pause, game over -- and layering one over
+// another, such as a pause menu drawn over a frozen game view.
+//
+// Any struct can be a scene as long as it implements enter(), exit(),
+// update(dt) and draw() -- empty bodies where a scene has nothing to do
+// there. The manager's whole job is remembering which ones are live and
+// calling the right ones in the right order; a game that only ever needs
+// one scene at a time (switchTo(), never push()) pays nothing for a stack
+// it never grows past one entry.
+//
+//   var manager = sceneManager(titleScene);
+//   manager.switchTo(playScene); // exit()s titleScene, enter()s playScene
+//   manager.push(pauseScene);    // playScene stays live underneath, suspended
+//   manager.pop();               // exit()s pauseScene, playScene resumes
+//
+// update() only reaches the topmost scene -- a paused game should not keep
+// simulating underneath its own pause menu. draw() reaches every scene on
+// the stack, bottom to top, so a translucent pause overlay shows the
+// frozen game behind it without either scene needing to know the other
+// exists.
+//
+// This needs no engine builtin: a scene is ordinary MRT data, switching
+// between them is ordinary array and method-call arithmetic, and testing
+// it needs no screen at all.
+
+struct SceneManager {
+    stack;
+
+    func current() {
+        return this.stack[len(this.stack) - 1];
+    }
+
+    // Replaces the whole stack: everything on it is exited, top to bottom,
+    // before the new scene is entered.
+    func switchTo(scene) {
+        var removed = this.stack;
+        this.stack = [scene];
+        var i = len(removed) - 1;
+        while (i >= 0) {
+            removed[i].exit();
+            i = i - 1;
+        }
+        scene.enter();
+    }
+
+    // Layers a scene on top without disturbing what is underneath -- a
+    // pause menu over the game it paused, a dialog over the screen that
+    // opened it. The covered scene is neither exited nor re-entered: it is
+    // suspended, not replaced.
+    func push(scene) {
+        push(this.stack, scene);
+        scene.enter();
+    }
+
+    // Removes the topmost scene, exiting it, and reveals the one beneath.
+    // Popping the last scene is refused rather than leaving a manager with
+    // nothing left to update or draw -- almost always one pop too many.
+    func pop() {
+        if (len(this.stack) <= 1) {
+            throw {
+                kind: "SceneError",
+                message: "SceneManager.pop(): the last scene cannot be popped."
+            };
+        }
+        var scene = this.stack[len(this.stack) - 1];
+        this.stack = slice(this.stack, 0, len(this.stack) - 1);
+        scene.exit();
+    }
+
+    // Delegates to the topmost scene alone.
+    func update(dt) {
+        this.current().update(dt);
+    }
+
+    // Delegates to every scene on the stack, bottom to top, so a scene
+    // layered on top draws over what is underneath rather than instead of
+    // it.
+    func draw() {
+        for (scene in this.stack) {
+            scene.draw();
+        }
+    }
+}
+
+// A manager starting on one scene, without a caller having to spell the
+// one-element array `SceneManager([scene])` themselves.
+export func sceneManager(scene) {
+    var manager = SceneManager([scene]);
+    scene.enter();
+    return manager;
+}

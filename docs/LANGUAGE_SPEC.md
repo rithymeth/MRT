@@ -2054,6 +2054,66 @@ tries confining the cursor to the window before trying to lock it to one
 point inside it; not every platform implements either, which is the whole
 reason it reports back rather than assuming.
 
+#### Structuring a game: scenes
+
+A title screen, the game itself, a pause menu, a game-over screen — most
+games are a handful of these, with a rule for which one is showing and how
+control passes between them. That rule is not `game*`'s to provide: which
+scenes a game has, and what each one draws, is exactly the part unique to
+that game, and the switching between them is ordinary MRT — a variable
+holding the current one, and a call into whichever it is:
+
+```mrt
+var scene = "menu";
+while (gameOpen()) {
+    if (scene == "menu") { scene = updateMenu(); }
+    else if (scene == "play") { scene = updatePlay(); }
+    gamePresent();
+}
+```
+
+That is enough for two screens. `examples/lib/scenes.mrt` is the same idea
+carried further — a small stack rather than one variable — for a game with
+more than a couple of screens, or one that needs a pause menu layered over
+a frozen game rather than replacing it outright:
+
+```mrt
+import { sceneManager } from "./lib/scenes.mrt";
+
+struct PlayScene {
+    // ...
+    func enter() { }
+    func exit() { }
+    func update(dt) { /* advance the game a frame */ }
+    func draw() { gameClear(sky); /* ... */ }
+}
+
+var manager = sceneManager(PlayScene(/* ... */));
+while (gameOpen()) {
+    manager.update(gameDelta());
+    manager.draw();
+    gamePresent();
+}
+```
+
+Any struct is a scene as long as it has `enter`, `exit`, `update(dt)` and
+`draw` methods — empty bodies where a scene has nothing to do there.
+`manager.switchTo(scene)` replaces the current scene outright, exiting the
+old one and entering the new. `manager.push(scene)` layers one on top
+without disturbing what is underneath — a pause menu over the game it
+paused — and `manager.pop()` removes it, resuming what was there before.
+`update` reaches only the topmost scene (a paused game should not keep
+simulating underneath its own menu); `draw` reaches every scene on the
+stack, bottom to top, so an overlay shows what it is layered over.
+
+This needs no engine support: a scene is a struct like any other, switching
+between them is array and method-call arithmetic, and none of it touches a
+pixel until a scene's own `draw` does. It is included as a library rather
+than a built-in for the same reason `collide`'s doc comment gives for not
+promoting simple arithmetic to a built-in — a program can write this in MRT
+and did, and an engine feature that only did this would earn nothing but a
+longer manual.
+
 #### Gamepads
 
 | Call | Result |

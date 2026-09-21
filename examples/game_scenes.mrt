@@ -1,0 +1,84 @@
+// Switching between a game's screens with a scene stack, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md. The scene manager
+// itself is not one -- examples/lib/scenes.mrt is ordinary MRT, engine-
+// agnostic, and this example is only "engine-specific" because the scenes
+// it manages happen to call gameClear/gameRect to show themselves.
+
+import { sceneManager } from "./lib/scenes.mrt";
+
+struct TitleScene {
+    log;
+    func enter() { push(this.log, "title enter"); }
+    func exit() { push(this.log, "title exit"); }
+    func update(dt) { push(this.log, "title update"); }
+    func draw() { gameClear(gameColor(10, 10, 40)); }
+}
+
+struct PlayScene {
+    log;
+    ticks = 0;
+    func enter() { push(this.log, "play enter"); }
+    func exit() { push(this.log, "play exit"); }
+    func update(dt) { this.ticks += 1; push(this.log, "play update"); }
+    func draw() { gameClear(gameColor(20, 80, 20)); }
+}
+
+struct PauseScene {
+    log;
+    // Drawn as an overlay rather than a gameClear -- a paused game should
+    // still show through around it.
+    func enter() { push(this.log, "pause enter"); }
+    func exit() { push(this.log, "pause exit"); }
+    func update(dt) { push(this.log, "pause update"); }
+    func draw() { gameRect(4, 4, 8, 8, gameColor(200, 200, 0)); }
+}
+
+func main() {
+    gameInit(20, 20, "MRT Scenes");
+    var log = [];
+
+    var title = TitleScene(log);
+    var play = PlayScene(log);
+    var pause = PauseScene(log);
+
+    var manager = sceneManager(title);
+    print("starts on the title scene:", manager.current() == title);
+
+    // Leaving the title for the game: titleScene exits, playScene enters.
+    manager.switchTo(play);
+    manager.update(0.016);
+    print("play ticked once:", play.ticks == 1);
+
+    // Pausing layers a scene on top -- play stays live underneath,
+    // suspended rather than exited.
+    manager.push(pause);
+    manager.update(0.016);
+    print("play does not tick while paused:", play.ticks == 1);
+
+    // draw() reaches every scene on the stack, bottom to top: play's green
+    // clear, then pause's yellow box on top of it.
+    manager.draw();
+    print("play's background still shows behind the overlay:", gameColorAt(0, 0) == gameColor(20, 80, 20));
+    print("the pause overlay is drawn on top of it:", gameColorAt(4, 4) == gameColor(200, 200, 0));
+
+    // Unpausing resumes play exactly where it was -- ticks did not reset.
+    manager.pop();
+    print("back on the play scene:", manager.current() == play);
+    manager.update(0.016);
+    print("play resumes ticking from where it left off:", play.ticks == 2);
+
+    // The last scene on the stack cannot be popped -- a manager with
+    // nothing to update or draw is a program bug, not a valid state.
+    try {
+        manager.pop();
+    } catch (e) {
+        print("popping the last scene is refused:", e.kind);
+    }
+
+    print(log);
+
+    gameSave("game_scenes.png");
+    print("wrote game_scenes.png");
+}

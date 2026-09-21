@@ -63,4 +63,7 @@ game_sprites.png
 game_collide.png
 game_images.png
 tree_tile.png
+game_font_atlas.png
+game_font.png
+game_scenes.png
 sound_effects.wav
