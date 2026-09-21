@@ -1,0 +1,72 @@
+// A finite state machine for a player character, from MRT source. Needs
+// no engine: transitions are ordinary object bookkeeping, the same as
+// achievements.mrt and pool.mrt.
+
+import { fsm } from "./lib/fsm.mrt";
+
+func main() {
+    var log = [];
+
+    var states = [
+        {
+            name: "idle",
+            on: {move: "walking", attack: "attacking"},
+            enter: func(m) { push(log, "enter idle"); }
+        },
+        {
+            name: "walking",
+            on: {stop: "idle", attack: "attacking"},
+            enter: func(m) { push(log, "enter walking"); },
+            exit: func(m) { push(log, "exit walking"); }
+        },
+        {
+            name: "attacking",
+            on: {finish: "idle"},
+            enter: func(m) { push(log, "enter attacking"); },
+            exit: func(m) { push(log, "exit attacking"); }
+        }
+    ];
+
+    var player = fsm(states, "idle");
+    print("starts in the initial state:", player.current == "idle");
+    print("initial state's enter() ran once, on construction:", log == ["enter idle"]);
+
+    print("an event valid from here leads somewhere:", player.can("move"));
+    print("one that is not valid from here does not:", !player.can("finish"));
+
+    print("firing a valid event transitions and returns true:", player.fire("move") == true);
+    print("current reflects the new state:", player.current == "walking");
+    print("idle has no exit(), so only walking's enter() ran:", log == ["enter idle", "enter walking"]);
+
+    print("firing an event that does not apply here is not an error:", player.fire("nonsense") == false);
+    print("and nothing changed:", player.current == "walking");
+
+    log = [];
+    player.fire("attack");
+    print("attacking from walking runs walking's exit then attacking's enter:", log == ["exit walking", "enter attacking"]);
+
+    log = [];
+    player.fire("finish");
+    print("finishing an attack returns to idle:", player.current == "idle" && log == ["exit attacking", "enter idle"]);
+
+    try {
+        fsm([], "idle");
+    } catch (e) {
+        print("no states at all is refused:", e.kind);
+    }
+    try {
+        fsm([{name: "a"}, {name: "a"}], "a");
+    } catch (e) {
+        print("duplicate state names are refused:", e.kind);
+    }
+    try {
+        fsm([{name: "a"}], "nope");
+    } catch (e) {
+        print("an initial state that does not exist is refused:", e.kind);
+    }
+    try {
+        fsm([{name: "a", on: {go: "nowhere"}}], "a");
+    } catch (e) {
+        print("a transition to an unknown state is refused:", e.kind);
+    }
+}

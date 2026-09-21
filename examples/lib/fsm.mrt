@@ -1,0 +1,102 @@
+// A finite state machine for AI or player states -- "idle" to "walking"
+// to "attacking" and back, a boss's phases, a menu's screens -- ordinary
+// object bookkeeping, the same "a program can write it and should"
+// reasoning `gameOverlap`'s own doc comment gives elsewhere.
+//
+// A state is `{name, on, enter, exit}`: `name` is required, the other
+// three are all optional. `on` maps an event name to the state it leads
+// to, and `enter`/`exit` are called with the machine itself whenever a
+// transition makes that state current or leaves it -- so a state can
+// start a timer or an animation on enter and clean it up on exit without
+// the rest of the program needing to know.
+
+struct FSM {
+    states, current;
+
+    // The `{name, on, enter, exit}` a state was defined with, or null if
+    // `name` names none -- the same "not an error, just nothing found"
+    // rule `achievements()`'s own `definitionOf` follows.
+    func definitionOf(name) {
+        for (s in this.states) {
+            if (s.name == name) { return s; }
+        }
+        return null;
+    }
+
+    // Whether firing `event` from the current state would lead anywhere.
+    // A caller can check this before firing, or just fire and look at
+    // the result -- fire() itself never throws over an event that
+    // simply does not apply right now.
+    func can(event) {
+        var on = get(this.definitionOf(this.current), "on", {});
+        return has(on, event);
+    }
+
+    // Fires `event`. If the current state has no transition for it --
+    // most events, in most states, most of the time; "jump" fired while
+    // already "attacking" is the ordinary case, not a bug -- nothing
+    // happens and this returns false. Otherwise the current state's
+    // exit() (if any) runs, `current` becomes the target state, and the
+    // target's enter() (if any) runs, in that order, and this returns
+    // true. A state transitioning to itself still runs its own exit()
+    // then enter(), so a self-transition can restart whatever enter()
+    // sets up (a "hit" state re-triggering its own flash timer on a
+    // second hit, say).
+    func fire(event) {
+        var from = this.definitionOf(this.current);
+        var on = get(from, "on", {});
+        if (!has(on, event)) { return false; }
+        var to = this.definitionOf(on[event]);
+        var exit = get(from, "exit", null);
+        if (exit != null) { exit(this); }
+        this.current = to.name;
+        var enter = get(to, "enter", null);
+        if (enter != null) { enter(this); }
+        return true;
+    }
+}
+
+// A machine over `states` (each `{name, on, enter, exit}`, only `name`
+// required, names unique), starting in `initial`. Runs `initial`'s own
+// enter() (if given) before returning, the same as any other transition
+// into it, so setup that belongs in enter() only ever needs to be
+// written once.
+export func fsm(states, initial) {
+    if (len(states) < 1) {
+        throw {
+            kind: "ValueError",
+            message: "fsm() needs at least one state."
+        };
+    }
+    var names = [];
+    for (s in states) {
+        if (has(names, s.name)) {
+            throw {
+                kind: "ValueError",
+                message: "fsm(): duplicate state \"${s.name}\"."
+            };
+        }
+        push(names, s.name);
+    }
+    if (!has(names, initial)) {
+        throw {
+            kind: "ValueError",
+            message: "fsm(): no initial state named \"${initial}\"."
+        };
+    }
+    for (s in states) {
+        var on = get(s, "on", {});
+        for (event in keys(on)) {
+            if (!has(names, on[event])) {
+                throw {
+                    kind: "ValueError",
+                    message: "fsm(): state \"${s.name}\" event \"${event}\" leads to unknown state \"${on[event]}\"."
+                };
+            }
+        }
+    }
+    var machine = FSM(states, initial);
+    var start = get(machine.definitionOf(initial), "enter", null);
+    if (start != null) { start(machine); }
+    return machine;
+}
