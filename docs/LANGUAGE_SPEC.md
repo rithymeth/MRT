@@ -1842,6 +1842,60 @@ told apart from one that never existed — the first is a use-after-free in the
 program's own logic, and calling it "no such surface" would send its author
 looking for a typo.
 
+#### Custom fonts: a loaded atlas instead of the built-in glyphs
+
+`gameText` needs no asset and is always there, which is exactly why it looks
+the way it looks: one 5x7 look, ASCII only. A game that wants its own pixel
+art for text — a different style, colour baked into the glyphs themselves,
+characters the built-in font does not have — loads a font the same way it
+loads a sprite.
+
+```mrt
+var font = gameFontLoad("ui-font.png", 8, 8, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ");
+gameDrawText(font, 10, 10, "SCORE 1200", 1);
+```
+
+| Call | Result |
+|------|--------|
+| `gameFontLoad(path, charWidth, charHeight, chars)` | Reads a PNG as a font atlas; returns its id. |
+| `gameDrawText(font, x, y, text, scale)` | Draws text with a loaded font. `\n` starts a new line. |
+| `gameFontTextWidth(font, text, scale)` / `gameFontTextHeight(...)` | How big that text will be, drawn with that font. |
+| `gameFontFree(font)` | Gives a font up. Its id is never reused. |
+
+The atlas is a plain grid of same-sized cells, `charWidth` by `charHeight`
+each, and `chars` says which character sits in which cell — reading the grid
+left to right and then top to bottom, the same row-major order
+`gameDrawTilemap` already reads a tile sheet in. The atlas may hold more
+cells than `chars` names (a partial character set cut from a bigger sheet is
+ordinary), but not fewer, and never the same character twice — a draw could
+not say which cell was meant.
+
+```mrt
+// Six letters across a 48x8 strip, one 8x8 cell each.
+var font = gameFontLoad("letters.png", 8, 8, "ABCDEF");
+```
+
+Every character a call to `gameDrawText` needs is checked before any of it
+is drawn — a label half-drawn because of one typo'd character is a worse
+thing to debug than one that was never touched — and a character this font
+has no glyph for is named in the error rather than skipped or drawn as
+something else.
+
+This font is deliberately monospace: every cell advances the pen by exactly
+`charWidth`, whatever character it holds, the same simplicity a tile sheet
+already rests on. An artist who wants a narrower "i" than "M" pads its own
+cell, the tradeoff a monospace terminal font makes on purpose. `scale` is
+whole-number pixel doubling, matching `gameText`'s own `scale`, for the same
+reason a bitmap resampled to a fractional size turns to mush.
+
+A loaded font is its own kind of id, never a sprite's — it is never a draw
+target and never what `gameDraw` addresses, so keeping it out of that id
+space rules out calling `gameDraw` on one by mistake. Text drawn with it
+follows the camera exactly like `gameText` and `gameDraw` do; measuring one
+(`gameFontTextWidth`/`gameFontTextHeight`) needs a screen open, unlike the
+built-in font's measuring calls, since a loaded font's metrics live on the
+screen that loaded it.
+
 #### Particles: sparks, smoke, and other things spawned by the hundred
 
 | Call | Result |

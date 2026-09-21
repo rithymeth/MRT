@@ -53,6 +53,12 @@ pub struct Screen {
     /// slot becomes `None` and is not reused, so a stale id reports that it
     /// was freed instead of silently drawing some later sprite.
     pub sprites: Vec<Option<Surface>>,
+    /// Loaded bitmap fonts, addressed by a 1-based id the same way a sprite
+    /// is. A separate pool rather than a kind of sprite: a font is never a
+    /// draw target and never the thing a camera or `gameDraw` addresses, so
+    /// giving it sprites' id space would only invite calling `gameDraw` on
+    /// one by mistake.
+    pub fonts: Vec<Option<mrt_game::bitmapfont::BitmapFont>>,
     /// Which surface drawing lands on: 0 is the screen, otherwise a sprite id.
     pub target: usize,
     /// How far the visible screen has scrolled through the world, in world
@@ -147,6 +153,21 @@ impl Screen {
             None => Err(value_error(format!("{who}(): there is no surface {id}."))),
         }
     }
+
+    /// Check an id names a live font, and say why not if it does not -- the
+    /// same reasoning `sprite_index` uses, for the same reason.
+    fn font_index(&self, id: usize, who: &str) -> Result<usize, Signal> {
+        if id == 0 {
+            return Err(value_error(format!(
+                "{who}() needs a font from gameFontLoad(); 0 is not one."
+            )));
+        }
+        match self.fonts.get(id - 1) {
+            Some(Some(_)) => Ok(id - 1),
+            Some(None) => Err(value_error(format!("{who}(): font {id} was freed."))),
+            None => Err(value_error(format!("{who}(): there is no font {id}."))),
+        }
+    }
 }
 
 /// The error every drawing call gets before `gameInit` has run.
@@ -230,6 +251,7 @@ pub fn init(width: usize, height: usize, title: &str) -> Result<Screen, Signal> 
         surface: Surface::new(width as u32, height as u32, mrt_game::BLACK),
         title: title.to_string(),
         sprites: Vec::new(),
+        fonts: Vec::new(),
         target: 0,
         camera_x: 0,
         camera_y: 0,
@@ -1635,6 +1657,142 @@ mod tests {
             "the previous program's screen did not leak into this one"
         );
     }
+
+    /// A 4x2 atlas, two 2x2 cells: the left one red, the right one blue.
+    /// Built from MRT itself with `gameSurface`/`gameRect`/`gameSave`, the
+    /// same way the sprite-loading tests build their own fixture rather
+    /// than shipping a binary PNG in the repository.
+    fn two_cell_font_atlas(path: &str) -> String {
+        format!(
+            r#"gameInit(8, 8, "t");
+               var atlas = gameSurface(4, 2);
+               gameTarget(atlas);
+               gameRect(0, 0, 2, 2, gameColor(255, 0, 0));
+               gameRect(2, 0, 2, 2, gameColor(0, 0, 255));
+               gameSave("{path}");
+               gameTarget(0);"#
+        )
+    }
+
+    #[test]
+    fn a_loaded_font_draws_the_right_cell_for_each_character() {
+        let path = std::env::temp_dir().join("mrt_game_font_draw.png");
+        let escaped = path.to_string_lossy().replace('\\', "\\\\");
+        assert_eq!(
+            main_of(&format!(
+                r#"{}
+                   var font = gameFontLoad("{escaped}", 2, 2, "ab");
+                   gameDrawText(font, 0, 0, "ba", 1);
+                   print(gameColorAt(0, 0) == gameColor(0, 0, 255), "b drawn first");
+                   print(gameColorAt(2, 0) == gameColor(255, 0, 0), "then a, advanced by one cell");"#,
+                two_cell_font_atlas(&escaped)
+            )),
+            "true b drawn first\ntrue then a, advanced by one cell"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_loaded_font_follows_the_camera_like_gametext_does() {
+        let path = std::env::temp_dir().join("mrt_game_font_camera.png");
+        let escaped = path.to_string_lossy().replace('\\', "\\\\");
+        assert_eq!(
+            main_of(&format!(
+                r#"{}
+                   gameCamera(1, 0);
+                   var font = gameFontLoad("{escaped}", 2, 2, "a");
+                   gameDrawText(font, 1, 0, "a", 1);
+                   print(gameColorAt(1, 0) == gameColor(255, 0, 0));"#,
+                two_cell_font_atlas(&escaped)
+            )),
+            "true"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn drawing_a_character_a_font_does_not_have_names_it() {
+        let path = std::env::temp_dir().join("mrt_game_font_missing_char.png");
+        let escaped = path.to_string_lossy().replace('\\', "\\\\");
+        let output = main_of(&format!(
+            r#"{}
+               var font = gameFontLoad("{escaped}", 2, 2, "ab");
+               gameDrawText(font, 0, 0, "aqb", 1);"#,
+            two_cell_font_atlas(&escaped)
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            output.contains("gameDrawText():") && output.contains("'q'"),
+            "got {output:?}"
+        );
+    }
+
+    #[test]
+    fn a_font_atlas_that_is_not_an_exact_grid_says_so() {
+        let path = std::env::temp_dir().join("mrt_game_font_bad_grid.png");
+        let escaped = path.to_string_lossy().replace('\\', "\\\\");
+        let output = main_of(&format!(
+            r#"{}
+               gameFontLoad("{escaped}", 3, 2, "a");"#,
+            two_cell_font_atlas(&escaped)
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            output.contains("gameFontLoad():") && output.contains("not an exact grid"),
+            "got {output:?}"
+        );
+    }
+
+    #[test]
+    fn a_font_measures_text_without_drawing_it() {
+        let path = std::env::temp_dir().join("mrt_game_font_measure.png");
+        let escaped = path.to_string_lossy().replace('\\', "\\\\");
+        assert_eq!(
+            main_of(&format!(
+                r#"{}
+                   var font = gameFontLoad("{escaped}", 2, 2, "ab");
+                   print(gameFontTextWidth(font, "ab", 1), gameFontTextHeight(font, "ab", 1));
+                   print(gameFontTextWidth(font, "a\nb", 2), gameFontTextHeight(font, "a\nb", 2));"#,
+                two_cell_font_atlas(&escaped)
+            )),
+            "4 2\n4 8"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_freed_font_is_told_apart_from_one_that_never_existed() {
+        let path = std::env::temp_dir().join("mrt_game_font_freed.png");
+        let escaped = path.to_string_lossy().replace('\\', "\\\\");
+        let output = main_of(&format!(
+            r#"{}
+               var font = gameFontLoad("{escaped}", 2, 2, "a");
+               gameFontFree(font);
+               gameDrawText(font, 0, 0, "a", 1);"#,
+            two_cell_font_atlas(&escaped)
+        ));
+        assert!(
+            output.contains("gameDrawText(): font 1 was freed."),
+            "got {output:?}"
+        );
+        assert_eq!(
+            main_of(r#"gameInit(4, 4, "t"); gameFontTextWidth(9, "a", 1);"#),
+            "Runtime Error: gameFontTextWidth(): there is no font 9. [line 1]"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn font_calls_need_a_screen_first() {
+        assert_eq!(
+            main_of(r#"gameFontLoad("x.png", 2, 2, "a");"#),
+            "Runtime Error: gameFontLoad() needs a screen; call gameInit(width, height, title) first. [line 1]"
+        );
+        assert_eq!(
+            main_of("gameDrawText(1, 0, 0, \"a\", 1);"),
+            "Runtime Error: gameDrawText() needs a screen; call gameInit(width, height, title) first. [line 1]"
+        );
+    }
 }
 
 /// Collision: boxes, and what happens when they meet.
@@ -2059,7 +2217,11 @@ pub mod sprites {
     /// at least 1. Not bounded above here -- whether it actually fits
     /// inside the sprite it crops is checked once `draw_transformed` knows
     /// which sprite that is.
-    fn dimension(value: &Value, who: &str, what: &str) -> Result<u32, Signal> {
+    ///
+    /// `pub(super)` rather than private: `fonts` below needs the same check
+    /// for a font's character cells, and two copies of "a whole number of
+    /// pixels, at least 1" would eventually disagree about the wording.
+    pub(super) fn dimension(value: &Value, who: &str, what: &str) -> Result<u32, Signal> {
         match value {
             Value::Number(n) if n.is_finite() && *n >= 1.0 => Ok(n.floor() as u32),
             Value::Number(n) => Err(value_error(format!(
@@ -2266,6 +2428,112 @@ pub mod sprites {
         }
         screen.sprites[index] = None;
         Ok(Value::Null)
+    }
+}
+
+/// Text drawn from a loaded bitmap font, rather than the one `font` bakes
+/// into the binary.
+///
+/// `gameText` and this are complementary, not competing: the built-in font
+/// needs no asset and is always there, and this is for a game that wants
+/// its own pixel art for text instead -- a different style, characters the
+/// built-in font does not have, colour baked into the glyphs themselves.
+pub mod fonts {
+    use super::*;
+
+    /// Load a font atlas and hand back its id.
+    ///
+    /// `chars` names which character sits in which cell of the atlas,
+    /// reading left to right and then top to bottom -- the same order
+    /// `gameDrawTilemap` already reads a tile sheet in.
+    pub fn load(
+        s: &mut Option<Screen>,
+        path: &str,
+        char_width: &Value,
+        char_height: &Value,
+        chars: &str,
+    ) -> Result<Value, Signal> {
+        let char_width = sprites::dimension(char_width, "gameFontLoad", "the character width")?;
+        let char_height = sprites::dimension(char_height, "gameFontLoad", "the character height")?;
+        let screen = screen(s, "gameFontLoad")?;
+        let surface =
+            Surface::load_png(path).map_err(|e| value_error(format!("gameFontLoad(): {e}")))?;
+        let font = mrt_game::bitmapfont::BitmapFont::new(
+            surface,
+            char_width as i32,
+            char_height as i32,
+            chars,
+        )
+        .map_err(|e| value_error(format!("gameFontLoad(): {e}.")))?;
+        screen.fonts.push(Some(font));
+        Ok(Value::Number(screen.fonts.len() as f64))
+    }
+
+    /// Give a font up. Its id is never reused, the same as a freed surface.
+    pub fn free(s: &mut Option<Screen>, id: usize) -> Result<Value, Signal> {
+        let screen = screen(s, "gameFontFree")?;
+        let index = screen.font_index(id, "gameFontFree")?;
+        screen.fonts[index] = None;
+        Ok(Value::Null)
+    }
+
+    /// Draw text with a loaded font, its top-left corner at `x, y`.
+    ///
+    /// No self-draw guard, unlike `sprites::draw_transformed`: a font's
+    /// atlas lives in its own pool, never in `sprites` and never the
+    /// screen, so it can never be the surface currently being drawn onto.
+    /// It still has to be taken out of that pool before `target_mut` can
+    /// borrow the rest of `screen`, the same borrow-checker reasoning
+    /// `draw_transformed` explains -- just without a hazard to guard
+    /// against once it is back.
+    pub fn draw(
+        s: &mut Option<Screen>,
+        id: usize,
+        x: i32,
+        y: i32,
+        text: &str,
+        scale: i32,
+    ) -> Result<Value, Signal> {
+        let screen = screen(s, "gameDrawText")?;
+        let index = screen.font_index(id, "gameDrawText")?;
+        let (x, y) = screen.from_world(x, y);
+        let font = screen.fonts[index].take().expect("checked live");
+        let result = font.draw(screen.target_mut(), x, y, text, scale);
+        screen.fonts[index] = Some(font);
+        result.map_err(|c| {
+            value_error(format!(
+                "gameDrawText(): font {id} has no {c:?} in its character set."
+            ))
+        })?;
+        Ok(Value::Null)
+    }
+
+    /// How wide `text` would be drawn with a loaded font -- needs the
+    /// screen a font's own pool lives on, unlike `gameTextWidth`'s built-in
+    /// font, which needs nothing but the string itself.
+    pub fn text_width(
+        s: &Option<Screen>,
+        id: usize,
+        text: &str,
+        scale: i32,
+    ) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameFontTextWidth"))?;
+        let index = screen.font_index(id, "gameFontTextWidth")?;
+        let font = screen.fonts[index].as_ref().expect("checked live");
+        Ok(Value::Number(font.text_width(text, scale) as f64))
+    }
+
+    /// How tall `text` would be drawn with a loaded font.
+    pub fn text_height(
+        s: &Option<Screen>,
+        id: usize,
+        text: &str,
+        scale: i32,
+    ) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameFontTextHeight"))?;
+        let index = screen.font_index(id, "gameFontTextHeight")?;
+        let font = screen.fonts[index].as_ref().expect("checked live");
+        Ok(Value::Number(font.text_height(text, scale) as f64))
     }
 }
 
