@@ -27,3 +27,4 @@ game_window.mrt
 net_fetch.mrt
 sound_effects.mrt
 sound_fades.mrt
+sound_positional.mrt

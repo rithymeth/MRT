@@ -1,0 +1,65 @@
+// Positional audio: moving a playing sound between the speakers as its
+// source moves in the game world, from MRT source.
+//
+// MRT-Game is an engine extension — only the Rust engines have these
+// builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// soundPlay's own `pan` option only ever sets where a voice *starts*.
+// Working out where a sound should sit between the speakers is a program's
+// own arithmetic — how far something is to one side of the listener, scaled
+// to -1..1 — the same shape as any other bit of game logic. What a program
+// cannot do by itself is reach into a voice already playing and move it;
+// that is mixer-internal state, out of reach once soundPlay has handed back
+// an id. soundPan is that one missing piece.
+
+func panFor(soundX, listenerX, halfWidth) {
+    return max(-1, min(1, (soundX - listenerX) / halfWidth));
+}
+
+func main() {
+    // Repanning a voice nothing is playing on is not an error, the same
+    // reasoning as soundFade and soundStop: a game repositioning a sound it
+    // is not certain is still playing should not have to check first. None
+    // of this needs a speaker, so it runs the same on a build server.
+    soundPan(999, 1);
+    print("repanning a voice that never existed did not raise");
+
+    // Arguments are checked before anything asks whether a speaker exists.
+    try {
+        soundPan(1, -2);
+    } catch (e) {
+        print("out-of-range pan refused:", e.kind);
+    }
+    try {
+        soundPan(1, "left");
+    } catch (e) {
+        print("a pan that is not a number is refused:", e.kind);
+    }
+
+    // A car driving past a listener planted at the origin, from far left to
+    // far right. The listener never moves; only the car's x does.
+    var listenerX = 0;
+    var halfWidth = 400;
+    var positions = [-400, -200, 0, 200, 400];
+    for (var i = 0; i < len(positions); i = i + 1) {
+        print("car at", positions[i], "-> pan", panFor(positions[i], listenerX, halfWidth));
+    }
+
+    // Playing it out loud. Wrapped in a try because a machine with no sound
+    // card is an ordinary place to run a program, and a game should carry
+    // on without audio rather than stop.
+    try {
+        var engine = soundTone("saw", 90, 2, {attack: 0, decay: 0, sustain: 1, release: 0});
+        var voice = soundPlay(engine, {loop: true, volume: 0.4});
+        print("engine playing on voice", voice);
+
+        for (var i = 0; i < len(positions); i = i + 1) {
+            soundPan(voice, panFor(positions[i], listenerX, halfWidth));
+        }
+        print("panned across the field as the car passed, without restarting it");
+
+        soundStop(voice);
+    } catch (e) {
+        print("no speaker here:", e.kind);
+    }
+}

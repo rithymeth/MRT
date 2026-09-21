@@ -215,6 +215,25 @@ impl Mixer {
         });
     }
 
+    /// Move a voice's stereo position live, without restarting it.
+    ///
+    /// `play`'s pan only ever sets where a voice *starts*. Anything with a
+    /// position -- a car passing by, footsteps circling a listener -- needs
+    /// that to keep changing while the voice keeps playing, and restarting
+    /// it to move it would restart the sound too. This is the pan
+    /// equivalent of `fade` for volume: the one piece of positional audio a
+    /// program cannot write for itself, because the gains it would need to
+    /// rewrite are mixer-internal voice state, out of reach once `play` has
+    /// returned an id.
+    ///
+    /// A voice that has already stopped is not an error to repan, the same
+    /// reasoning `fade` and `stop` use.
+    pub fn set_pan(&mut self, id: u64, pan: f32) {
+        if let Some(voice) = self.voices.iter_mut().find(|voice| voice.id == id) {
+            voice.gains = pan_gains(pan);
+        }
+    }
+
     pub fn stop(&mut self, id: u64) {
         self.voices.retain(|voice| voice.id != id);
     }
@@ -537,6 +556,43 @@ mod tests {
         // not have to check first.
         let mut mixer = Mixer::new(1000, 1);
         mixer.fade(999, 0.0, 1.0, true);
+        assert_eq!(mixer.playing(), 0);
+    }
+
+    #[test]
+    fn set_pan_moves_an_already_playing_voices_stereo_position() {
+        // Two channels: pan is inaudible with only one to move between.
+        let mut mixer = Mixer::new(1000, 2);
+        let voice = mixer.play(constant(1.0, 2, 1000), Play::default());
+        mixer.set_pan(voice, 1.0);
+        let mut out = vec![0.0; 4];
+        mixer.fill(&mut out);
+        for right in [out[1], out[3]] {
+            assert!((right - 1.0).abs() < 1e-5, "all of it on the right");
+        }
+        for left in [out[0], out[2]] {
+            assert!(left.abs() < 1e-5, "and none on the left, without a restart");
+        }
+    }
+
+    #[test]
+    fn set_pan_clamps_the_same_way_play_does() {
+        let mut mixer = Mixer::new(1000, 2);
+        let voice = mixer.play(constant(1.0, 2, 1000), Play::default());
+        mixer.set_pan(voice, 5.0);
+        let mut out = vec![0.0; 2];
+        mixer.fill(&mut out);
+        assert!((out[1] - 1.0).abs() < 1e-5, "clamped to hard right");
+        assert!(out[0].abs() < 1e-5, "not left, and not silence either");
+    }
+
+    #[test]
+    fn repanning_a_voice_that_does_not_exist_is_not_an_error() {
+        // The same reasoning that makes fading or stopping a finished voice
+        // ordinary: a game repositioning a sound it is not certain is still
+        // playing should not have to check first.
+        let mut mixer = Mixer::new(1000, 2);
+        mixer.set_pan(999, 1.0);
         assert_eq!(mixer.playing(), 0);
     }
 

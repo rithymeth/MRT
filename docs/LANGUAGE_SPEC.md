@@ -1514,6 +1514,7 @@ distortion the caller never asked for. `soundInfo(id).peak` reports it and
 | `soundStop(voice)` / `soundStopAll()` | Stops one voice, or everything. |
 | `soundFade(voice, volume, seconds)` | Ramps a playing voice's volume to `volume` over that many seconds. |
 | `soundFadeOut(voice, seconds)` | Fades to silence over that many seconds, then stops it. |
+| `soundPan(voice, pan)` | Moves a playing voice's stereo position live, without restarting it. |
 | `soundPlaying()` | How many voices are sounding. |
 
 `options` is `{volume, pan, speed, loop, fadeIn}`, or `null`, and anything
@@ -1564,6 +1565,35 @@ fade to a nonzero volume — ducking music under dialogue, then bringing it
 back up — is not "finished" in the way a fade to silence is. Fading a voice
 that already stopped, or one that never existed, is not an error, the same
 as `soundStop`.
+
+#### Positional sound
+
+`options.pan` only ever sets where a voice *starts*. A sound with a position
+in the game world — an engine passing by, footsteps circling the player — has
+to keep moving between the speakers while it plays, and that arithmetic is a
+program's own: how far something is to the left of the listener is one
+subtraction and one division, the same shape as `soundPlay`'s `pan` example
+above. What a program cannot do on its own is reach *into* a voice already
+playing to apply the new number — that is mixer-internal state, out of reach
+once `soundPlay` has handed back an id. `soundPan` is that one missing piece,
+the positional equivalent of `soundFade`:
+
+```mrt
+func panFor(soundX, listenerX, halfWidth) {
+    return max(-1, min(1, (soundX - listenerX) / halfWidth));
+}
+
+var engine = soundPlay(carLoop, {loop: true});
+while (gameOpen()) {
+    car.x = car.x + car.speed;
+    soundPan(engine, panFor(car.x, listener.x, 400));
+    gamePresent();
+}
+```
+
+Repanning a voice that already stopped, or one that never existed, is not an
+error, the same as `soundFade` and `soundStop` — a game repositioning a sound
+it is not certain is still playing should not have to check first.
 
 The speaker opens on the first `soundPlay` rather than at startup, the way the
 window opens on the first `gameOpen` — so a program that only makes sounds and

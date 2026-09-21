@@ -166,6 +166,19 @@ pub fn play_options(value: &Value, who: &str) -> Result<mrt_audio::mixer::Play, 
     Ok(how)
 }
 
+/// A pan value, checked the same way `soundPlay`'s options are: it may be
+/// negative -- that is what left means -- but must be a finite number.
+fn pan_value(value: &Value, who: &str) -> Result<f32, Signal> {
+    match value {
+        Value::Number(n) if n.is_finite() && *n >= -1.0 => Ok(*n as f32),
+        Value::Number(n) => Err(value_error(format!("{who}(): pan is {n}."))),
+        other => Err(type_error(format!(
+            "{who}() needs pan to be a number, not {}.",
+            crate::value::type_name(other)
+        ))),
+    }
+}
+
 /// A number that makes sense as a duration or a frequency.
 fn positive(value: &Value, who: &str, what: &str) -> Result<f64, Signal> {
     match value {
@@ -583,6 +596,31 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "audio")]
+    fn repanning_a_voice_nothing_is_playing_on_is_not_an_error() {
+        // The same reasoning as soundFade: a game repositioning a sound it
+        // is not certain is still playing should not have to check first.
+        assert_eq!(
+            main_of("soundPan(999, 1); print(\"carried on\");"),
+            "carried on"
+        );
+    }
+
+    #[test]
+    fn pan_arguments_are_validated_before_anything_asks_for_a_speaker() {
+        // Checked the same way regardless of whether this build has audio
+        // support at all -- the same split soundFade's arguments take.
+        assert_eq!(
+            main_of("soundPan(1, -2);"),
+            "Runtime Error: soundPan(): pan is -2. [line 1]"
+        );
+        assert_eq!(
+            main_of(r#"soundPan(1, "left");"#),
+            "Runtime Error: soundPan() needs pan to be a number, not string. [line 1]"
+        );
+    }
+
+    #[test]
     fn fade_arguments_are_validated_before_anything_asks_for_a_speaker() {
         // Checked the same way regardless of whether this build has audio
         // support at all -- the same split soundPlay's options take.
@@ -752,6 +790,39 @@ pub mod live {
         who: &str,
     ) -> Result<Value, Signal> {
         Err(unsupported(who))
+    }
+
+    /// Move a voice's stereo position live, without restarting it.
+    ///
+    /// Where a sound sits between the speakers is `soundPlay`'s `pan`
+    /// option, but that only ever sets where a voice *starts*. A moving
+    /// emitter -- a car passing by, footsteps circling a listener -- needs
+    /// its pan to keep changing while it plays, and a program can compute
+    /// that pan itself (it is arithmetic on two positions); what it cannot
+    /// do is reach into an already-playing voice to apply it. This is the
+    /// pan equivalent of `soundFade` for volume.
+    ///
+    /// The pan is validated unconditionally, the same split every other
+    /// argument here takes: a bad value is refused before anything asks
+    /// whether a speaker exists.
+    pub fn set_pan(bank: &Bank, voice: u64, pan: &Value, who: &str) -> Result<Value, Signal> {
+        let pan = pan_value(pan, who)?;
+        set_pan_checked(bank, voice, pan)
+    }
+
+    #[cfg(feature = "audio")]
+    fn set_pan_checked(bank: &Bank, voice: u64, pan: f32) -> Result<Value, Signal> {
+        if let Some(speaker) = bank.speaker.as_ref() {
+            speaker.set_pan(voice, pan);
+        }
+        // Repanning a voice nothing is playing on is not an error, the same
+        // as stopping or fading one.
+        Ok(Value::Null)
+    }
+
+    #[cfg(not(feature = "audio"))]
+    fn set_pan_checked(_bank: &Bank, _voice: u64, _pan: f32) -> Result<Value, Signal> {
+        Err(unsupported("soundPan"))
     }
 
     /// How many voices are sounding right now.
