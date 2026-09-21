@@ -1,0 +1,92 @@
+// A set of unlockable achievements, defined once and unlocked as a
+// program decides they have been earned -- ordinary array bookkeeping,
+// the same "a program can write it and should" reasoning `gameOverlap`'s
+// own doc comment gives elsewhere, with `.unlocked` left as a plain
+// array of ids so it is ready for `gameSaveData`/`gameLoadData` with no
+// wrapper of its own.
+//
+// This says nothing about *telling* the player -- unlock() returns
+// whether this was the first time specifically so a caller can decide
+// that for itself, a toast, a sound, a fanfare screen, whatever fits the
+// game, the same way this section leaves drawing to the caller
+// everywhere else:
+//
+//   if (achievements.unlock("first_blood")) {
+//       toasts.show("Achievement unlocked: ${achievements.definitionOf("first_blood").name}");
+//   }
+
+struct Achievements {
+    definitions, unlocked = [];
+
+    func hasDefinition(id) {
+        return this.definitionOf(id) != null;
+    }
+
+    // The `{id, name, description}` a definition was given, or null if
+    // `id` names none -- the same "not an error, just nothing found"
+    // rule `get()` follows for an object.
+    func definitionOf(id) {
+        for (d in this.definitions) {
+            if (d.id == id) { return d; }
+        }
+        return null;
+    }
+
+    func isUnlocked(id) {
+        return has(this.unlocked, id);
+    }
+
+    // Unlocks `id`, returning true the first time -- the signal a caller
+    // uses to show a "new achievement" toast or fanfare only once -- and
+    // false if it was already unlocked, which is not an error: a program
+    // rechecking a condition every frame ("has this player found 100
+    // coins yet?") will call this far more than once for the same id.
+    func unlock(id) {
+        if (!this.hasDefinition(id)) {
+            throw {
+                kind: "ValueError",
+                message: "unlock(): no achievement named \"${id}\"."
+            };
+        }
+        if (this.isUnlocked(id)) { return false; }
+        push(this.unlocked, id);
+        return true;
+    }
+
+    // `{unlocked, total}` -- for a simple "12/30 unlocked" display.
+    func progress() {
+        return {unlocked: len(this.unlocked), total: len(this.definitions)};
+    }
+}
+
+// A tracker over `definitions` (each `{id, name, description}`, ids
+// unique), optionally starting already `unlockedIds` in -- reloaded save
+// data, say. Unlike `unlock()` itself, a saved id with no matching
+// definition (an achievement since renamed or removed) is quietly
+// dropped rather than refused: reloading old data should be forgiving
+// about a definition's own history changing underneath it, the same way
+// `leaderboard()`'s own reload does not assume a save file still matches
+// today's rules exactly.
+export func achievements(definitions, unlockedIds = []) {
+    if (len(definitions) < 1) {
+        throw {
+            kind: "ValueError",
+            message: "achievements() needs at least one definition."
+        };
+    }
+    var ids = [];
+    for (d in definitions) {
+        if (has(ids, d.id)) {
+            throw {
+                kind: "ValueError",
+                message: "achievements(): duplicate id \"${d.id}\"."
+            };
+        }
+        push(ids, d.id);
+    }
+    var unlocked = [];
+    for (id in unlockedIds) {
+        if (has(ids, id) && !has(unlocked, id)) { push(unlocked, id); }
+    }
+    return Achievements(definitions, unlocked);
+}
