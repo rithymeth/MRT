@@ -1655,6 +1655,42 @@ before the error comes back. That is libasound talking to the terminal
 directly, not MRT, and silencing it would need unsafe FFI the compiler's
 workspace forbids.
 
+#### Background music: a crossfading playlist
+
+A title screen's theme, a level's track, an ambient loop — background
+music almost always wants more than one `soundPlay`: queue several
+tracks, and cut from one to the next without a gap or a seam. MRT-Audio
+has no "tell me when a voice finishes" built-in for this, and does not
+need one — `soundInfo(id).seconds` already gives a track's own length, so
+knowing how far into it a player has gotten is arithmetic on elapsed
+time, the same reasoning `Scheduler` (in "Timers and coroutines" above)
+already gives for tracking a delay itself rather than asking a built-in
+to. `examples/lib/music.mrt`'s `playlist` does exactly that:
+
+```mrt
+import { playlist } from "./lib/music.mrt";
+
+var music = playlist([titleTrack, levelTrack], 2); // 2-second crossfade
+while (gameOpen()) {
+    music.update(gameDelta());
+    // ...
+    gamePresent();
+}
+```
+
+Playing starts immediately — the first track is already sounding by the
+time `playlist` returns. Each track crossfades into the next `crossfade`
+seconds before it ends: the next track fades in (`soundPlay` with
+`fadeIn`) while the current one fades out (`soundFadeOut`), so there is
+audio throughout the switch rather than a gap or a hard cut. `loop`, true
+by default, wraps back to the first track after the last — including a
+one-track "playlist," which crossfades seamlessly into a fresh play of
+itself. A `loop: false` playlist instead finishes after its last track
+fades to silence on its own, setting `.finished`, the same shape `Tween`'s
+own field of that name takes. `.current()` reports whichever track is
+playing (or crossfading out of) right now; `.stop()` ends every voice the
+player has started immediately, no fade.
+
 #### Making a game
 
     mrt-game new pong     start a game in a new directory

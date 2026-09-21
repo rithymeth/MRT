@@ -38,4 +38,5 @@ net_fetch.mrt
 net_multiplayer.mrt
 sound_effects.mrt
 sound_fades.mrt
+sound_music.mrt
 sound_positional.mrt

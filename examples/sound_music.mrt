@@ -1,0 +1,96 @@
+// A crossfading background-music playlist, from MRT source.
+//
+// MRT-Audio is an engine extension — only the Rust engines have these
+// builtins. See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// examples/lib/music.mrt itself is not one -- it is ordinary MRT built on
+// soundPlay/soundFade/soundFadeOut/soundInfo, and only this example is
+// engine-specific because it calls them. Boundary checks below land a full
+// 0.1 second past or before the moment something should happen, rather
+// than exactly on it: soundInfo's own reported length is not bit-exact
+// (it is rounded to a whole number of audio frames), and a margin two
+// orders of magnitude past that rounding keeps these checks meaningful
+// without depending on it.
+
+import { playlist } from "./lib/music.mrt";
+
+var ENVELOPE = {attack: 0, decay: 0, sustain: 1, release: 0};
+
+func main() {
+    try {
+        // Both tracks the same length, so the second track's own
+        // crossfade window (which starts as soon as it does, carrying
+        // over from the first track's overshoot) does not land close
+        // enough to the checkpoints below to make the margins below
+        // matter -- see the checkpoint comments for exactly how much
+        // margin each one keeps.
+        var trackA = soundTone("sine", 440, 0.5, ENVELOPE);
+        var trackB = soundTone("sine", 660, 0.5, ENVELOPE);
+
+        var mp = playlist([trackA, trackB], 0.1); // loop: true by default
+        print("starts on the first track, already playing:", mp.current() == trackA && !mp.finished);
+        print("not crossfading yet:", !mp.crossfading);
+
+        // 0.3s in: 0.1s of margin before the crossfade threshold
+        // (0.5 - 0.1 = 0.4).
+        var step = 0.1;
+        var i = 0;
+        while (i < 3) { mp.update(step); i = i + 1; }
+        print("not crossfading yet, with margin to spare:", !mp.crossfading && mp.current() == trackA);
+
+        // 0.6s total: 0.1s of margin past the first track's own end
+        // (0.5), so it has already crossfaded into the second track and
+        // switched over to it.
+        i = 0;
+        while (i < 3) { mp.update(step); i = i + 1; }
+        print("moved on to the next track once the first one ended:", mp.current() == trackB);
+        print("no longer crossfading, right after the switch:", !mp.crossfading);
+
+        // 0.8s total: 0.1s of margin before the *second* track's own
+        // crossfade threshold (its remaining length is 0.5 minus the
+        // 0.1s carried over as overshoot, so 0.4, minus the 0.1s
+        // crossfade -- 0.3 into this track). Confirms the switch settled
+        // rather than immediately re-triggering another crossfade.
+        i = 0;
+        while (i < 2) { mp.update(step); i = i + 1; }
+        print("settled on the second track, not already crossfading again:", !mp.crossfading);
+
+        // A generous run further -- well past both tracks' combined
+        // length more than once over -- proves a looping playlist just
+        // keeps going rather than ever finishing.
+        i = 0;
+        while (i < 20) { mp.update(step); i = i + 1; }
+        print("a looping playlist never finishes:", !mp.finished);
+
+        // A non-looping single-track playlist finishes once its one
+        // track ends. crossfade: 0 means the fade-out and the finish
+        // land in the same update(), so there is exactly one threshold
+        // to check margin around.
+        var trackC = soundTone("sine", 220, 0.3, ENVELOPE);
+        var once = playlist([trackC], 0, false);
+        i = 0;
+        while (i < 2) { once.update(step); i = i + 1; } // 0.2s: margin before 0.3
+        print("not finished yet, with margin before the track's own end:", !once.finished);
+        i = 0;
+        while (i < 2) { once.update(step); i = i + 1; } // 0.4s: margin past 0.3
+        print("finished once its one track actually ends:", once.finished);
+
+        // stop() ends a playlist immediately, no timing involved at all.
+        var stopped = playlist([trackA], 1);
+        stopped.stop();
+        print("stop() finishes a playlist right away:", stopped.finished);
+    } catch (e) {
+        print("no speaker here:", e.kind);
+    }
+
+    try {
+        playlist([], 1);
+    } catch (e) {
+        print("an empty playlist is refused:", e.kind);
+    }
+    try {
+        playlist(["placeholder"], -1);
+    } catch (e) {
+        print("a negative crossfade is refused:", e.kind);
+    }
+}
