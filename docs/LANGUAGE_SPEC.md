@@ -2288,6 +2288,46 @@ leaderboard whose capacity changed since it was last saved, or a save
 file edited by hand, still comes out correctly ranked and trimmed rather
 than however it happened to be written.
 
+#### Achievements
+
+A set of unlockable achievements is `examples/lib/achievements.mrt`'s
+`achievements(definitions)`: define each one once as `{id, name,
+description}`, then `unlock(id)` whenever a program decides one has been
+earned:
+
+```mrt
+import { achievements } from "./lib/achievements.mrt";
+
+var defs = [
+    {id: "first_blood", name: "First Blood", description: "Defeat your first enemy."},
+    {id: "pacifist", name: "Pacifist", description: "Finish a level without attacking."}
+];
+
+var saved = [];
+try { saved = gameLoadData("achievements.json"); } catch (e) { /* none yet */ }
+var ach = achievements(defs, saved);
+
+if (enemy.defeated && ach.unlock("first_blood")) {
+    toasts.show("Achievement unlocked: ${ach.definitionOf("first_blood").name}");
+}
+gameSaveData("achievements.json", ach.unlocked);
+```
+
+`unlock(id)` returns `true` the first time — the signal a caller uses to
+show a toast or a fanfare only once, composing directly with the toast
+queue above rather than this library reaching for it itself — and
+`false` on every call after, which is not an error: a program rechecking
+a condition every frame will call `unlock` on an already-earned id far
+more than once. `.unlocked` is left as plain data, ready for
+`gameSaveData`/`gameLoadData`; reloading (`achievements(definitions,
+savedIds)`) quietly drops a saved id with no matching definition — an
+achievement since renamed or removed — rather than refusing it, since
+reloading old data should be forgiving about a definition's own history
+changing underneath it. A live `unlock(id)` with no matching definition
+*is* refused, on the reasoning that a fresh call with a typo'd id is a
+bug worth hearing about immediately, unlike a save file simply predating
+a rename.
+
 #### The loop belongs to the program
 
 A windowing library usually wants the loop: you hand it a callback and it

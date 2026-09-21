@@ -1,0 +1,56 @@
+// Unlockable achievements, from MRT source. Needs no engine: unlocking
+// and tracking progress is ordinary MRT, the same as leaderboard.mrt and
+// replay.mrt.
+
+import { achievements } from "./lib/achievements.mrt";
+
+func main() {
+    var defs = [
+        {id: "first_blood", name: "First Blood", description: "Defeat your first enemy."},
+        {id: "pacifist", name: "Pacifist", description: "Finish a level without attacking."},
+        {id: "speedrun", name: "Speedrun", description: "Finish a level in under a minute."}
+    ];
+
+    var ach = achievements(defs);
+    print("starts with none unlocked:", ach.progress().unlocked == 0 && ach.progress().total == 3);
+    print("nothing is unlocked yet:", !ach.isUnlocked("first_blood"));
+
+    print("unlocking returns true the first time:", ach.unlock("first_blood") == true);
+    print("and false every time after:", ach.unlock("first_blood") == false);
+    print("it is unlocked now:", ach.isUnlocked("first_blood"));
+    print("progress reflects it:", ach.progress().unlocked == 1);
+
+    print("a definition can be looked up by id:", ach.definitionOf("pacifist").name == "Pacifist");
+    print("an unknown id has no definition:", ach.definitionOf("nope") == null);
+
+    try {
+        ach.unlock("nope");
+    } catch (e) {
+        print("unlocking an id with no definition is refused:", e.kind);
+    }
+
+    // .unlocked is plain data -- exactly what a save file would hold, and
+    // exactly what a reload hands back to achievements() as its own
+    // second argument.
+    var saved = ach.unlocked;
+    var reloaded = achievements(defs, saved);
+    print("reloading from saved ids reproduces the same progress:", reloaded.progress().unlocked == 1 && reloaded.isUnlocked("first_blood"));
+
+    // A saved id for an achievement that no longer exists is dropped
+    // quietly rather than refused -- reloading old data should not
+    // crash just because a definition's own history changed underneath
+    // it, unlike a live unlock() call with a typo'd id.
+    var stale = achievements(defs, ["first_blood", "retired_achievement"]);
+    print("a stale saved id is quietly dropped on reload:", len(stale.unlocked) == 1);
+
+    try {
+        achievements([{id: "a", name: "A", description: ""}, {id: "a", name: "Also A", description: ""}]);
+    } catch (e) {
+        print("duplicate ids are refused:", e.kind);
+    }
+    try {
+        achievements([]);
+    } catch (e) {
+        print("no definitions at all is refused:", e.kind);
+    }
+}
