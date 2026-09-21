@@ -1,0 +1,94 @@
+// Frame-sequence playback for a sprite sheet: given a horizontal strip of
+// same-sized frames and how long each should show, this tracks elapsed
+// time and reports which frame is showing right now.
+//
+// Why a library and not a built-in: which frame is showing at a given
+// moment is index arithmetic on elapsed time -- floor(elapsed /
+// frameTime), then wrapped, clamped, or bounced depending on the playback
+// mode -- the same four-lines-a-program-should-write-itself reasoning
+// `gameOverlap`'s own doc comment gives for not promoting simple
+// arithmetic to a built-in. `gameDraw`'s `srcX`/`srcY`/`srcWidth`/
+// `srcHeight` already do the actual cropping (see game_spritesheet.mrt);
+// this only ever decides which frame index to hand it.
+
+var MODES = ["loop", "once", "pingpong"];
+
+struct Animation {
+    frameCount, frameWidth, frameHeight, frameTime, mode, elapsed = 0, finished = false;
+
+    // Advance playback by `dt` seconds. Does nothing once a "once"
+    // animation has finished, so elapsed does not grow without bound in a
+    // game that keeps calling update() long after the last frame showed.
+    func update(dt) {
+        if (this.finished) { return; }
+        this.elapsed += dt;
+    }
+
+    // Which frame is showing right now, 0-based.
+    func frame() {
+        var total = floor(this.elapsed / this.frameTime);
+        if (this.mode == "loop") {
+            return total % this.frameCount;
+        }
+        if (this.mode == "once") {
+            if (total >= this.frameCount) {
+                this.finished = true;
+                return this.frameCount - 1;
+            }
+            return total;
+        }
+        // pingpong: 0, 1, ..., N-1, N-2, ..., 1, 0, 1, ...
+        if (this.frameCount == 1) { return 0; }
+        var period = 2 * (this.frameCount - 1);
+        var index = total % period;
+        if (index < this.frameCount) { return index; }
+        return period - index;
+    }
+
+    // `{srcX, srcY, srcWidth, srcHeight}`, ready to splice into gameDraw's
+    // options object to crop the current frame out of the strip.
+    func region() {
+        return {
+            srcX: this.frame() * this.frameWidth,
+            srcY: 0,
+            srcWidth: this.frameWidth,
+            srcHeight: this.frameHeight
+        };
+    }
+
+    // Back to the first frame, and playing again if it had finished.
+    func restart() {
+        this.elapsed = 0;
+        this.finished = false;
+    }
+}
+
+// `mode` is `"loop"` (the default), `"once"` (stops on the last frame and
+// sets `.finished`), or `"pingpong"` (plays forward then back, forever).
+export func animation(frameCount, frameWidth, frameHeight, frameTime, mode = "loop") {
+    if (frameCount < 1 || frameCount != floor(frameCount)) {
+        throw {
+            kind: "ValueError",
+            message: "animation() needs at least one whole frame, not ${frameCount}."
+        };
+    }
+    if (frameWidth <= 0 || frameHeight <= 0) {
+        throw {
+            kind: "ValueError",
+            message: "animation() needs a positive frame size, not ${frameWidth}x${frameHeight}."
+        };
+    }
+    if (frameTime <= 0) {
+        throw {
+            kind: "ValueError",
+            message: "animation() needs a positive frame time, not ${frameTime}."
+        };
+    }
+    if (!has(MODES, mode)) {
+        throw {
+            kind: "ValueError",
+            message: "animation(): unknown mode \"${mode}\"; expected \"loop\", \"once\" or \"pingpong\"."
+        };
+    }
+    return Animation(frameCount, frameWidth, frameHeight, frameTime, mode);
+}

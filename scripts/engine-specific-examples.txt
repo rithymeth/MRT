@@ -10,6 +10,7 @@
 ai_linear.mrt
 ai_net.mrt
 game_shapes.mrt
+game_animation.mrt
 game_bounce.mrt
 game_sprites.mrt
 game_collide.mrt
