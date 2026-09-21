@@ -1713,6 +1713,61 @@ There is no `gameCircleSweep`: a fast-moving circle passing through a thin
 wall on no single frame is the same bug `gameSweep` exists for, and a
 program that needs it can bound the circle in a box and sweep that.
 
+#### Pathfinding: the shortest route through a grid
+
+| Call | Result |
+|------|--------|
+| `gamePathfind(grid, startX, startY, goalX, goalY)` | The shortest walkable route from one cell to another, as an array of `{x, y}` waypoints including both ends, or `null` if none exists. |
+
+`grid` is an array of rows, each an array of `true`/`false` cells — the
+same shape `gameDrawTilemap`'s own `tiles` array takes, so a level that
+already has a grid for drawing does not need a second one for finding a
+way across it:
+
+```mrt
+var grid = [
+    [true,  true,  true],
+    [true,  false, true],
+    [true,  true,  true]
+];
+var route = gamePathfind(grid, 0, 0, 2, 2);
+for (step in route) { print(step.x, step.y); }
+```
+
+This is a different kind of built-in than `gameOverlap`'s: testing whether
+two boxes overlap is four lines a program should write itself, but finding
+the *shortest* route needs a priority queue and a record of the cheapest
+way found to each cell so far — easy to get almost right in an interpreted
+language, and slow even when it is exactly right. That is worth an engine
+doing once, the same reasoning that justifies `gameSweep` alongside a
+`gameOverlap` a program is expected to write on its own.
+
+Movement is **four-directional only**, at a uniform cost of one step per
+cell. Diagonal movement raises the question of whether a path may cut the
+corner between two blocked cells, and answering that one way or the other
+is a decision that belongs to a level's own design, not one this built-in
+should make by picking a default silently.
+
+A start or goal that is *blocked but inside the grid* answers `null` —
+asking for a route to or from a wall is an ordinary question with an
+ordinary answer. A start or goal *outside the grid entirely* is refused
+instead, the same reasoning `gameDrawTilemap` refuses a tile index outside
+its sheet: a level authored by hand is exactly where a typo'd coordinate is
+likely, and `null` there would read as "no route" rather than "you asked
+about a cell that does not exist."
+
+```mrt
+try {
+    gamePathfind(grid, 99, 99, 0, 0);
+} catch (e) {
+    print(e.message); // names the coordinate and the grid's real size
+}
+```
+
+Like collision, this needs no screen: a route is arithmetic on an array of
+booleans, and a program planning a level or testing an opponent's routing
+headlessly never has to open a framebuffer to do it.
+
 #### Sprites are offscreen surfaces, addressed by number
 
 A sprite is drawn once and stamped many times. `gameSurface` makes one and
