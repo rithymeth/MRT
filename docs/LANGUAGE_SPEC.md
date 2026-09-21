@@ -1461,6 +1461,47 @@ are scrolling it *with* are different operations, and conflating them would
 mean a sprite's own art shifts depending on where the player happens to be
 standing when it gets drawn.
 
+#### Smooth follow and screen shake
+
+`gameCamera` moves the camera to an exact position; getting it there
+smoothly, or rattling it after an impact, is arithmetic on that position
+over time — no screen access beyond the `gameCamera` call a program
+already makes, so `examples/lib/camera.mrt` computes a position for a
+program to hand to `gameCamera` itself, the same way a `Tween`'s own
+`.value()` is only ever handed to something else:
+
+```mrt
+import { cameraRig } from "./lib/camera.mrt";
+
+var rig = cameraRig(player.x, player.y);
+while (gameOpen()) {
+    rig.follow(player.x, player.y);
+    if (justHit) { rig.shake(8, 0.3); }
+    rig.update(gameDelta());
+
+    var view = rig.position();
+    gameCamera(view.x, view.y);
+    // ... draw the frame ...
+    gamePresent();
+}
+```
+
+`follow(x, y)` sets where the camera is heading; `update(dt)` closes part
+of the remaining distance each call rather than snapping there, so the
+camera trails a fast-moving target instead of locking rigidly to it.
+`snapTo(x, y)` moves both the target and the camera there immediately, for
+a level transition or a respawn where trailing would look wrong.
+
+`shake(strength, duration)` starts up to `strength` pixels of random
+jitter, decaying linearly to nothing over `duration` seconds; a shake
+already running is replaced rather than piled onto, the same rule
+`soundFade` follows for a live volume change. The jitter is rolled once
+per `update(dt)` and cached, not re-rolled on every read of `.position()`
+— otherwise a draw call and a debug print in the same frame would see the
+camera in two different places. `cameraRig`'s own `seed` (the same seed
+`random()` itself takes) makes a shake reproducible: two rigs given the
+same seed shake identically, which is what a deterministic replay needs.
+
 The font is 5x7, covering printable ASCII, and a character it has no glyph for
 draws as `?` rather than as nothing: text that silently loses characters reads
 as a bug in the program's own logic and sends its author looking in the wrong

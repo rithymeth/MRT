@@ -27,6 +27,7 @@ game_tilemap.mrt
 game_pathfind.mrt
 game_raycast.mrt
 game_camera.mrt
+game_camera_shake.mrt
 game_gamepad.mrt
 game_actions.mrt
 game_window.mrt

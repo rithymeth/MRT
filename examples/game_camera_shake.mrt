@@ -1,0 +1,62 @@
+// A camera that follows smoothly and shakes on impact, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md. examples/lib/camera.mrt
+// itself is not one -- it computes a position, and only this example is
+// engine-specific because it hands that position to gameCamera.
+
+import { cameraRig } from "./lib/camera.mrt";
+
+func main() {
+    gameInit(160, 40, "MRT Camera Shake");
+    gameClear(gameColor(10, 12, 20));
+
+    var rig = cameraRig(0, 0, 1);
+    print("starts already at its target:", rig.position().x == 0 && rig.position().y == 0);
+
+    // Smooth follow moves toward the target but does not snap there in
+    // one step.
+    rig.follow(100, 0);
+    rig.update(0.1);
+    var afterOneStep = rig.position().x;
+    print("moved toward the target without snapping there:", afterOneStep > 0 && afterOneStep < 100);
+
+    // Given enough real time, it settles close to the target.
+    for (var i = 0; i < 60; i = i + 1) { rig.update(0.1); }
+    print("settles near the target after enough time:", abs(rig.position().x - 100) < 1);
+
+    // snapTo lands exactly, with no smoothing lag -- for a level
+    // transition or a respawn.
+    rig.snapTo(50, 20);
+    print("snapTo lands exactly:", rig.position().x == 50 && rig.position().y == 20);
+
+    // A shake never exceeds its own strength, and decays to nothing by
+    // the time its duration has passed.
+    rig.shake(8, 0.5);
+    var withinBounds = true;
+    for (var i = 0; i < 10; i = i + 1) {
+        rig.update(0.05);
+        var offsetX = rig.position().x - 50;
+        var offsetY = rig.position().y - 20;
+        if (abs(offsetX) > 8 || abs(offsetY) > 8) { withinBounds = false; }
+    }
+    print("shake never exceeds its own strength:", withinBounds);
+    print("shake has fully decayed once its duration passes:", rig.position().x == 50 && rig.position().y == 20);
+
+    // Two rigs given the same seed shake identically -- what a
+    // deterministic replay needs.
+    var a = cameraRig(0, 0, 42);
+    var b = cameraRig(0, 0, 42);
+    a.shake(5, 1);
+    b.shake(5, 1);
+    a.update(0.1);
+    b.update(0.1);
+    print("the same seed shakes identically:", a.position().x == b.position().x && a.position().y == b.position().y);
+
+    var here = rig.position();
+    gameCamera(floor(here.x), floor(here.y));
+    gameRect(floor(here.x), floor(here.y), 4, 4, gameColor(230, 200, 60));
+
+    gameSave("game_camera_shake.png");
+    print("wrote game_camera_shake.png");
+}
