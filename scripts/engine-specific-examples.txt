@@ -27,6 +27,7 @@ game_pathfind.mrt
 game_raycast.mrt
 game_camera.mrt
 game_gamepad.mrt
+game_actions.mrt
 game_window.mrt
 net_fetch.mrt
 net_multiplayer.mrt

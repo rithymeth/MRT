@@ -2252,6 +2252,47 @@ does not require a window to be open either, though `gameGamepadButtonPressed`
 only means "since the last frame" once something is actually calling
 `gamePresent()` to mark where one frame ends and the next begins.
 
+#### Named input actions
+
+A game asking `gameKeyDown("Space")` at every call site has to change every
+one of them to add a second binding, or to let a player remap a key. An
+action is nothing but a list of keys and buttons that all mean the same
+thing, and asking whether any of them is active is a loop over
+`gameKeyDown`/`gameGamepadButtonDown` — the same "four lines, a program
+should write it" reasoning `gameOverlap`'s own doc comment gives —
+so `examples/lib/actions.mrt` is a library built on those built-ins, not a
+new one:
+
+```mrt
+import { actionMap } from "./lib/actions.mrt";
+
+var actions = actionMap();
+actions.bindKey("jump", "Space");
+actions.bindButton("jump", "A"); // any connected pad
+
+while (gameOpen()) {
+    if (actions.pressed("jump")) { jump(); }
+    gamePresent();
+}
+```
+
+`bindKey(action, key)` and `bindButton(action, button, gamepad)` add a
+binding without disturbing what an action already has — bind both a key
+and a gamepad button to the same action, and either being active is
+enough. `gamepad`, left out, matches a button pressed on *any* connected
+pad, which is what a local single-player game almost always wants: it
+should not matter which one the player picked up. `down(action)` and
+`pressed(action)` mirror `gameKeyDown`/`gameKeyPressed`, but for the whole
+list at once. An action nobody bound anything to is simply never active,
+the same answer `gameKeyDown` gives a key name it does not recognise —
+not an error to catch.
+
+`rebindKey`/`rebindButton` clear whatever an action had and bind it to
+just the one thing given — the shape a "press a key to remap" settings
+screen needs: catch the next `gameKeyPressed`/`gameGamepadButtonPressed`
+and hand it straight to `rebindKey`/`rebindButton`. `unbind(action)`
+clears an action entirely.
+
 Conventions, fixed once: Y points **down** from a top-left origin; a colour
 channel outside 0–255 is an error rather than a clamp; coordinates may be
 fractional and are floored, since a moving thing is rarely on a whole pixel;
