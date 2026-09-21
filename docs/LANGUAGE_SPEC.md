@@ -1440,6 +1440,8 @@ func main() {
 | `gameSaveData(path, value)` / `gameLoadData(path)` | Saves a plain value to a file, or reads one back. Needs no screen. |
 | `gameCamera(x, y)` | Moves the camera to a position in world pixels. `{0, 0}` until called. |
 | `gameCameraPosition()` | Where the camera currently is: `{x, y}`. |
+| `gameCameraZoom(zoom)` | Scales the camera's view. `1.0` until called; must be positive and finite. |
+| `gameCameraZoomLevel()` | The camera's current zoom. |
 
 Every position above is a **world** position, not a screen position, and the
 camera is the difference between the two: `gameCamera(x, y)` says which world
@@ -1460,6 +1462,41 @@ where the camera is pointed — scrolling the world and drawing the picture you
 are scrolling it *with* are different operations, and conflating them would
 mean a sprite's own art shifts depending on where the player happens to be
 standing when it gets drawn.
+
+#### Camera zoom
+
+`gameCameraZoom(zoom)` scales the camera's view: `2.0` shows the world
+twice as large — half as much of it, each world pixel twice as many
+screen ones — and `0.5` the opposite. It composes with `gameCamera`
+rather than replacing it: a position is shifted by the camera and *then*
+scaled by the zoom, `screen = (world - camera) * zoom`, so panning and
+zooming stack the way a real camera's position and lens both affect the
+same shot.
+
+```mrt
+gameCamera(player.x - gameWidth() / (2 * zoom), player.y - gameHeight() / (2 * zoom));
+gameCameraZoom(zoom);
+```
+
+Zooming in makes everything bigger, not just farther apart: a shape's own
+size scales along with its position, so `gameRect`, `gameCircle`,
+`gameRectOutline`, `gameCircleOutline`, `gameText` and a drawn sprite
+(`gameDraw`) all come out proportionally larger at `zoom: 2` than at
+`zoom: 1`, the same picture just magnified. `gameLine` needs no separate
+size scaling — both its endpoints already move and scale individually,
+which reproduces a scaled line on its own. Tilemap tiles
+(`gameDrawTilemap`) and particles (`gameParticleDraw`) do **not** scale
+with zoom: both stay at their own fixed pixel size regardless of `zoom`,
+a deliberate scope boundary rather than an oversight, left for a future
+extension of this built-in rather than half-implemented now. `zoom`
+must be positive and finite — zero, negative or infinite has no picture
+to show for it, the same reasoning a non-positive width or height gets
+at `gameInit`.
+
+Like the camera's own position, zoom only ever reaches the screen: a
+sprite pre-rendered while `gameTarget`ed away from it draws in that
+sprite's own local, unscaled space, unaffected by whatever zoom the
+screen itself is set to.
 
 #### Smooth follow and screen shake
 

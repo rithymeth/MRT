@@ -1,0 +1,67 @@
+// Zooming the camera in and out, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// gameCameraZoom(zoom) scales distance from the camera the same way
+// gameCamera(x, y) already shifts it: screen = (world - camera) * zoom.
+// A shape's own size scales along with its position -- gameRect,
+// gameCircle and the rest of the shape built-ins, plus a drawn sprite's
+// own size -- so a rectangle twice as far from the camera's reach is
+// also drawn at twice the size, not just twice the distance. Tilemap
+// tiles and particles do not scale with zoom in this version; see
+// "Camera zoom" in docs/LANGUAGE_SPEC.md for that boundary.
+
+func main() {
+    gameInit(20, 20, "MRT Camera Zoom");
+    gameClear(gameColor(10, 12, 20));
+    var mark = gameColor(255, 210, 80);
+
+    print("zoom starts at:", gameCameraZoomLevel());
+
+    // A 2x2 rectangle, zoomed in 3x, occupies a 6x6 block of screen
+    // pixels starting where its own corner lands. World (1, 1) is
+    // outside the rectangle's own 2x2 footprint but its zoomed screen
+    // position is still inside that 6x6 block -- true only if the
+    // *size*, not just the position, scaled along with it.
+    gameCameraZoom(3);
+    print("zoom set to:", gameCameraZoomLevel());
+    gameRect(0, 0, 2, 2, mark);
+    print("the rectangle's own corner:", gameColorAt(0, 0) == mark);
+    print("just inside its zoomed footprint:", gameColorAt(1, 1) == mark);
+    print("just outside it:", gameColorAt(2, 2) == mark);
+
+    // Panning and zooming compose: screen = (world - camera) * zoom, not
+    // one undoing the other.
+    gameClear(gameColor(10, 12, 20));
+    gameCamera(5, 5);
+    gamePixel(7, 7, mark);
+    print("camera and zoom compose:", gameColorAt(7, 7) == mark);
+    gameCamera(0, 0);
+
+    // A sprite pre-rendered while gameTarget'ed away from the screen is
+    // unaffected by the camera's zoom, the same rule its position
+    // already follows -- pre-rendering works in that sprite's own local,
+    // unscaled space.
+    var stamp = gameSurface(2, 2);
+    gameTarget(stamp);
+    gameClear(mark);
+    gameTarget(0);
+
+    // Drawing that same 2x2 sprite back onto the screen at this zoom
+    // does scale, though -- to a 6x6 block, the same as gameRect above.
+    gameClear(gameColor(10, 12, 20));
+    gameDraw(stamp, 0, 0);
+    print("a drawn sprite scales with zoom too:", gameColorAt(1, 1) == mark);
+    print("...and stops at the same 6x6 boundary:", gameColorAt(2, 2) == mark);
+
+    gameCameraZoom(1);
+    try {
+        gameCameraZoom(0);
+    } catch (e) {
+        print("a non-positive zoom is refused:", e.kind);
+    }
+
+    gameSave("game_camera_zoom.png");
+    print("wrote game_camera_zoom.png");
+}

@@ -70,6 +70,16 @@ pub struct Screen {
     /// local space regardless of where the camera happens to be pointed.
     pub camera_x: i32,
     pub camera_y: i32,
+    /// How far in the camera is zoomed: `1.0` (its value until
+    /// `gameCameraZoom` is called) shows the world at its own pixel size,
+    /// `2.0` shows it twice as large -- half as much of it, each world
+    /// pixel twice as many screen ones -- and `0.5` the opposite.
+    ///
+    /// Applied to the screen only, the same rule `camera_x`/`camera_y`
+    /// already follow: a sprite pre-rendered while `gameTarget`ed away
+    /// from the screen is drawn in its own local space regardless of
+    /// where the camera is pointed or how far it is zoomed.
+    pub camera_zoom: f64,
     /// Every live particle: sparks, smoke, an explosion's debris.
     ///
     /// One pool, not addressed by id the way a sprite is -- there is nothing
@@ -124,17 +134,41 @@ impl Screen {
 
     /// A world position, translated into a position on the current target.
     ///
-    /// The subtraction is plain integer arithmetic, not floating point,
-    /// because both operands already went through `coord`'s floor: the
-    /// camera is a coordinate like any other and is floored the same way
-    /// when it is set, so there is no fractional part left for a second
-    /// rounding step to disagree with the first one about.
+    /// The distance from the camera is scaled by `camera_zoom` before it is
+    /// floored to a pixel -- at the default zoom of `1.0` that multiply
+    /// changes nothing (an exact integer times `1.0`, floored, is the same
+    /// integer back), so a program that never calls `gameCameraZoom` sees
+    /// exactly the plain subtraction this did before zoom existed.
     pub fn from_world(&self, x: i32, y: i32) -> (i32, i32) {
         if self.target == 0 {
-            (x - self.camera_x, y - self.camera_y)
+            let zoom = self.camera_zoom;
+            (
+                (((x - self.camera_x) as f64) * zoom).floor() as i32,
+                (((y - self.camera_y) as f64) * zoom).floor() as i32,
+            )
         } else {
             (x, y)
         }
+    }
+
+    /// The camera's own zoom, but only while drawing onto the screen --
+    /// `1.0` (no scaling at all) everywhere else, the same target check
+    /// `from_world` already makes.
+    fn zoom_factor(&self) -> f64 {
+        if self.target == 0 {
+            self.camera_zoom
+        } else {
+            1.0
+        }
+    }
+
+    /// A size in world pixels, scaled by the camera's zoom the same way
+    /// `from_world` scales a position -- what `gameRect`, `gameCircle` and
+    /// the rest of the shape built-ins use so a shape drawn twice as far
+    /// from the camera's reach is also drawn at twice the size, not just
+    /// twice the distance.
+    pub fn scale_size(&self, size: i32) -> i32 {
+        (size as f64 * self.zoom_factor()).floor() as i32
     }
 
     /// Check an id names a live sprite, and say why not if it does not.
@@ -255,6 +289,7 @@ pub fn init(width: usize, height: usize, title: &str) -> Result<Screen, Signal> 
         target: 0,
         camera_x: 0,
         camera_y: 0,
+        camera_zoom: 1.0,
         particles: mrt_game::particles::Particles::new(),
         #[cfg(feature = "window")]
         window: None,
@@ -342,6 +377,27 @@ pub mod draw {
         Ok(Value::object(map))
     }
 
+    /// Set how far in the camera is zoomed. Must be a positive, finite
+    /// number -- zero or negative has no picture to show for it (nothing,
+    /// or everything mirrored and inverted), the same reasoning a
+    /// non-positive width or height gets at `gameInit`.
+    pub fn set_camera_zoom(s: &mut Option<Screen>, zoom: f64) -> Result<Value, Signal> {
+        if !zoom.is_finite() || zoom <= 0.0 {
+            return Err(value_error(format!(
+                "gameCameraZoom() needs a positive, finite zoom, not {zoom}."
+            )));
+        }
+        let screen = screen(s, "gameCameraZoom")?;
+        screen.camera_zoom = zoom;
+        Ok(Value::Null)
+    }
+
+    /// The camera's current zoom: `1.0` until `gameCameraZoom` changes it.
+    pub fn camera_zoom_level(s: &Option<Screen>) -> Result<Value, Signal> {
+        let screen = s.as_ref().ok_or_else(|| no_screen("gameCameraZoomLevel"))?;
+        Ok(Value::Number(screen.camera_zoom))
+    }
+
     pub fn pixel(s: &mut Option<Screen>, x: i32, y: i32, c: Color) -> Result<Value, Signal> {
         let screen = screen(s, "gamePixel")?;
         let (x, y) = screen.from_world(x, y);
@@ -359,6 +415,7 @@ pub mod draw {
     ) -> Result<Value, Signal> {
         let screen = screen(s, "gameRect")?;
         let (x, y) = screen.from_world(x, y);
+        let (w, h) = (screen.scale_size(w), screen.scale_size(h));
         screen.target_mut().fill_rect(x, y, w, h, c);
         Ok(Value::Null)
     }
@@ -375,6 +432,11 @@ pub mod draw {
     ) -> Result<Value, Signal> {
         let screen = screen(s, "gameRectOutline")?;
         let (x, y) = screen.from_world(x, y);
+        let (w, h, t) = (
+            screen.scale_size(w),
+            screen.scale_size(h),
+            screen.scale_size(t),
+        );
         screen.target_mut().stroke_rect(x, y, w, h, t, c);
         Ok(Value::Null)
     }
@@ -403,6 +465,7 @@ pub mod draw {
     ) -> Result<Value, Signal> {
         let screen = screen(s, "gameCircle")?;
         let (x, y) = screen.from_world(x, y);
+        let r = screen.scale_size(r);
         screen.target_mut().fill_circle(x, y, r, c);
         Ok(Value::Null)
     }
@@ -417,6 +480,7 @@ pub mod draw {
     ) -> Result<Value, Signal> {
         let screen = screen(s, "gameText")?;
         let (x, y) = screen.from_world(x, y);
+        let scale = screen.scale_size(scale);
         screen.target_mut().text(x, y, text, scale, c);
         Ok(Value::Null)
     }
@@ -430,6 +494,7 @@ pub mod draw {
     ) -> Result<Value, Signal> {
         let screen = screen(s, "gameCircleOutline")?;
         let (x, y) = screen.from_world(x, y);
+        let r = screen.scale_size(r);
         screen.target_mut().stroke_circle(x, y, r, c);
         Ok(Value::Null)
     }
@@ -1385,6 +1450,104 @@ mod tests {
                    print(gameColorAt(103, 103) == red);"#
             ),
             "true\ntrue"
+        );
+    }
+
+    #[test]
+    fn zoom_defaults_to_one_and_reports_back_what_was_set() {
+        assert_eq!(
+            drawing(
+                r#"print(gameCameraZoomLevel());
+                   gameCameraZoom(2.5);
+                   print(gameCameraZoomLevel());"#
+            ),
+            "1\n2.5"
+        );
+    }
+
+    #[test]
+    fn a_non_positive_zoom_is_refused() {
+        // Non-finite is guarded against too (see set_camera_zoom), but MRT
+        // itself has no way to construct one -- every arithmetic op that
+        // would produce infinity or NaN is already its own catchable
+        // error (division by zero, pow() overflowing), so there is no
+        // source-level program that could reach that branch to test here.
+        assert_eq!(
+            drawing("gameCameraZoom(0);"),
+            "Runtime Error: gameCameraZoom() needs a positive, finite zoom, not 0. [line 1]"
+        );
+        assert_eq!(
+            drawing("gameCameraZoom(-1);"),
+            "Runtime Error: gameCameraZoom() needs a positive, finite zoom, not -1. [line 1]"
+        );
+    }
+
+    #[test]
+    fn zoom_scales_a_shape_position_and_size_together() {
+        // A 2x2 rect at zoomed-in 3x should occupy a 6x6 block of screen
+        // pixels starting where its own corner lands -- world (1, 1) is
+        // outside the rect's own 2x2 footprint but its zoomed screen
+        // position (3, 3) is still inside that 6x6 block, which is only
+        // true if the *size*, not just the position, scaled with it.
+        assert_eq!(
+            drawing(
+                r#"var red = gameColor(255, 0, 0);
+                   gameCameraZoom(3);
+                   gameRect(0, 0, 2, 2, red);
+                   print(gameColorAt(0, 0) == red, gameColorAt(1, 1) == red);
+                   print(gameColorAt(2, 0) == red, gameColorAt(2, 2) == red);"#
+            ),
+            "true true\nfalse false"
+        );
+    }
+
+    #[test]
+    fn zoom_composes_with_the_camera() {
+        // screen = (world - camera) * zoom: moved and scaled together, not
+        // one undoing the other.
+        assert_eq!(
+            drawing(
+                r#"var red = gameColor(255, 0, 0);
+                   gameCamera(5, 5);
+                   gameCameraZoom(2);
+                   gamePixel(7, 7, red);
+                   print(gameColorAt(7, 7) == red);"#
+            ),
+            "true"
+        );
+    }
+
+    #[test]
+    fn zoom_never_reaches_a_sprite_being_drawn_on() {
+        // The same rule the camera's position already follows: pre-rendering
+        // into a sprite works in that sprite's own local, unscaled space.
+        assert_eq!(
+            drawing(
+                r#"var red = gameColor(255, 0, 0);
+                   gameCameraZoom(5);
+                   var s = gameSurface(4, 4);
+                   gameTarget(s);
+                   gameRect(0, 0, 2, 2, red);
+                   print(gameColorAt(1, 1) == red, gameColorAt(2, 2) == red);"#
+            ),
+            "true false"
+        );
+    }
+
+    #[test]
+    fn zoom_scales_a_drawn_sprite_too() {
+        assert_eq!(
+            drawing(
+                r#"var red = gameColor(255, 0, 0);
+                   var s = gameSurface(2, 2);
+                   gameTarget(s);
+                   gameClear(red);
+                   gameTarget(0);
+                   gameCameraZoom(3);
+                   gameDraw(s, 0, 0);
+                   print(gameColorAt(1, 1) == red, gameColorAt(2, 2) == red);"#
+            ),
+            "true false"
         );
     }
 
@@ -2517,6 +2680,7 @@ pub mod sprites {
                 )));
             }
         }
+        let zoom = screen.zoom_factor();
         let (x, y) = screen.from_world(x, y);
         // Lifted out and put back rather than cloned: the source and the
         // target are two entries of one Vec, and this is the cheap way to
@@ -2529,8 +2693,8 @@ pub mod sprites {
             x,
             y,
             transform.angle,
-            transform.scale_x,
-            transform.scale_y,
+            transform.scale_x * zoom,
+            transform.scale_y * zoom,
             transform.anchor_x,
             transform.anchor_y,
             transform.region,
