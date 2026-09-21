@@ -1,0 +1,64 @@
+// A ranked, capped high-score list, from MRT source. Needs no engine:
+// sorting and capping a plain array is ordinary MRT, the same as
+// timers.mrt and replay.mrt.
+
+import { leaderboard } from "./lib/leaderboard.mrt";
+
+func main() {
+    var board = leaderboard(3);
+    print("starts empty:", len(board.entries) == 0);
+    print("anything qualifies while there is room:", board.qualifies(1));
+
+    print("Alice's rank:", board.add("Alice", 100));
+    print("Bob's rank:", board.add("Bob", 200));
+    print("Carol's rank:", board.add("Carol", 50));
+    print("sorted highest first:", board.entries == [
+        {name: "Bob", score: 200},
+        {name: "Alice", score: 100},
+        {name: "Carol", score: 50}
+    ]);
+
+    // Full now (capacity 3) -- a score below the current lowest does not
+    // qualify, and adding it anyway is refused rather than silently
+    // trimmed back off.
+    print("a low score no longer qualifies once full:", !board.qualifies(10));
+    print("adding it anyway is refused:", board.add("Dave", 10) == null);
+    print("the board is unchanged:", len(board.entries) == 3 && board.entries[2].name == "Carol");
+
+    // A high enough score bumps the current lowest entry off the list
+    // entirely, not just past the visible top few.
+    print("a high enough score still qualifies:", board.qualifies(150));
+    print("Eve lands in second place:", board.add("Eve", 150) == 1);
+    print("Carol -- now the lowest -- was bumped off the list:", board.entries == [
+        {name: "Bob", score: 200},
+        {name: "Eve", score: 150},
+        {name: "Alice", score: 100}
+    ]);
+
+    // .entries is plain data -- exactly what a save file would hold, and
+    // exactly what a reload hands back to leaderboard() as its own
+    // second argument.
+    var saved = board.entries;
+    var reloaded = leaderboard(3, saved);
+    print("reloading from saved entries reproduces the same board:", reloaded.entries == board.entries);
+
+    // A capacity smaller than what was saved re-trims correctly, rather
+    // than trusting the file to already match whatever capacity this run
+    // asked for.
+    var smaller = leaderboard(2, saved);
+    print("reloading with a smaller capacity re-trims it:", smaller.entries == [
+        {name: "Bob", score: 200},
+        {name: "Eve", score: 150}
+    ]);
+
+    try {
+        leaderboard(0);
+    } catch (e) {
+        print("a non-positive capacity is refused:", e.kind);
+    }
+    try {
+        leaderboard(2.5);
+    } catch (e) {
+        print("a fractional capacity is refused:", e.kind);
+    }
+}

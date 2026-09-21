@@ -2218,6 +2218,39 @@ decides what "no save yet" means for itself, in a `catch`, the way the
 example above does — this is exactly the case `gameLoadData` is written to
 support, not an edge case bolted on afterward.
 
+#### High scores: a ranked, capped list
+
+Keeping a leaderboard sorted, and trimmed to the best handful of entries,
+is ordinary array and `sort` arithmetic — the same "a program can write
+it and should" reasoning `gameOverlap`'s own doc comment gives elsewhere.
+`examples/lib/leaderboard.mrt` does exactly that, and leaves `.entries`
+as a plain array so it is ready for `gameSaveData`/`gameLoadData` with no
+wrapper of its own:
+
+```mrt
+import { leaderboard } from "./lib/leaderboard.mrt";
+
+var saved = [];
+try { saved = gameLoadData("scores.json"); } catch (e) { /* no scores yet */ }
+var board = leaderboard(10, saved);
+
+var rank = board.add(playerName, score);
+if (rank != null) { print("new high score! rank ${rank + 1}"); }
+gameSaveData("scores.json", board.entries);
+```
+
+`add(name, score)` keeps the list sorted highest first and capped at
+whatever capacity was asked for, returning the rank the entry landed on
+(0-based), or `null` if it did not make the cut — not kept, not an error,
+the same rule a particle spawned with no life left already gets.
+`qualifies(score)` answers the same question without adding anything, for
+a "new high score!" check before the run is even over. Reloading a
+leaderboard adds each saved entry back through `add()` itself, rather
+than trusting the file to already be sorted and within capacity — so a
+leaderboard whose capacity changed since it was last saved, or a save
+file edited by hand, still comes out correctly ranked and trimmed rather
+than however it happened to be written.
+
 #### The loop belongs to the program
 
 A windowing library usually wants the loop: you hand it a callback and it
