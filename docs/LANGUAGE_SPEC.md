@@ -2372,6 +2372,55 @@ existed is not an error. `isAlive(id)` and `get(id)` (which returns
 `null` for a dead id) let a caller check before touching one; `counts()`
 returns `{live, capacity}` for a quick "23/64 bullets in flight" readout.
 
+#### Finite state machines
+
+`examples/lib/fsm.mrt`'s `fsm(states, initial)` is a finite state
+machine for AI or player states — "idle" to "walking" to "attacking" and
+back, a boss's phases, a menu's screens — ordinary object bookkeeping,
+the same "a program can write it and should" reasoning `gameOverlap`'s
+own doc comment gives elsewhere:
+
+```mrt
+import { fsm } from "./lib/fsm.mrt";
+
+var player = fsm([
+    {
+        name: "idle",
+        on: {move: "walking", attack: "attacking"}
+    },
+    {
+        name: "walking",
+        on: {stop: "idle", attack: "attacking"},
+        enter: func(m) { anim.play("walk"); },
+        exit: func(m) { anim.stop(); }
+    },
+    {
+        name: "attacking",
+        on: {finish: "idle"},
+        enter: func(m) { anim.play("attack"); }
+    }
+], "idle");
+
+if (gameKeyDown("Space")) { player.fire("attack"); }
+```
+
+A state is `{name, on, enter, exit}`: only `name` is required. `on` maps
+an event name to the state it leads to; `enter`/`exit`, called with the
+machine itself, let a state start something (an animation, a timer) when
+it becomes current and clean it up when it stops being current, without
+the rest of the program needing to know. `fire(event)` looks up the
+current state's `on` for `event`: if there is no entry, nothing happens
+and it returns `false` — "jump" fired while already "attacking" is the
+ordinary case for a state machine, not a bug, the same way `gameKeyDown`
+gives no error for a key that is not held. If there is one, the current
+state's `exit()` runs, `current` updates, and the new state's `enter()`
+runs, in that order, and it returns `true`. `can(event)` answers the
+same question without firing anything, for a UI that wants to grey out
+an unavailable action. Construction validates state names are unique,
+`initial` names one of them, and every `on` target names a real state,
+then runs `initial`'s own `enter()` before returning — the same
+transition every other state gets, run once up front.
+
 #### The loop belongs to the program
 
 A windowing library usually wants the loop: you hand it a callback and it
