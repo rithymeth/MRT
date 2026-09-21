@@ -116,6 +116,11 @@ const NAMES: &[&str] = &[
     "gameText",
     "gameTextWidth",
     "gameTextHeight",
+    "gameFontLoad",
+    "gameFontFree",
+    "gameDrawText",
+    "gameFontTextWidth",
+    "gameFontTextHeight",
     "gameSave",
     "gameSaveData",
     "gameLoadData",
@@ -602,6 +607,74 @@ pub fn call(interp: &mut Interpreter, name: &str, args: Vec<Value>) -> Eval {
             } else {
                 mrt_game::Surface::text_height(text, scale) as f64
             }))
+        }
+        "gameFontLoad" => {
+            exactly(
+                &args,
+                4,
+                "gameFontLoad() takes a path, a character width, a character height, and the character set.",
+            )?;
+            let Value::Str(path) = &args[0] else {
+                return Err(type_error(format!(
+                    "gameFontLoad() needs a path, not {}.",
+                    type_name(&args[0])
+                )));
+            };
+            let Value::Str(chars) = &args[3] else {
+                return Err(type_error(format!(
+                    "gameFontLoad() needs the character set to be a string, not {}.",
+                    type_name(&args[3])
+                )));
+            };
+            let path = path.clone();
+            let chars = chars.clone();
+            crate::game::fonts::load(&mut interp.screen, &path, &args[1], &args[2], &chars)
+        }
+        "gameFontFree" => {
+            one(&args, "gameFontFree")?;
+            crate::game::fonts::free(
+                &mut interp.screen,
+                whole(&args[0], "gameFontFree", "the font")?,
+            )
+        }
+        "gameDrawText" => {
+            exactly(
+                &args,
+                5,
+                "gameDrawText() takes a font, x, y, the text, and a scale.",
+            )?;
+            let id = whole(&args[0], "gameDrawText", "the font")?;
+            let x = coord(&args[1], "gameDrawText", "x")?;
+            let y = coord(&args[2], "gameDrawText", "y")?;
+            let Value::Str(text) = &args[3] else {
+                return Err(type_error(format!(
+                    "gameDrawText() needs the text to be a string, not {}.",
+                    type_name(&args[3])
+                )));
+            };
+            let text = text.clone();
+            let scale = coord(&args[4], "gameDrawText", "the scale")?;
+            crate::game::fonts::draw(&mut interp.screen, id, x, y, &text, scale)
+        }
+        "gameFontTextWidth" | "gameFontTextHeight" => {
+            exactly(
+                &args,
+                3,
+                format!("{name}() takes a font, the text, and a scale."),
+            )?;
+            let id = whole(&args[0], name, "the font")?;
+            let Value::Str(text) = &args[1] else {
+                return Err(type_error(format!(
+                    "{name}() needs the text to be a string, not {}.",
+                    type_name(&args[1])
+                )));
+            };
+            let scale = coord(&args[2], name, "the scale")?;
+            if name == "gameFontTextWidth" {
+                crate::game::fonts::text_width(&interp.screen, id, text, scale)
+            } else {
+                crate::game::fonts::text_height(&interp.screen, id, text, scale)
+            }
         }
         "gameSave" => {
             one(&args, "gameSave")?;

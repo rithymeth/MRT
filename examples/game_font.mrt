@@ -1,0 +1,76 @@
+// Loading a custom bitmap font, from MRT source.
+//
+// game* is an engine extension: only the Rust engines have these builtins.
+// See "Engine extensions" in docs/LANGUAGE_SPEC.md.
+//
+// gameText always works, needing no asset, but only ever in its own
+// built-in 5x7 look. gameFontLoad is for a game that wants its own pixel
+// art for text instead: any character set, any style, colour baked into
+// the glyphs themselves.
+//
+// This example draws its own font atlas so it needs no files beside it --
+// each cell a flat colour standing in for real glyph art, the same way
+// game_spritesheet.mrt stands a colour in for an animation frame. A real
+// atlas would be actual letterforms, drawn once in an image editor.
+
+var CHARS = "0123456789";
+var CELL = 6;
+
+func drawAtlas() {
+    var atlas = gameSurface(CELL * len(CHARS), CELL);
+    gameTarget(atlas);
+    for (var i = 0; i < len(CHARS); i = i + 1) {
+        gameRect(i * CELL, 0, CELL, CELL, gameColor(20 + i * 20, 60, 200 - i * 15));
+    }
+    gameTarget(0);
+    return atlas;
+}
+
+func main() {
+    gameInit(160, 60, "MRT Custom Font");
+    gameClear(gameColor(15, 15, 25));
+
+    // 1. Draw the atlas and save it as a real PNG -- gameFontLoad reads a
+    // file, the same way gameLoad does.
+    gameTarget(drawAtlas());
+    gameSave("game_font_atlas.png");
+    gameTarget(0);
+    print("wrote game_font_atlas.png");
+
+    // 2. Load it as a font: CELLxCELL cells, one per character in CHARS,
+    // read left to right.
+    var font = gameFontLoad("game_font_atlas.png", CELL, CELL, CHARS);
+
+    // 3. Draw a score with it, and check the right cell landed in the
+    // right place.
+    gameDrawText(font, 10, 10, "1200", 2);
+    print("the '1' cell's colour:", gameColorAt(10, 10) == gameColor(40, 60, 185));
+    print("the '2' cell's colour:", gameColorAt(10 + CELL * 2, 10) == gameColor(60, 60, 170));
+
+    // 4. Measuring needs no drawing -- useful for centring a label before
+    // it is placed.
+    print("width of \"1200\" at scale 2:", gameFontTextWidth(font, "1200", 2));
+    print("height at scale 2:", gameFontTextHeight(font, "1200", 2));
+
+    // 5. A character this font was never given a cell for is refused
+    // rather than skipped or drawn as something else.
+    try {
+        gameDrawText(font, 0, 0, "12:00", 1);
+    } catch (e) {
+        print("':' has no cell in this font:", e.kind);
+    }
+
+    // 6. Freeing a font is like freeing a surface: the id is never reused,
+    // and using it afterwards says so by name.
+    var spare = gameFontLoad("game_font_atlas.png", CELL, CELL, CHARS);
+    gameFontFree(spare);
+    try {
+        gameDrawText(spare, 0, 0, "0", 1);
+    } catch (e) {
+        print("a freed font says so:", e.kind);
+    }
+
+    gameDrawText(font, 10, 30, "1200", 2);
+    gameSave("game_font.png");
+    print("wrote game_font.png");
+}
