@@ -1,17 +1,19 @@
-from typing import List, Optional
-from .lexer import Token, TokenType
+from typing import List
+
 from .ast import *
 from .errors import MRTSyntaxError
+from .lexer import Token, TokenType
 
 # Maps each compound-assignment token to the plain binary operator it
 # desugars into, e.g. `x += 1` becomes `x = x + 1`.
 COMPOUND_ASSIGN_OPS = {
-    TokenType.PLUS_ASSIGN: (TokenType.PLUS, '+'),
-    TokenType.MINUS_ASSIGN: (TokenType.MINUS, '-'),
-    TokenType.MULTIPLY_ASSIGN: (TokenType.MULTIPLY, '*'),
-    TokenType.DIVIDE_ASSIGN: (TokenType.DIVIDE, '/'),
-    TokenType.MODULO_ASSIGN: (TokenType.MODULO, '%'),
+    TokenType.PLUS_ASSIGN: (TokenType.PLUS, "+"),
+    TokenType.MINUS_ASSIGN: (TokenType.MINUS, "-"),
+    TokenType.MULTIPLY_ASSIGN: (TokenType.MULTIPLY, "*"),
+    TokenType.DIVIDE_ASSIGN: (TokenType.DIVIDE, "/"),
+    TokenType.MODULO_ASSIGN: (TokenType.MODULO, "%"),
 }
+
 
 class Parser:
     def __init__(self, tokens: List[Token]):
@@ -38,7 +40,7 @@ class Parser:
                 statements.append(stmt)
         return statements
 
-    def declaration(self) -> Optional[Stmt]:
+    def declaration(self) -> Stmt | None:
         try:
             if self.match(TokenType.IMPORT):
                 return self.import_statement()
@@ -63,15 +65,18 @@ class Parser:
     def import_statement(self) -> Import:
         keyword = self.previous()
         if self.block_depth > 0:
-            raise self.error(keyword, "'import' is only allowed at the top level of a file.")
+            raise self.error(
+                keyword, "'import' is only allowed at the top level of a file."
+            )
 
         # `import * as name from "..."` -- one object holding every export.
         if self.match(TokenType.MULTIPLY):
             self.consume_word("as", "Expect 'as' after '*' in an import.")
             alias = self.consume(TokenType.IDENTIFIER, "Expect a name after 'as'.")
             self.consume_word("from", "Expect 'from' after the import name.")
-            specifier = self.consume(TokenType.STRING,
-                                     "Expect a module path string after 'from'.")
+            specifier = self.consume(
+                TokenType.STRING, "Expect a module path string after 'from'."
+            )
             self.consume_statement_end("Expect ';' after import.")
             return Import([], specifier, keyword, alias)
 
@@ -79,24 +84,32 @@ class Parser:
         names: List[tuple] = []
         if not self.check(TokenType.RBRACE):
             while True:
-                exported = self.consume(TokenType.IDENTIFIER, "Expect an imported name.")
+                exported = self.consume(
+                    TokenType.IDENTIFIER, "Expect an imported name."
+                )
                 local = exported
                 if self.match_word("as"):
-                    local = self.consume(TokenType.IDENTIFIER, "Expect a local name after 'as'.")
+                    local = self.consume(
+                        TokenType.IDENTIFIER, "Expect a local name after 'as'."
+                    )
                 names.append((exported, local))
                 if not self.match(TokenType.COMMA):
                     break
         self.consume(TokenType.RBRACE, "Expect '}' after imported names.")
 
         self.consume_word("from", "Expect 'from' after imported names.")
-        specifier = self.consume(TokenType.STRING, "Expect a module path string after 'from'.")
+        specifier = self.consume(
+            TokenType.STRING, "Expect a module path string after 'from'."
+        )
         self.consume_statement_end("Expect ';' after import.")
         return Import(names, specifier, keyword)
 
-    def export_declaration(self) -> Export:
+    def export_declaration(self) -> Export | ExportNames:
         keyword = self.previous()
         if self.block_depth > 0:
-            raise self.error(keyword, "'export' is only allowed at the top level of a file.")
+            raise self.error(
+                keyword, "'export' is only allowed at the top level of a file."
+            )
 
         # `export { a, b as c };` or `export { a } from "./m.mrt";`
         if self.check(TokenType.LBRACE):
@@ -104,11 +117,14 @@ class Parser:
             names: List[tuple] = []
             if not self.check(TokenType.RBRACE):
                 while True:
-                    local = self.consume(TokenType.IDENTIFIER, "Expect an exported name.")
+                    local = self.consume(
+                        TokenType.IDENTIFIER, "Expect an exported name."
+                    )
                     exported = local
                     if self.match_word("as"):
-                        exported = self.consume(TokenType.IDENTIFIER,
-                                                "Expect a name after 'as'.")
+                        exported = self.consume(
+                            TokenType.IDENTIFIER, "Expect a name after 'as'."
+                        )
                     names.append((local, exported))
                     if not self.match(TokenType.COMMA):
                         break
@@ -116,28 +132,33 @@ class Parser:
 
             specifier = None
             if self.match_word("from"):
-                specifier = self.consume(TokenType.STRING,
-                                         "Expect a module path string after 'from'.")
+                specifier = self.consume(
+                    TokenType.STRING, "Expect a module path string after 'from'."
+                )
             self.consume_statement_end("Expect ';' after export.")
             return ExportNames(names, specifier, keyword)
 
         if self.match(TokenType.STRUCT):
-            declaration = self.struct_declaration()
-            return Export(declaration, declaration.name)
+            declaration: Stmt = self.struct_declaration()
+            return Export(declaration, declaration.name)  # type: ignore[attr-defined]
 
         if self.check(TokenType.FUNC) and self.check_next(TokenType.IDENTIFIER):
             self.advance()
             declaration = self.function("function")
-            return Export(declaration, declaration.name)
+            return Export(declaration, declaration.name)  # type: ignore[attr-defined]
         if self.match(TokenType.VAR):
             declaration = self.var_declaration()
             if not isinstance(declaration.pattern, NamePattern):
-                raise self.error(keyword,
-                                 "Only a plain `var name` can be exported, not a destructuring one.")
+                raise self.error(
+                    keyword,
+                    "Only a plain `var name` can be exported, not a destructuring one.",
+                )
             return Export(declaration, declaration.pattern.name)
-        raise self.error(self.peek(),
-                         "Expect a 'func', 'var' or 'struct' declaration, "
-                         "or '{ names }', after 'export'.")
+        raise self.error(
+            self.peek(),
+            "Expect a 'func', 'var' or 'struct' declaration, "
+            "or '{ names }', after 'export'.",
+        )
 
     def struct_declaration(self) -> StructDecl:
         """`struct Name { fieldList; methods... }`.
@@ -161,8 +182,9 @@ class Parser:
                     continue
 
                 while True:
-                    field = self.consume(TokenType.IDENTIFIER,
-                                         "Expect a field name or a 'func' method.")
+                    field = self.consume(
+                        TokenType.IDENTIFIER, "Expect a field name or a 'func' method."
+                    )
                     default = None
                     if self.match(TokenType.ASSIGN):
                         default = self.expression()
@@ -170,7 +192,8 @@ class Parser:
                     elif seen_default:
                         raise self.error(
                             field,
-                            "A field without a default can't follow one with a default value.")
+                            "A field without a default can't follow one with a default value.",
+                        )
                     fields.append(Param(NamePattern(field, default), False))
                     if not self.match(TokenType.COMMA):
                         break
@@ -180,18 +203,23 @@ class Parser:
 
         self.consume(TokenType.RBRACE, "Expect '}' after struct body.")
 
-        names = [f.pattern.name.lexeme for f in fields]
+        names = [f.pattern.name.lexeme for f in fields]  # type: ignore[attr-defined]
         if len(set(names)) != len(names):
-            raise self.error(name, f"Struct '{name.lexeme}' has a duplicate field name.")
+            raise self.error(
+                name, f"Struct '{name.lexeme}' has a duplicate field name."
+            )
         method_names = [m.name.lexeme for m in methods]
         if len(set(method_names)) != len(method_names):
-            raise self.error(name, f"Struct '{name.lexeme}' has a duplicate method name.")
+            raise self.error(
+                name, f"Struct '{name.lexeme}' has a duplicate method name."
+            )
         clash = set(names) & set(method_names)
         if clash:
             raise self.error(
                 name,
                 f"Struct '{name.lexeme}' has a field and a method both named "
-                f"'{sorted(clash)[0]}'.")
+                f"'{sorted(clash)[0]}'.",
+            )
 
         return StructDecl(name, fields, methods)
 
@@ -235,18 +263,22 @@ class Parser:
         onto whatever line the brace's contents happen to start on. Requiring
         a plausible first element keeps that error where the mistake is."""
         if self.check(TokenType.LBRACKET):
-            return (self.check_next(TokenType.IDENTIFIER)
-                    or self.check_next(TokenType.RBRACKET)
-                    or self.check_next(TokenType.ELLIPSIS)
-                    or self.check_next(TokenType.LBRACKET)
-                    or self.check_next(TokenType.LBRACE))
+            return (
+                self.check_next(TokenType.IDENTIFIER)
+                or self.check_next(TokenType.RBRACKET)
+                or self.check_next(TokenType.ELLIPSIS)
+                or self.check_next(TokenType.LBRACKET)
+                or self.check_next(TokenType.LBRACE)
+            )
         if self.check(TokenType.LBRACE):
-            return (self.check_next(TokenType.IDENTIFIER)
-                    or self.check_next(TokenType.RBRACE)
-                    or self.check_next(TokenType.ELLIPSIS))
+            return (
+                self.check_next(TokenType.IDENTIFIER)
+                or self.check_next(TokenType.RBRACE)
+                or self.check_next(TokenType.ELLIPSIS)
+            )
         return False
 
-    def pattern_default(self, allow_yield: bool = False) -> Optional[Expr]:
+    def pattern_default(self, allow_yield: bool = False) -> Expr | None:
         if self.match(TokenType.ASSIGN):
             if allow_yield and self.check(TokenType.YIELD):
                 return self.yield_expression()
@@ -260,8 +292,9 @@ class Parser:
         if not self.check(TokenType.RBRACKET):
             while True:
                 if self.match(TokenType.ELLIPSIS):
-                    rest = self.consume(TokenType.IDENTIFIER,
-                                        "Expect a name after '...' in a pattern.")
+                    rest = self.consume(
+                        TokenType.IDENTIFIER, "Expect a name after '...' in a pattern."
+                    )
                     break
                 elements.append(self.binding_pattern("a name in the pattern"))
                 if not self.match(TokenType.COMMA):
@@ -276,16 +309,23 @@ class Parser:
         if not self.check(TokenType.RBRACE):
             while True:
                 if self.match(TokenType.ELLIPSIS):
-                    rest = self.consume(TokenType.IDENTIFIER,
-                                        "Expect a name after '...' in a pattern.")
+                    rest = self.consume(
+                        TokenType.IDENTIFIER, "Expect a name after '...' in a pattern."
+                    )
                     break
-                key = self.consume(TokenType.IDENTIFIER, "Expect a key name in the pattern.")
+                key = self.consume(
+                    TokenType.IDENTIFIER, "Expect a key name in the pattern."
+                )
                 if self.match(TokenType.COLON):
                     # `{key: <pattern>}` -- bind the key to something else.
-                    entries.append((key.lexeme, self.binding_pattern("a name in the pattern")))
+                    entries.append(
+                        (key.lexeme, self.binding_pattern("a name in the pattern"))
+                    )
                 else:
                     # `{key}` shorthand, optionally `{key = default}`.
-                    entries.append((key.lexeme, NamePattern(key, self.pattern_default())))
+                    entries.append(
+                        (key.lexeme, NamePattern(key, self.pattern_default()))
+                    )
                 if not self.match(TokenType.COMMA):
                     break
         self.consume(TokenType.RBRACE, "Expect '}' after object pattern.")
@@ -309,16 +349,18 @@ class Parser:
                     self.error(self.peek(), "Can't have more than 255 parameters.")
 
                 if seen_rest:
-                    raise self.error(self.peek(),
-                                     "A rest parameter must be the last parameter.")
+                    raise self.error(
+                        self.peek(), "A rest parameter must be the last parameter."
+                    )
 
                 is_rest = self.match(TokenType.ELLIPSIS)
                 if is_rest:
                     seen_rest = True
                     name = self.consume(TokenType.IDENTIFIER, "Expect parameter name.")
                     if self.check(TokenType.ASSIGN):
-                        raise self.error(self.peek(),
-                                         "A rest parameter can't have a default value.")
+                        raise self.error(
+                            self.peek(), "A rest parameter can't have a default value."
+                        )
                     parameters.append(Param(NamePattern(name), True))
                 else:
                     start = self.peek()
@@ -326,8 +368,10 @@ class Parser:
                     if pattern.default is not None:
                         seen_default = True
                     elif seen_default:
-                        raise self.error(start,
-                                         "A required parameter can't follow one with a default value.")
+                        raise self.error(
+                            start,
+                            "A required parameter can't follow one with a default value.",
+                        )
                     parameters.append(Param(pattern, False))
                 if not self.match(TokenType.COMMA):
                     break
@@ -382,7 +426,7 @@ class Parser:
             return self.print_statement()
         return self.expression_statement()
 
-    def try_destructuring_assignment(self) -> Optional[Stmt]:
+    def try_destructuring_assignment(self) -> Stmt | None:
         """Attempt to parse `<pattern> = expr;` -- assignment to existing
         variables through an array or object pattern.
 
@@ -425,7 +469,7 @@ class Parser:
         self.current = saved
 
         # Initializer
-        initializer = None
+        initializer: Stmt | None = None
         if self.match(TokenType.SEMICOLON):
             initializer = None
         elif self.match(TokenType.VAR):
@@ -452,7 +496,7 @@ class Parser:
         # before re-checking the condition.
         return For(initializer, condition, increment, body)
 
-    def try_for_in(self) -> Optional[ForIn]:
+    def try_for_in(self) -> ForIn | None:
         """Attempt to parse the `for (<pattern> in expr)` form.
 
         Returns None (with the caller restoring the token position) when this
@@ -494,10 +538,12 @@ class Parser:
         # no semicolon; require the value to start on the same line (like
         # JavaScript's ASI rule for `return`) so `return\nfoo()` is parsed as
         # two statements rather than swallowing `foo()` as the return value.
-        if (not self.check(TokenType.SEMICOLON)
-                and not self.check(TokenType.RBRACE)
-                and not self.is_at_end()
-                and self.peek().line == keyword.line):
+        if (
+            not self.check(TokenType.SEMICOLON)
+            and not self.check(TokenType.RBRACE)
+            and not self.is_at_end()
+            and self.peek().line == keyword.line
+        ):
             value = self.expression()
 
         self.consume_statement_end("Expect ';' after return value.")
@@ -538,7 +584,9 @@ class Parser:
                 if self.match(TokenType.DEFAULT):
                     case_keyword = self.previous()
                     if seen_default:
-                        raise self.error(case_keyword, "A match can only have one 'default'.")
+                        raise self.error(
+                            case_keyword, "A match can only have one 'default'."
+                        )
                     seen_default = True
                     self.consume(TokenType.COLON, "Expect ':' after 'default'.")
                     cases.append(MatchCase(None, None, self.case_body(), case_keyword))
@@ -547,11 +595,15 @@ class Parser:
                 self.consume(TokenType.CASE, "Expect 'case' or 'default' in a match.")
                 case_keyword = self.previous()
                 if seen_default:
-                    raise self.error(case_keyword, "'default' must be the last clause of a match.")
+                    raise self.error(
+                        case_keyword, "'default' must be the last clause of a match."
+                    )
                 pattern = self.match_pattern()
                 guard = None
                 if self.match(TokenType.IF):
-                    self.consume(TokenType.LPAREN, "Expect '(' after 'if' in a case guard.")
+                    self.consume(
+                        TokenType.LPAREN, "Expect '(' after 'if' in a case guard."
+                    )
                     guard = self.expression()
                     self.consume(TokenType.RPAREN, "Expect ')' after the case guard.")
                 self.consume(TokenType.COLON, "Expect ':' after the case pattern.")
@@ -583,7 +635,9 @@ class Parser:
             if self.match(TokenType.DEFAULT):
                 arm_keyword = self.previous()
                 if seen_default:
-                    raise self.error(arm_keyword, "A match can only have one 'default'.")
+                    raise self.error(
+                        arm_keyword, "A match can only have one 'default'."
+                    )
                 seen_default = True
                 self.consume(TokenType.COLON, "Expect ':' after 'default'.")
                 arms.append(MatchArm(None, None, self.expression(), arm_keyword))
@@ -591,12 +645,15 @@ class Parser:
                 self.consume(TokenType.CASE, "Expect 'case' or 'default' in a match.")
                 arm_keyword = self.previous()
                 if seen_default:
-                    raise self.error(arm_keyword,
-                                     "'default' must be the last clause of a match.")
+                    raise self.error(
+                        arm_keyword, "'default' must be the last clause of a match."
+                    )
                 pattern = self.match_pattern()
                 guard = None
                 if self.match(TokenType.IF):
-                    self.consume(TokenType.LPAREN, "Expect '(' after 'if' in a case guard.")
+                    self.consume(
+                        TokenType.LPAREN, "Expect '(' after 'if' in a case guard."
+                    )
                     guard = self.expression()
                     self.consume(TokenType.RPAREN, "Expect ')' after the case guard.")
                 self.consume(TokenType.COLON, "Expect ':' after the case pattern.")
@@ -616,8 +673,12 @@ class Parser:
         There is no fall-through, so a case ends where the next one begins and
         needs no `break`."""
         statements: List[Stmt] = []
-        while not (self.check(TokenType.CASE) or self.check(TokenType.DEFAULT)
-                   or self.check(TokenType.RBRACE) or self.is_at_end()):
+        while not (
+            self.check(TokenType.CASE)
+            or self.check(TokenType.DEFAULT)
+            or self.check(TokenType.RBRACE)
+            or self.is_at_end()
+        ):
             stmt = self.declaration()
             if stmt:
                 statements.append(stmt)
@@ -634,8 +695,10 @@ class Parser:
         if self.match(TokenType.NULL):
             return LiteralMatch(None)
         if self.match(TokenType.MINUS):
-            number = self.consume(TokenType.NUMBER, "Expect a number after '-' in a pattern.")
-            return LiteralMatch(-number.literal)
+            number = self.consume(
+                TokenType.NUMBER, "Expect a number after '-' in a pattern."
+            )
+            return LiteralMatch(-number.literal)  # type: ignore[operator]
 
         if self.check(TokenType.LBRACKET):
             return self.array_match()
@@ -652,7 +715,9 @@ class Parser:
                         elements.append(self.match_pattern())
                         if not self.match(TokenType.COMMA):
                             break
-                self.consume(TokenType.RPAREN, "Expect ')' after struct pattern fields.")
+                self.consume(
+                    TokenType.RPAREN, "Expect ')' after struct pattern fields."
+                )
                 return StructMatch(name, elements)
             return BindMatch(name)
 
@@ -665,8 +730,9 @@ class Parser:
         if not self.check(TokenType.RBRACKET):
             while True:
                 if self.match(TokenType.ELLIPSIS):
-                    rest = self.consume(TokenType.IDENTIFIER,
-                                        "Expect a name after '...' in a pattern.")
+                    rest = self.consume(
+                        TokenType.IDENTIFIER, "Expect a name after '...' in a pattern."
+                    )
                     break
                 elements.append(self.match_pattern())
                 if not self.match(TokenType.COMMA):
@@ -679,7 +745,9 @@ class Parser:
         entries: List[tuple] = []
         if not self.check(TokenType.RBRACE):
             while True:
-                key = self.consume(TokenType.IDENTIFIER, "Expect a key name in the pattern.")
+                key = self.consume(
+                    TokenType.IDENTIFIER, "Expect a key name in the pattern."
+                )
                 if self.match(TokenType.COLON):
                     entries.append((key.lexeme, self.match_pattern()))
                 else:
@@ -745,7 +813,8 @@ class Parser:
             raise self.error(
                 self.peek(),
                 "'yield*' re-yields a whole sequence and has no value of its own; "
-                "use it as a statement.")
+                "use it as a statement.",
+            )
         return YieldExpr(keyword, self.expression())
 
     def throw_statement(self) -> Throw:
@@ -830,7 +899,9 @@ class Parser:
 
         return expr
 
-    def _make_assign_target(self, target: Expr, error_token: Token, value: Expr) -> Expr:
+    def _make_assign_target(
+        self, target: Expr, error_token: Token, value: Expr
+    ) -> Expr:
         if isinstance(target, Variable):
             return Assign(target.name, value)
         if isinstance(target, ArrayAccess):
@@ -870,7 +941,12 @@ class Parser:
     def comparison(self) -> Expr:
         expr = self.term()
 
-        while self.match(TokenType.GREATER, TokenType.GREATER_EQUAL, TokenType.LESS, TokenType.LESS_EQUAL):
+        while self.match(
+            TokenType.GREATER,
+            TokenType.GREATER_EQUAL,
+            TokenType.LESS,
+            TokenType.LESS_EQUAL,
+        ):
             operator = self.previous()
             right = self.term()
             expr = Binary(expr, operator, right)
@@ -914,7 +990,9 @@ class Parser:
             elif self.match(TokenType.LBRACKET):
                 expr = self.array_access(expr, self.previous().line)
             elif self.match(TokenType.DOT):
-                name = self.consume(TokenType.IDENTIFIER, "Expect property name after '.'.")
+                name = self.consume(
+                    TokenType.IDENTIFIER, "Expect property name after '.'."
+                )
                 # `obj.name` is sugar for `obj["name"]`.
                 expr = ArrayAccess(expr, Literal(name.lexeme), name.line)
             else:
@@ -923,7 +1001,7 @@ class Parser:
         return expr
 
     def finish_call(self, callee: Expr) -> Expr:
-        arguments = []
+        arguments: List[Expr] = []
         if not self.check(TokenType.RPAREN):
             while True:
                 if len(arguments) >= 255:
@@ -986,7 +1064,10 @@ class Parser:
                     # name: `{name: "Ada"}` means `{"name": "Ada"}`. To use a
                     # variable's value as the key instead, parenthesise it:
                     # `{(k): v}`.
-                    if self.check(TokenType.IDENTIFIER) and self.check_next(TokenType.COLON):
+                    key: Expr
+                    if self.check(TokenType.IDENTIFIER) and self.check_next(
+                        TokenType.COLON
+                    ):
                         key = Literal(self.advance().lexeme)
                     else:
                         key = self.expression()
@@ -1011,14 +1092,16 @@ class Parser:
         from .lexer import Lexer
 
         parts: List[Any] = []
-        for part in token.literal:
-            if part[0] == 'str':
+        for part in token.literal:  # type: ignore[attr-defined]
+            if part[0] == "str":
                 parts.append(part[1])
                 continue
 
             _, source, line = part
             if not source.strip():
-                raise self.error(token, "Empty interpolation: expected an expression inside '${}'.")
+                raise self.error(
+                    token, "Empty interpolation: expected an expression inside '${}'."
+                )
 
             try:
                 sub_tokens = Lexer(source).scan_tokens()
@@ -1031,8 +1114,9 @@ class Parser:
             sub_parser = Parser(sub_tokens)
             expr = sub_parser.expression()
             if not sub_parser.is_at_end():
-                raise self.error(sub_parser.peek(),
-                                 "Unexpected trailing tokens in interpolation.")
+                raise self.error(
+                    sub_parser.peek(), "Unexpected trailing tokens in interpolation."
+                )
             parts.append(expr)
 
         return Interpolation(parts)
@@ -1053,8 +1137,9 @@ class Parser:
             pattern.default = None
 
         if initializer is None and not isinstance(pattern, NamePattern):
-            raise self.error(self.previous(),
-                             "A destructuring declaration needs an initializer.")
+            raise self.error(
+                self.previous(), "A destructuring declaration needs an initializer."
+            )
 
         self.consume_statement_end("Expect ';' after variable declaration.")
         return Var(pattern, initializer)
@@ -1135,13 +1220,25 @@ class Parser:
                 return
 
             match self.peek().type:
-                case (TokenType.FUNC | TokenType.IF | TokenType.RETURN | TokenType.WHILE
-                      | TokenType.VAR | TokenType.FOR | TokenType.TRY | TokenType.THROW
-                      | TokenType.IMPORT | TokenType.EXPORT | TokenType.STRUCT
-                      | TokenType.MATCH | TokenType.YIELD):
+                case (
+                    TokenType.FUNC
+                    | TokenType.IF
+                    | TokenType.RETURN
+                    | TokenType.WHILE
+                    | TokenType.VAR
+                    | TokenType.FOR
+                    | TokenType.TRY
+                    | TokenType.THROW
+                    | TokenType.IMPORT
+                    | TokenType.EXPORT
+                    | TokenType.STRUCT
+                    | TokenType.MATCH
+                    | TokenType.YIELD
+                ):
                     return
 
             self.advance()
+
 
 class ParseError(MRTSyntaxError):
     pass

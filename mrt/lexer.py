@@ -1,8 +1,11 @@
-from enum import Enum, auto
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional, List
+from enum import Enum, auto
+from typing import List
 
 from .errors import MRTSyntaxError
+
 
 class TokenType(Enum):
     # Keywords
@@ -79,12 +82,14 @@ class TokenType(Enum):
     # Special
     EOF = auto()
 
+
 @dataclass
 class Token:
     type: TokenType
     lexeme: str
-    literal: Optional[object]
+    literal: object | None
     line: int
+
 
 class Lexer:
     def __init__(self, source: str):
@@ -133,73 +138,101 @@ class Lexer:
     def scan_token(self):
         c = self.advance()
         match c:
-            case '(': self.add_token(TokenType.LPAREN)
-            case ')': self.add_token(TokenType.RPAREN)
-            case '{': self.add_token(TokenType.LBRACE)
-            case '}': self.add_token(TokenType.RBRACE)
-            case '[': self.add_token(TokenType.LBRACKET)
-            case ']': self.add_token(TokenType.RBRACKET)
-            case ',': self.add_token(TokenType.COMMA)
-            case ';': self.add_token(TokenType.SEMICOLON)
-            case '.':
+            case "(":
+                self.add_token(TokenType.LPAREN)
+            case ")":
+                self.add_token(TokenType.RPAREN)
+            case "{":
+                self.add_token(TokenType.LBRACE)
+            case "}":
+                self.add_token(TokenType.RBRACE)
+            case "[":
+                self.add_token(TokenType.LBRACKET)
+            case "]":
+                self.add_token(TokenType.RBRACKET)
+            case ",":
+                self.add_token(TokenType.COMMA)
+            case ";":
+                self.add_token(TokenType.SEMICOLON)
+            case ".":
                 # `...` is the rest/spread marker; a single '.' is property
                 # access. Two dots is not a token, so `a..b` stays an error.
-                if self.peek() == '.' and self.peek_next() == '.':
+                if self.peek() == "." and self.peek_next() == ".":
                     self.advance()
                     self.advance()
                     self.add_token(TokenType.ELLIPSIS)
                 else:
                     self.add_token(TokenType.DOT)
-            case ':': self.add_token(TokenType.COLON)
-            case '+': self.add_token(TokenType.PLUS_ASSIGN if self.match('=') else TokenType.PLUS)
-            case '-': self.add_token(TokenType.MINUS_ASSIGN if self.match('=') else TokenType.MINUS)
-            case '*': self.add_token(TokenType.MULTIPLY_ASSIGN if self.match('=') else TokenType.MULTIPLY)
-            case '%': self.add_token(TokenType.MODULO_ASSIGN if self.match('=') else TokenType.MODULO)
-            case '/':
-                if self.match('/'):
+            case ":":
+                self.add_token(TokenType.COLON)
+            case "+":
+                self.add_token(
+                    TokenType.PLUS_ASSIGN if self.match("=") else TokenType.PLUS
+                )
+            case "-":
+                self.add_token(
+                    TokenType.MINUS_ASSIGN if self.match("=") else TokenType.MINUS
+                )
+            case "*":
+                self.add_token(
+                    TokenType.MULTIPLY_ASSIGN if self.match("=") else TokenType.MULTIPLY
+                )
+            case "%":
+                self.add_token(
+                    TokenType.MODULO_ASSIGN if self.match("=") else TokenType.MODULO
+                )
+            case "/":
+                if self.match("/"):
                     # Comment goes until end of line
-                    while self.peek() != '\n' and not self.is_at_end():
+                    while self.peek() != "\n" and not self.is_at_end():
                         self.advance()
-                elif self.match('*'):
+                elif self.match("*"):
                     # Multi-line comment
                     self.block_comment()
-                elif self.match('='):
+                elif self.match("="):
                     self.add_token(TokenType.DIVIDE_ASSIGN)
                 else:
                     self.add_token(TokenType.DIVIDE)
-            case ' ' | '\r' | '\t': pass  # Ignore whitespace
-            case '\n': self.line += 1
-            case '"': self.string()
-            case '>':
-                if self.match('='):
+            case " " | "\r" | "\t":
+                pass  # Ignore whitespace
+            case "\n":
+                self.line += 1
+            case '"':
+                self.string()
+            case ">":
+                if self.match("="):
                     self.add_token(TokenType.GREATER_EQUAL)
                 else:
                     self.add_token(TokenType.GREATER)
-            case '<':
-                if self.match('='):
+            case "<":
+                if self.match("="):
                     self.add_token(TokenType.LESS_EQUAL)
                 else:
                     self.add_token(TokenType.LESS)
-            case '=':
-                if self.match('='):
+            case "=":
+                if self.match("="):
                     self.add_token(TokenType.EQUALS)
                 else:
                     self.add_token(TokenType.ASSIGN)
-            case '!':
-                if self.match('='):
+            case "!":
+                if self.match("="):
                     self.add_token(TokenType.NOT_EQUALS)
                 else:
                     self.add_token(TokenType.NOT)
-            case '&':
-                if self.match('&'):
+            case "&":
+                if self.match("&"):
                     self.add_token(TokenType.AND)
                 else:
-                    raise MRTSyntaxError("Unexpected character '&' (did you mean '&&'?)", self.line)
-            case '|':
-                if self.match('|'):
+                    raise MRTSyntaxError(
+                        "Unexpected character '&' (did you mean '&&'?)", self.line
+                    )
+            case "|":
+                if self.match("|"):
                     self.add_token(TokenType.OR)
                 else:
-                    raise MRTSyntaxError("Unexpected character '|' (did you mean '||'?)", self.line)
+                    raise MRTSyntaxError(
+                        "Unexpected character '|' (did you mean '||'?)", self.line
+                    )
             case _:
                 if self.is_digit(c):
                     self.number()
@@ -211,12 +244,12 @@ class Lexer:
     def block_comment(self):
         """Handle multi-line comments /* ... */"""
         while not self.is_at_end():
-            if self.peek() == '*' and self.peek_next() == '/':
+            if self.peek() == "*" and self.peek_next() == "/":
                 # Consume the closing */
                 self.advance()  # consume *
                 self.advance()  # consume /
                 return
-            if self.peek() == '\n':
+            if self.peek() == "\n":
                 self.line += 1
             self.advance()
 
@@ -227,7 +260,7 @@ class Lexer:
         while self.is_alphanumeric(self.peek()):
             self.advance()
 
-        text = self.source[self.start:self.current]
+        text = self.source[self.start : self.current]
         token_type = self.keywords.get(text, TokenType.IDENTIFIER)
 
         # Handle boolean literals
@@ -243,24 +276,24 @@ class Lexer:
             self.advance()
 
         # Look for decimal point
-        if self.peek() == '.' and self.is_digit(self.peek_next()):
+        if self.peek() == "." and self.is_digit(self.peek_next()):
             self.advance()  # Consume the "."
             while self.is_digit(self.peek()):
                 self.advance()
 
-        value = float(self.source[self.start:self.current])
+        value = float(self.source[self.start : self.current])
         self.add_token(TokenType.NUMBER, value)
 
     ESCAPES = {
-        'n': '\n',
-        't': '\t',
-        'r': '\r',
+        "n": "\n",
+        "t": "\t",
+        "r": "\r",
         '"': '"',
-        '\\': '\\',
-        '0': '\0',
+        "\\": "\\",
+        "0": "\0",
         # `\$` escapes an interpolation, so "\${x}" is the literal text
         # "${x}" rather than a substitution.
-        '$': '$',
+        "$": "$",
     }
 
     def string(self):
@@ -280,19 +313,19 @@ class Lexer:
 
         def flush_text():
             if chars:
-                parts.append(('str', "".join(chars)))
+                parts.append(("str", "".join(chars)))
                 chars.clear()
 
         while self.peek() != '"' and not self.is_at_end():
             c = self.peek()
-            if c == '\n':
+            if c == "\n":
                 self.line += 1
 
-            if c == '\\' and self.peek_next() in self.ESCAPES:
+            if c == "\\" and self.peek_next() in self.ESCAPES:
                 self.advance()  # consume the backslash
                 escape = self.advance()
                 chars.append(self.ESCAPES[escape])
-            elif c == '$' and self.peek_next() == '{':
+            elif c == "$" and self.peek_next() == "{":
                 self.advance()  # consume '$'
                 self.advance()  # consume '{'
                 flush_text()
@@ -331,24 +364,24 @@ class Lexer:
                 # Skip a nested string literal, honouring its escapes so an
                 # escaped quote doesn't look like the terminator.
                 while self.peek() != '"' and not self.is_at_end():
-                    if self.peek() == '\n':
+                    if self.peek() == "\n":
                         self.line += 1
-                    if self.peek() == '\\' and not self.is_at_end():
+                    if self.peek() == "\\" and not self.is_at_end():
                         self.advance()
                     self.advance()
                 if self.is_at_end():
                     raise MRTSyntaxError("Unterminated string", string_start_line)
                 self.advance()  # closing quote
                 continue
-            if c == '{':
+            if c == "{":
                 depth += 1
-            elif c == '}':
+            elif c == "}":
                 depth -= 1
                 if depth == 0:
-                    source = self.source[start:self.current]
+                    source = self.source[start : self.current]
                     self.advance()  # consume the closing '}'
-                    return ('expr', source, expr_line)
-            elif c == '\n':
+                    return ("expr", source, expr_line)
+            elif c == "\n":
                 self.line += 1
             self.advance()
 
@@ -365,19 +398,19 @@ class Lexer:
 
     def peek(self) -> str:
         if self.is_at_end():
-            return '\0'
+            return "\0"
         return self.source[self.current]
 
     def peek_next(self) -> str:
         if self.current + 1 >= len(self.source):
-            return '\0'
+            return "\0"
         return self.source[self.current + 1]
 
     def is_alpha(self, c: str) -> bool:
-        return ('a' <= c <= 'z') or ('A' <= c <= 'Z') or c == '_'
+        return ("a" <= c <= "z") or ("A" <= c <= "Z") or c == "_"
 
     def is_digit(self, c: str) -> bool:
-        return '0' <= c <= '9'
+        return "0" <= c <= "9"
 
     def is_alphanumeric(self, c: str) -> bool:
         return self.is_alpha(c) or self.is_digit(c)
@@ -389,6 +422,6 @@ class Lexer:
         self.current += 1
         return self.source[self.current - 1]
 
-    def add_token(self, type: TokenType, literal: Optional[object] = None):
-        text = self.source[self.start:self.current]
+    def add_token(self, type: TokenType, literal: object | None = None):
+        text = self.source[self.start : self.current]
         self.tokens.append(Token(type, text, literal, self.line))

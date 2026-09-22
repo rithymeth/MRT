@@ -26,8 +26,9 @@ def run_mrt(source: str) -> Tuple[List[str], List[MRTSyntaxError]]:
     return list(interpreter.output), []
 
 
-def run_mrt_files(files: Dict[str, str], root, entry: str = "main.mrt"
-                  ) -> Tuple[List[str], List[MRTSyntaxError]]:
+def run_mrt_files(
+    files: Dict[str, str], root, entry: str = "main.mrt"
+) -> Tuple[List[str], List[MRTSyntaxError]]:
     """Write a small file tree under `root` and run `entry` from it.
 
     Used by the module tests, where imports have to resolve against real

@@ -1,56 +1,73 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import List, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .lexer import Token
+
 
 # Base class for all AST nodes
 class Expr:
     pass
 
+
 class Stmt:
     pass
+
 
 @dataclass
 class Binary(Expr):
     left: Expr
-    operator: 'Token'
+    operator: "Token"
     right: Expr
+
 
 @dataclass
 class Grouping(Expr):
     expression: Expr
 
+
 @dataclass
 class Literal(Expr):
     value: Any
 
+
 @dataclass
 class Unary(Expr):
-    operator: 'Token'
+    operator: "Token"
     right: Expr
+
 
 @dataclass
 class Logical(Expr):
     left: Expr
-    operator: 'Token'
+    operator: "Token"
     right: Expr
+
 
 @dataclass
 class Variable(Expr):
-    name: 'Token'
+    name: "Token"
+
 
 @dataclass
 class Assign(Expr):
-    name: 'Token'
+    name: "Token"
     value: Expr
+
 
 @dataclass
 class Call(Expr):
     callee: Expr
-    paren: 'Token'
+    paren: "Token"
     arguments: List[Expr]
+
 
 @dataclass
 class Array(Expr):
     elements: List[Expr]
+
 
 @dataclass
 class ArrayAccess(Expr):
@@ -61,18 +78,22 @@ class ArrayAccess(Expr):
     `line` is the bracket (or dot) the access was written with. Indexing is
     the one place a runtime error is raised from a helper several frames
     below the expression, so without it a bad index reports no line at all."""
+
     array: Expr
     index: Expr
     line: int = 0
+
 
 @dataclass
 class ArrayAssign(Expr):
     """Indexing set: `target[index] = value`, and also `target.name = value`.
     `target` may evaluate to an array or a dict."""
+
     array: Expr
     index: Expr
     value: Expr
     line: int = 0
+
 
 # -- Binding patterns --------------------------------------------------------
 #
@@ -83,23 +104,25 @@ class ArrayAssign(Expr):
 
 
 class Pattern:
-    pass
+    default: Optional[Expr] = None
 
 
 @dataclass
 class NamePattern(Pattern):
     """A plain `name`, optionally `name = default`."""
-    name: 'Token'
+
+    name: "Token"
     default: Optional[Expr] = None
 
 
 @dataclass
 class ArrayPattern(Pattern):
     """`[a, b]`, `[a, ...rest]`, `[a = 1]` -- and nested patterns within."""
+
     elements: List[Pattern]
-    rest: Optional['Token'] = None
+    rest: Optional["Token"] = None
     default: Optional[Expr] = None
-    token: Optional['Token'] = None
+    token: Optional["Token"] = None
 
 
 @dataclass
@@ -108,10 +131,11 @@ class ObjectPattern(Pattern):
 
     `entries` pairs the key to read with the pattern to bind it to; the
     shorthand `{name}` is just `("name", NamePattern(name))`."""
+
     entries: List[Tuple[str, Pattern]]
-    rest: Optional['Token'] = None
+    rest: Optional["Token"] = None
     default: Optional[Expr] = None
-    token: Optional['Token'] = None
+    token: Optional["Token"] = None
 
 
 @dataclass
@@ -124,6 +148,7 @@ class Param:
     may refer to an earlier parameter (`func f(a, b = a * 2)`). `rest` marks
     a `...name` parameter, which collects any remaining arguments into an
     array and must come last."""
+
     pattern: Pattern
     rest: bool = False
 
@@ -137,8 +162,9 @@ class Spread(Expr):
     """`...expr` in a call's argument list or an array literal, expanding an
     array in place. It is not a general-purpose expression: evaluating one
     anywhere else is a runtime error."""
+
     value: Expr
-    token: 'Token'
+    token: "Token"
 
 
 @dataclass
@@ -149,9 +175,10 @@ class FunctionExpr(Expr):
     `Function` statement below. The two share `MRTFunction` at runtime, so a
     closure made here is indistinguishable from a declared one apart from
     how it prints."""
+
     params: List[Param]
     body: List[Stmt]
-    name: Optional['Token'] = None
+    name: Optional["Token"] = None
     is_generator: bool = False
 
 
@@ -161,6 +188,7 @@ class Interpolation(Expr):
     plain `str` (literal text) and `Expr` (an embedded expression), and the
     interpreter renders each expression with the same `stringify` that
     `print` and `toString` use."""
+
     parts: List[Any]
 
 
@@ -175,22 +203,26 @@ class DictLiteral(Expr):
     would otherwise silently shadow it (the same class of bug that used to
     make every `return` statement in this interpreter a no-op -- see
     interpreter.py's history)."""
+
     pairs: List[Tuple[Expr, Expr]]
     line: int = 0
+
 
 # Statement nodes
 @dataclass
 class Expression(Stmt):
     expression: Expr
 
+
 @dataclass
 class Function(Stmt):
-    name: 'Token'
+    name: "Token"
     params: List[Param]
     body: List[Stmt]
     # True when the body contains a `yield`, which makes calling this
     # function produce a lazy generator instead of running it.
     is_generator: bool = False
+
 
 @dataclass
 class If(Stmt):
@@ -198,15 +230,18 @@ class If(Stmt):
     then_branch: Stmt
     else_branch: Optional[Stmt]
 
+
 @dataclass
 class Return(Stmt):
-    keyword: 'Token'
+    keyword: "Token"
     value: Optional[Expr]
+
 
 @dataclass
 class While(Stmt):
     condition: Expr
     body: Stmt
+
 
 @dataclass
 class For(Stmt):
@@ -215,13 +250,16 @@ class For(Stmt):
     increment: Optional[Expr]
     body: Stmt
 
+
 @dataclass
 class Break(Stmt):
-    keyword: 'Token'
+    keyword: "Token"
+
 
 @dataclass
 class Continue(Stmt):
-    keyword: 'Token'
+    keyword: "Token"
+
 
 @dataclass
 class ForIn(Stmt):
@@ -231,9 +269,10 @@ class ForIn(Stmt):
     Unlike the C-style `For` above, the loop variable is bound afresh in a
     new scope on every iteration, so a closure created inside the body
     captures that iteration's value rather than sharing one mutable slot."""
+
     pattern: Pattern
     iterable: Expr
-    keyword: 'Token'
+    keyword: "Token"
     body: Stmt
 
 
@@ -247,7 +286,8 @@ class Yield(Stmt):
     evaluation implementable in a tree-walking interpreter without rewriting
     every expression path. The one exception is `YieldExpr` below, which is
     still confined to a whole statement."""
-    keyword: 'Token'
+
+    keyword: "Token"
     value: Expr
     delegate: bool = False
 
@@ -267,13 +307,14 @@ class YieldExpr(Expr):
     It is an `Expr` only so that `Var`/`Assign`/`DestructureAssign` can hold
     one without a second set of nodes; evaluating it through the ordinary
     expression path is a runtime error."""
-    keyword: 'Token'
+
+    keyword: "Token"
     value: Expr
 
 
 @dataclass
 class Throw(Stmt):
-    keyword: 'Token'
+    keyword: "Token"
     value: Expr
 
 
@@ -284,6 +325,7 @@ class Catch:
     The guard is evaluated with the pattern already bound, so it can inspect
     the error: `catch (e) if (e.kind == "IndexError") { ... }`. The pattern
     may destructure, e.g. `catch ({message, kind})`."""
+
     pattern: Pattern
     guard: Optional[Expr]
     block: Stmt
@@ -297,6 +339,7 @@ class Try(Stmt):
     the first whose guard passes handles the error. An unguarded clause
     always matches, so it acts as the final `else`. At least one of
     `catches`/`finally_block` must be present."""
+
     try_block: Stmt
     catches: List[Catch]
     finally_block: Optional[Stmt]
@@ -309,12 +352,13 @@ class Import(Stmt):
     `names` pairs each exported name with the local name it binds to (the
     same token twice when there is no `as`). Only valid at the top level of
     a file."""
-    names: List[Tuple['Token', 'Token']]
-    specifier: 'Token'
-    keyword: 'Token'
+
+    names: List[Tuple["Token", "Token"]]
+    specifier: "Token"
+    keyword: "Token"
     # Set for `import * as name from "..."`, which binds one object holding
     # every export instead of a list of names.
-    namespace: Optional['Token'] = None
+    namespace: Optional["Token"] = None
 
 
 @dataclass
@@ -322,8 +366,9 @@ class Export(Stmt):
     """`export` in front of a `func` or `var` declaration. The declaration
     still binds normally inside its own module; `export` additionally records
     the name in the module's export table."""
+
     declaration: Stmt
-    name: 'Token'
+    name: "Token"
 
 
 # -- Match patterns ----------------------------------------------------------
@@ -342,13 +387,15 @@ class MatchPattern:
 @dataclass
 class LiteralMatch(MatchPattern):
     """`case 0:` / `case "x":` -- matches by structural equality."""
+
     value: Any
 
 
 @dataclass
 class BindMatch(MatchPattern):
     """`case n:` -- matches anything and binds it to `n`."""
-    name: 'Token'
+
+    name: "Token"
 
 
 @dataclass
@@ -358,24 +405,27 @@ class ArrayMatch(MatchPattern):
     Unlike destructuring, the length must match exactly unless a rest is
     given -- a pattern that silently ignored extra elements would make
     `case [x]:` swallow every non-empty array."""
+
     elements: List[MatchPattern]
-    rest: Optional['Token'] = None
-    token: Optional['Token'] = None
+    rest: Optional["Token"] = None
+    token: Optional["Token"] = None
 
 
 @dataclass
 class ObjectMatch(MatchPattern):
     """`case {kind: "circle", radius: r}:` -- a *partial* match: the listed
     keys must be present and match, and any other keys are ignored."""
+
     entries: List[Tuple[str, MatchPattern]]
-    token: Optional['Token'] = None
+    token: Optional["Token"] = None
 
 
 @dataclass
 class StructMatch(MatchPattern):
     """`case Point(x, y):` -- matches an instance of that exact struct, with
     sub-patterns bound to its fields in declaration order."""
-    name: 'Token'
+
+    name: "Token"
     elements: List[MatchPattern]
 
 
@@ -384,7 +434,7 @@ class MatchCase:
     pattern: Optional[MatchPattern]  # None for `default:`
     guard: Optional[Expr]
     body: List[Stmt]
-    keyword: 'Token'
+    keyword: "Token"
 
 
 @dataclass
@@ -395,19 +445,21 @@ class Match(Stmt):
     guard passes) runs; there is no fall-through. If nothing matches and
     there is no `default`, that is a runtime error rather than a silent
     no-op."""
+
     subject: Expr
     cases: List[MatchCase]
-    keyword: 'Token'
+    keyword: "Token"
 
 
 @dataclass
 class MatchArm:
     """One arm of a `match` *expression*: a pattern and the expression its
     value is."""
+
     pattern: Optional[MatchPattern]  # None for `default:`
     guard: Optional[Expr]
     value: Expr
-    keyword: 'Token'
+    keyword: "Token"
 
 
 @dataclass
@@ -419,9 +471,10 @@ class MatchExpr(Expr):
     single expression and the whole thing evaluates to the matching arm's
     value -- so a match can be assigned, returned or passed straight to a
     call without a mutable temporary."""
+
     subject: Expr
     arms: List[MatchArm]
-    keyword: 'Token'
+    keyword: "Token"
 
 
 @dataclass
@@ -432,9 +485,10 @@ class StructDecl(Stmt):
     constructor's arity logic is the same one function calls use. `methods`
     are ordinary functions that additionally see `this` bound to the
     instance they were reached through."""
-    name: 'Token'
+
+    name: "Token"
     fields: List[Param]
-    methods: List['Function']
+    methods: List["Function"]
 
 
 @dataclass
@@ -442,9 +496,10 @@ class ExportNames(Stmt):
     """`export { a, b as c };` re-exports names already declared in this
     module, and `export { a } from "./m.mrt";` forwards another module's
     exports without binding them locally."""
-    names: List[Tuple['Token', 'Token']]
-    specifier: Optional['Token']
-    keyword: 'Token'
+
+    names: List[Tuple["Token", "Token"]]
+    specifier: Optional["Token"]
+    keyword: "Token"
 
 
 @dataclass
@@ -456,22 +511,26 @@ class DestructureAssign(Stmt):
     position is an object literal, and only at the start of a statement can
     the parser tell the two apart without the parenthesis dance other
     languages need (`({x} = o)`)."""
+
     pattern: Pattern
     value: Expr
-    token: 'Token'
+    token: "Token"
 
 
 @dataclass
 class Block(Stmt):
     statements: List[Stmt]
 
+
 @dataclass
 class Print(Stmt):
     expressions: List[Expr]
+
 
 @dataclass
 class Var(Stmt):
     """`var <pattern> = expr;` -- `pattern` is usually a plain name, but may
     destructure an array or object."""
+
     pattern: Pattern
     initializer: Optional[Expr]

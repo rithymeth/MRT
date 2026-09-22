@@ -1,4 +1,4 @@
-from mrt.ast import Binary, Break, Continue, For, Logical, Return
+from mrt.ast import Binary, Break, For, Logical, Return
 from mrt.lexer import Lexer
 from mrt.parser import Parser
 
@@ -11,7 +11,7 @@ def parse(source: str):
 
 
 def test_semicolons_are_optional():
-    statements, errors = parse('func main() {\n    var x = 1\n    print(x)\n}')
+    statements, errors = parse("func main() {\n    var x = 1\n    print(x)\n}")
     assert errors == []
     assert len(statements) == 1
     body = statements[0].body
@@ -19,26 +19,26 @@ def test_semicolons_are_optional():
 
 
 def test_semicolons_still_allowed():
-    statements, errors = parse('func main() {\n    var x = 1;\n    print(x);\n}')
+    statements, errors = parse("func main() {\n    var x = 1;\n    print(x);\n}")
     assert errors == []
     assert len(statements[0].body) == 2
 
 
 def test_for_loop_is_dedicated_node_not_desugared():
-    statements, errors = parse('for (var i = 0; i < 10; i = i + 1) { print(i) }')
+    statements, errors = parse("for (var i = 0; i < 10; i = i + 1) { print(i) }")
     assert errors == []
     assert isinstance(statements[0], For)
 
 
 def test_break_and_continue_parse():
-    statements, errors = parse('while (true) { break }')
+    statements, errors = parse("while (true) { break }")
     assert errors == []
     body = statements[0].body
     assert isinstance(body.statements[0], Break)
 
 
 def test_logical_operators_produce_logical_node():
-    statements, errors = parse('print(true && false || true);')
+    statements, errors = parse("print(true && false || true);")
     assert errors == []
     expr = statements[0].expressions[0]
     assert isinstance(expr, Logical)
@@ -47,7 +47,7 @@ def test_logical_operators_produce_logical_node():
 def test_comparison_precedence_over_logical():
     # `a < b && c > d` should parse as (a < b) && (c > d), not mangle the
     # comparisons together.
-    statements, errors = parse('print(1 < 2 && 3 > 2);')
+    statements, errors = parse("print(1 < 2 && 3 > 2);")
     assert errors == []
     expr = statements[0].expressions[0]
     assert isinstance(expr, Logical)
@@ -80,5 +80,5 @@ def test_multiple_syntax_errors_are_collected():
     # Two independent malformed declarations; the parser should recover
     # after the first error via synchronize() and keep looking for more
     # rather than stopping at the first one.
-    _, errors = parse('var ;\nvar ;\n')
+    _, errors = parse("var ;\nvar ;\n")
     assert len(errors) == 2

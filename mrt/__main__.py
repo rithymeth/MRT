@@ -1,12 +1,14 @@
 import sys
+
+from .errors import MRTError
+from .interpreter import ENTRY_MISSING, ENTRY_RAN, Interpreter
 from .lexer import Lexer
 from .parser import Parser
-from .interpreter import Interpreter, ENTRY_RAN, ENTRY_MISSING
-from .errors import MRTError
+
 
 def run_file(path: str) -> int:
     try:
-        with open(path, 'r') as file:
+        with open(path, "r") as file:
             source = file.read()
     except OSError as e:
         print(f"Could not read file '{path}': {e.strerror}", file=sys.stderr)
@@ -16,7 +18,8 @@ def run_file(path: str) -> int:
     # relative to this file rather than the working directory.
     return run(source, path)
 
-def run(source: str, path: str = None) -> int:
+
+def run(source: str, path: str | None = None) -> int:
     # Create lexer and generate tokens
     try:
         lexer = Lexer(source)
@@ -45,7 +48,7 @@ def run(source: str, path: str = None) -> int:
     return 70 if interpreter.had_error else 0
 
 
-def explain_if_nothing_ran(interpreter: Interpreter, path: str = None) -> None:
+def explain_if_nothing_ran(interpreter: Interpreter, path: str | None = None) -> None:
     """Say so when a file ran correctly and did nothing.
 
     MRT calls a top-level `main` if the file defines one, and a file of only
@@ -78,6 +81,7 @@ def explain_if_nothing_ran(interpreter: Interpreter, path: str = None) -> None:
             file=sys.stderr,
         )
 
+
 def main():
     if len(sys.argv) != 2:
         # Every other diagnostic in this file goes to stderr, keeping stdout
@@ -86,6 +90,7 @@ def main():
         sys.exit(1)
 
     sys.exit(run_file(sys.argv[1]))
+
 
 if __name__ == "__main__":
     main()

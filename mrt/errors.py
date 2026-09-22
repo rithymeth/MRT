@@ -1,10 +1,12 @@
-from typing import List, Optional
+from __future__ import annotations
+
+from typing import List
 
 
 class MRTError(Exception):
     """Base class for all errors produced by the MRT toolchain."""
 
-    def __init__(self, message: str, line: Optional[int] = None):
+    def __init__(self, message: str, line: int | None = None):
         self.message = message
         self.line = line
         super().__init__(self._format())
@@ -33,8 +35,9 @@ class MRTRuntimeError(MRTError):
     own names.
     """
 
-    def __init__(self, message: str, line: Optional[int] = None,
-                 kind: str = "RuntimeError"):
+    def __init__(
+        self, message: str, line: int | None = None, kind: str = "RuntimeError"
+    ):
         self.kind = kind
         self.mrt_stack: List[str] = []
         super().__init__(message, line)
@@ -44,12 +47,12 @@ class MRTRuntimeError(MRTError):
 # each raise site) so the Playground interpreter can be checked against the
 # same list, and so `docs/LANGUAGE_SPEC.md` has one place to mirror.
 ERROR_KINDS = (
-    "TypeError",        # a value of the wrong type
-    "ArityError",       # wrong number of arguments
-    "IndexError",       # index outside an array/string, or a non-numeric index
-    "KeyError",         # object key that isn't present
-    "NameError",        # undefined variable
-    "ValueError",       # right type, unusable value (sqrt(-1), a zero step)
+    "TypeError",  # a value of the wrong type
+    "ArityError",  # wrong number of arguments
+    "IndexError",  # index outside an array/string, or a non-numeric index
+    "KeyError",  # object key that isn't present
+    "NameError",  # undefined variable
+    "ValueError",  # right type, unusable value (sqrt(-1), a zero step)
     "ArithmeticError",  # division or modulo by zero
-    "RuntimeError",     # anything not covered above
+    "RuntimeError",  # anything not covered above
 )

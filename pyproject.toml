@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=78"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "mrt-lang"
 version = "0.4.0"
 description = "The MRT programming language: reference interpreter and CLI"
 readme = "README.md"
-requires-python = ">=3.10"  # uses `match` statements, which require Python 3.10+
+requires-python = ">=3.11"  # 3.10 reaches end of life in October 2026; kept at 3.11+
 license = "MIT"
 license-files = ["LICENSE.txt"]
 authors = [{ name = "MRT Team" }]
@@ -45,6 +45,13 @@ mrt-lang = "mrt.__main__:main"
 
 # Only the interpreter ships. `src/` next door is the Playground's React app
 # and the TypeScript interpreter, which are not part of this distribution.
+[tool.black]
+target-version = ["py311", "py312", "py313"]
+
+[tool.flake8]
+max-line-length = 100
+ignore = ["F821"]  # false positives on PEP 563 string-annotated dataclass fields (e.g. 'Token')
+
 [tool.setuptools]
 packages = ["mrt"]
 
